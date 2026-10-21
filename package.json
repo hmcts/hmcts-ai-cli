@@ -1,6 +1,6 @@
 {
   "name": "@hmcts-cft/hai-cli",
-  "version": "0.0.1",
+  "version": "0.0.3",
   "description": "hai — an HMCTS wrapper around the Claude Code CLI that resolves which model route and credentials an engineer should use, then runs claude.",
   "license": "MIT",
   "type": "module",
@@ -35,6 +35,6 @@
     "@types/node": "24.12.3",
     "@vitest/coverage-v8": "4.1.6",
     "typescript": "5.9.3",
-    "vitest": "4.1.6"
+    "vitest": "4.1.11"
   }
 }
