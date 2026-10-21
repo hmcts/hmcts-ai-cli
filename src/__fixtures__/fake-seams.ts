@@ -58,6 +58,12 @@ export function createFakeFs(files: Record<string, string> = {}): FakeFs {
         modes.set(path, opts.mode);
       }
     },
+    async appendText(path, content, opts = {}) {
+      store.set(path, `${store.get(path) ?? ""}${content}`);
+      if (opts.mode !== undefined) {
+        modes.set(path, opts.mode);
+      }
+    },
     async mkdirp(path, opts = {}) {
       dirs.add(path);
       if (opts.mode !== undefined) {

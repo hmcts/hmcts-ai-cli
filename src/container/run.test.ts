@@ -585,10 +585,23 @@ describe("runContainerMode", () => {
     });
   });
 
-  describe("the ports it publishes", () => {
-    it("should start anyway when one of the profile's ports is taken, and say which", async () => {
+  describe("the ports it publishes at create time", () => {
+    it("should publish nothing by default, the port watcher being what publishes now", async () => {
       // Arrange
-      const seams = seamsIn({}, {}, { portsInUse: [9200] });
+      const seams = seamsIn();
+
+      // Act
+      const err = await runContainerMode(input(seams)).catch((e) => e);
+
+      // Assert
+      expect(exitCodeOf(err)).toBe(0);
+      expect(argvOf(seams, ["docker", "run"])).not.toContain("-p");
+      expect(seams.lines.join("")).not.toContain("not publishing");
+    });
+
+    it("should start anyway when one of the cft profile's ports is taken, and say which", async () => {
+      // Arrange
+      const seams = seamsIn({ HAI_PORTS: "cft" }, {}, { portsInUse: [9200] });
 
       // Act
       const err = await runContainerMode(input(seams)).catch((e) => e);
@@ -627,11 +640,11 @@ describe("runContainerMode", () => {
       expect(seams.lines.join("")).toContain("not publishing 3000");
     });
 
-    it("should probe each port once per launch, never again", async () => {
+    it("should probe each port of a profile once per launch, never again", async () => {
       // Arrange
       const probed: number[] = [];
       const seams = seamsIn(
-        {},
+        { HAI_PORTS: "cft" },
         {},
         {
           net: {
@@ -656,10 +669,88 @@ describe("runContainerMode", () => {
       // Arrange
       const daemon =
         "docker: Error response from daemon: failed to set up container networking: driver failed programming external connectivity on endpoint hai (1): Bind for 0.0.0.0:3000 failed: port is already allocated";
-      const seams = seamsIn({}, {}, { respond: (argv) => (argv[0] === "docker" && argv[1] === "run" ? { code: 125, stderr: daemon } : respond(argv)) });
+      const seams = seamsIn(
+        { HAI_PORTS: "cft" },
+        {},
+        { respond: (argv) => (argv[0] === "docker" && argv[1] === "run" ? { code: 125, stderr: daemon } : respond(argv)) }
+      );
 
       // Act / Assert
       await expect(runContainerMode(input(seams))).rejects.toThrow("port 3000 was free moments earlier");
+    });
+  });
+
+  describe("the ports the session starts listening on", () => {
+    const WATCHED = ["docker", "exec", "--user", "hmcts", SESSION, "cat"];
+    const SWEEP = ["docker", "ps", "-aq", "--filter", "label=hai.session=hai-hmcts-7293fcec"];
+    const sweeps = (seams: FakeSeams) => seams.runner.calls.filter((call) => call.argv[1] === "ps").length;
+
+    it("should watch the session for them, and stop watching when it ends", async () => {
+      // Arrange
+      const seams = seamsIn();
+
+      // Act
+      await runContainerMode(input(seams)).catch(() => undefined);
+
+      // Assert
+      expect(argvOf(seams, WATCHED)).toContain("/proc/net/tcp6");
+      expect(argvOf(seams, SWEEP)).toEqual(SWEEP);
+    });
+
+    it("should sweep by label before it starts, so a killed session's sidecars cannot hold a port", async () => {
+      // Arrange
+      const seams = seamsIn({}, {}, { respond: (argv) => (argv[1] === "ps" ? { code: 0, stdout: "old1\n" } : respond(argv)) });
+
+      // Act
+      await runContainerMode(input(seams)).catch(() => undefined);
+
+      // Assert
+      const removed = seams.runner.calls.findIndex((call) => call.argv.join(" ") === "docker rm -f old1");
+      const created = seams.runner.calls.findIndex((call) => call.argv[1] === "run");
+      expect(removed).toBeGreaterThan(-1);
+      expect(removed).toBeLessThan(created);
+    });
+
+    it("should sweep them again once the session has ended", async () => {
+      // Arrange
+      const seams = seamsIn({}, {}, { respond: (argv) => (argv[1] === "ps" ? { code: 0, stdout: "side1\n" } : respond(argv)) });
+
+      // Act
+      await runContainerMode(input(seams)).catch(() => undefined);
+
+      // Assert
+      expect(seams.runner.calls.filter((call) => call.argv.join(" ") === "docker rm -f side1")).toHaveLength(2);
+      expect(seams.runner.calls.findIndex((call) => call.argv.join(" ") === "docker rm -f side1")).toBeLessThan(
+        seams.runner.calls.findLastIndex((call) => call.argv.join(" ") === "docker rm -f side1")
+      );
+    });
+
+    it("should neither watch nor sweep a container it reattached to, the session that started it already doing both", async () => {
+      // Arrange
+      const seams = seamsIn(
+        {},
+        {},
+        { respond: (argv) => (argv[0] === "docker" && argv[1] === "inspect" && argv.includes(SESSION) ? { code: 0, stdout: "true\n" } : respond(argv)) }
+      );
+
+      // Act
+      await runContainerMode(input(seams)).catch(() => undefined);
+
+      // Assert
+      expect(argvOf(seams, WATCHED)).toEqual([]);
+      expect(sweeps(seams)).toBe(0);
+    });
+
+    it("should not watch at all with HAI_NO_PORT_WATCH=1, and still sweep", async () => {
+      // Arrange
+      const seams = seamsIn({ HAI_NO_PORT_WATCH: "1" });
+
+      // Act
+      await runContainerMode(input(seams)).catch(() => undefined);
+
+      // Assert
+      expect(argvOf(seams, WATCHED)).toEqual([]);
+      expect(sweeps(seams)).toBe(2);
     });
   });
 

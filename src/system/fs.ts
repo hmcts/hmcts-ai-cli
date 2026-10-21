@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { access, chmod, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { access, appendFile, chmod, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 
 export function createFs(): Fs {
   return {
@@ -18,6 +18,10 @@ export function createFs(): Fs {
       if (opts.mode !== undefined) {
         await chmod(path, opts.mode);
       }
+    },
+
+    async appendText(path, content, opts = {}) {
+      await appendFile(path, content, { encoding: "utf8", mode: opts.mode });
     },
 
     async mkdirp(path, opts = {}) {
@@ -73,6 +77,8 @@ export interface Fs {
   /** Null rather than a throw when the path is absent or unreadable: every caller treats both as "no signal". */
   readText(path: string): Promise<string | null>;
   writeText(path: string, content: string, opts?: { mode?: number }): Promise<void>;
+  /** The port watcher's log, which is a running record rather than a state file. */
+  appendText(path: string, content: string, opts?: { mode?: number }): Promise<void>;
   mkdirp(path: string, opts?: { mode?: number }): Promise<void>;
   /** Atomic within a filesystem, so a config seeded by writing a temp file next to it is never half-written. */
   rename(from: string, to: string): Promise<void>;

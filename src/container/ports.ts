@@ -15,10 +15,16 @@ const MAX_PORT = 65535;
 const ALLOCATED = /port is already allocated/i;
 const BIND_FAILURE = /Bind for \S*?:(\d{1,5}) failed/i;
 
-/** The profile asked for, as written. Which of these are actually published is `choosePorts`. */
+/**
+ * The create-time profile asked for, as written. Which of these are actually published is
+ * `choosePorts`. Nothing by default: a hand-maintained list of 20 is wrong for every repo
+ * that is not CCD or PCS, and clashes with whatever else the engineer is running, so the
+ * port watcher publishes what the session turns out to listen on instead. `HAI_PORTS` is
+ * for the ports that have to answer from the session's first instant.
+ */
 export function resolvePorts(spec: string | undefined): string[] {
   if (spec === undefined || spec === "") {
-    return CFT_PORTS;
+    return [];
   }
   const profile = PORT_PROFILES[spec];
   if (profile !== undefined) {

@@ -23,6 +23,7 @@ import {
 import { hostPrepPaths } from "./host-prep.js";
 import { lockPath, releaseLock, takeLock } from "./lock.js";
 import { type DevcontainerSpec, defaultSpec, parseDevcontainer, resolveMounts, type SubstitutionVars } from "./mounts.js";
+import { type PortWatch, startPortWatch, sweepSidecars } from "./port-watch.js";
 import { choosePorts, portClashMessage } from "./ports.js";
 import { stagedRuntimeDir, stageRuntime } from "./runtime-staging.js";
 import { dockerVolumeName, NETWORK_NAME, sessionName } from "./session.js";
@@ -71,6 +72,7 @@ export async function runContainerMode(input: {
   });
 
   let started = false;
+  let watch: PortWatch | null = null;
   let code: number;
   try {
     await pullImage(seams, { image: ctx.image, policy: seams.env.HAI_PULL });
@@ -78,13 +80,20 @@ export async function runContainerMode(input: {
     started = await ensureContainer(seams, ctx, dockerArgv);
     await deliverSecrets(seams, ctx);
     await deliverDockerConfig(seams, ctx);
+    // Only the session that started the container watches it: a reattaching one would be a
+    // second watcher racing the first for the same host ports.
+    if (started) {
+      watch = await startPortWatch(seams, ctx, { published: ctx.ports });
+    }
     code = await seams.runner.interactive(sessionArgv);
   } finally {
+    await watch?.stop();
     if (started) {
       // The session is over, and a stopped container holds a nested engine whose state
       // is useless: the image cache it was using lives in the named volume, not here.
       await seams.runner.run([DOCKER_BIN, "rm", "-f", ctx.sessionName], { timeoutMs: START_TIMEOUT_MS });
       seams.logger.verbose(`removed ${ctx.sessionName}`);
+      await sweepSidecars(seams, ctx.sessionName);
     }
     await releaseLock(seams, lock);
   }
@@ -218,6 +227,9 @@ async function ensureContainer(seams: Seams, ctx: ContainerContext, dockerArgv: 
   if (existing.code === 0) {
     await seams.runner.run([DOCKER_BIN, "rm", "-f", ctx.sessionName], { timeoutMs: START_TIMEOUT_MS });
   }
+  // A sidecar a killed session left behind holds a host port that this one may need, and
+  // the server it forwarded to died with that session.
+  await sweepSidecars(seams, ctx.sessionName);
   const created = await seams.runner.run(dockerArgv, { timeoutMs: START_TIMEOUT_MS });
   if (created.code !== 0) {
     const clash = portClashMessage({ stderr: created.stderr, published: ctx.ports });

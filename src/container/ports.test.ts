@@ -20,8 +20,8 @@ const probes = (free: number[], taken: number[] = []): PortProbe[] => [
 
 describe("resolvePorts", () => {
   it.each<[string, string | undefined, string[]]>([
-    ["unset", undefined, CFT_PORTS],
-    ["an empty string", "", CFT_PORTS],
+    ["unset, the port watcher being what publishes by default now", undefined, []],
+    ["an empty string", "", []],
     ["cft", "cft", CFT_PORTS],
     ["minimal", "minimal", MINIMAL_PORTS],
     ["none", "none", []],

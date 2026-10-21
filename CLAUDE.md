@@ -82,7 +82,7 @@ src/net/        the VPN probe (informational only, never blocks)
 src/claude/     the claude argv and settings
 src/workspace/  cft-workspace detection and plugin-dir resolution
 src/update/     the Azure Artifacts feed and the self-update
-src/container/  container mode: the docker argv, mounts, DNS, ports, lock, ACR, staging
+src/container/  container mode: the docker argv, mounts, DNS, ports, the port watch, lock, ACR, staging
 src/sbx/        Docker Sandboxes mode: the sbx argv, the kit and the host settings it needs
 src/launch.ts   `hai`'s orchestration; src/sbx-launch.ts is `sbx-hai`'s
 src/main.ts     wraps either of them in error handling: main() and sbxMain()
@@ -105,7 +105,9 @@ table-testable:
 | `buildDockerArgs(ctx)` | `gatherContext` in `src/container/run.ts` |
 | `selectDnsServers`, `parseResolvectl`, `parseNetif`, `parseNmcli` | `discoverDns` |
 | `parseDevcontainer`, `defaultSpec`, `resolveMounts`, `hostPrepPaths` | `readSpec`, `prepareHost` |
-| `resolvePorts`, `expandPorts`, `selectPorts`, `portClashMessage` | `choosePorts` |
+| `resolvePorts`, `expandPorts`, `selectPorts`, `portClashMessage` | `choosePorts`, `chooseFreePorts` |
+| `parseProcNet`, `addressKind`, `listeners`, `createDebounce` | the tick in `createPortPublisher` |
+| `pendingPorts`, `buildSidecarArgs`, `sweepIds`, `describePortEntry` | `startPortWatch`, `sweepSidecars` |
 | `sessionName`, `projectSlug` | — |
 | `lockDecision`, `parseLock` | `takeLock` |
 | `needsAcrLogin`, `shouldPull`, `dockerConfigJson` | `pullImage` |
@@ -167,15 +169,50 @@ Other things that are the way they are for a reason:
   `~/.docker/config.json` symlinked at it, so it is where every tool looks without being
   written to a disk. `az account get-access-token` is the session probe, not
   `az account show`, which still answers after the refresh token has expired.
-- **The published ports are chosen by a bind probe, once per launch.** `docker run`
-  publishes all or nothing — one port another process holds fails the whole start — so
-  `choosePorts` probes every port in the profile on the host and publishes only the free
-  ones. A clash is **skipped, never remapped**: cftlib's IDAM simulator issues and
-  validates tokens on a fixed port, so a moved port breaks XUI's sign-in redirect. The
-  skipped ports are named in one line at normal verbosity, because an engineer has to know
-  a service will not be reachable on its usual number. The decision is not revisited: the
-  race between the probe and `docker run` cannot be closed, only reported, which is what
-  `portClashMessage` does when the daemon refuses the bind anyway.
+- **Ports are published dynamically, as the session turns out to listen on them.** A
+  hand-maintained list of 20 CFT ports was wrong for every repo that is not CCD or PCS and
+  clashed with whatever else the engineer was running, so `HAI_PORTS` now publishes nothing
+  by default. Instead `src/container/port-watch.ts` polls
+  `docker exec <session> cat /proc/net/tcp /proc/net/tcp6` every two seconds and publishes
+  each new listener it finds. That is also what catches the case that matters: when cftlib
+  runs `docker compose` on the **nested** daemon, each inner container's `-p` becomes a
+  docker-proxy listener in the session container's own network namespace, so it shows up in
+  those tables like any other server. The parsing, the loopback rules and the debounce are a
+  port of cft-workspace's `scripts/lib/agent-hub/ports.mjs`, which reads the same two tables
+  inside a virtual agent's pod.
+- **Publishing is a socat sidecar per port, not a host-side proxy.** Docker cannot add a
+  mapping to a running container — `docker update` has no `--publish` and mappings are
+  create-time only — so each port gets its own `alpine/socat` container on the same
+  user-defined network, created with a real `-p` and forwarding to the session by name. A
+  host process forwarding to the session's own address was the alternative: it works on
+  Linux and is dead on Docker Desktop, where the bridge lives inside the VM and 172.17.x.x
+  is unreachable from the Mac. Every sidecar carries `hai.session=<name>`, and that label is
+  swept with `docker rm -f` both before a container is created and after its session ends,
+  because a sidecar outliving its session holds a host port whose server is already gone.
+- **The watcher prints nothing.** Claude Code's TUI owns the terminal from the moment the
+  session starts, so every decision goes to `<state>/ports/<session>.log` and the ports with
+  what became of each to `<state>/ports/<session>.ports.json` — and to
+  `/tmp/hai-ports.json` inside the session, which is how the agent in there discovers the
+  URLs its own servers answer at. The only thing said on the terminal is what stopped the
+  watch from starting at all, which is said before the handover.
+- **A port is decided once, and a clash is skipped, never remapped.** cftlib's IDAM
+  simulator issues and validates tokens on a fixed port, so a port moved to another number
+  breaks XUI's sign-in redirect. Both the create-time list and the watcher go through
+  `chooseFreePorts`, which is a bind probe on the host and nothing more: it does not know
+  whether a candidate came from `HAI_PORTS` or from a listener that has just appeared. A
+  port skipped stays skipped for the session rather than being retried every tick, and a
+  listener bound to `127.0.0.1` inside is reported once as loopback-only with the "bind it
+  to 0.0.0.0" hint, no sidecar being able to reach it.
+- **`HAI_PORTS` and the watcher are additive.** `HAI_PORTS` is `docker run -p`, so it is the
+  only thing that can have a port answering from the session's first instant — no poll
+  delay, no sidecar — and `cft` still means the same 20. The watcher seeds its decided set
+  with whatever was published at create time, so it never puts a sidecar in front of a
+  mapping Docker already has (which could not bind that host port anyway). `HAI_PORTS=none`
+  is the explicit form of the default; `HAI_NO_PORT_WATCH=1` turns the watcher off.
+  `docker run` publishes all or nothing, so a create-time clash is still probed up front by
+  `choosePorts` rather than failing the whole start — and the race between the probe and
+  `docker run` cannot be closed, only reported, which is what `portClashMessage` does when
+  the daemon refuses the bind anyway.
 
 `HAI_FORCE_HOST=1` forces container mode — it overrides both the probe and
 `HAI_FORCE_CONTAINER`, and it is the only way to exercise container mode from inside a

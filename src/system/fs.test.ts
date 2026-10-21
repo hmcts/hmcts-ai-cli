@@ -47,6 +47,20 @@ describe("createFs", () => {
     expect(await fs.readText(path)).toBe("second");
   });
 
+  it("should append to a file, and create it on the first append", async () => {
+    // Arrange
+    const path = join(root, "appended.log");
+    await fs.mkdirp(root);
+    await fs.remove(path);
+
+    // Act
+    await fs.appendText(path, "first\n", { mode: 0o600 });
+    await fs.appendText(path, "second\n");
+
+    // Assert
+    expect(await fs.readText(path)).toBe("first\nsecond\n");
+  });
+
   it("should create nested directories with a mode", async () => {
     // Arrange
     const dir = join(root, "a", "b");
