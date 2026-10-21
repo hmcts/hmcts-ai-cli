@@ -21,6 +21,12 @@ const SIGNALS: ContainerSignal[] = [
 ];
 
 export function isInContainer(probe: ContainerProbe): boolean {
+  // HAI_FORCE_HOST wins over everything, including HAI_FORCE_CONTAINER: it is how
+  // container mode is exercised from inside a devcontainer, which otherwise detects
+  // itself and takes the already-containerised path.
+  if (probe.forcedHost) {
+    return false;
+  }
   if (probe.forced) {
     return true;
   }
@@ -28,6 +34,9 @@ export function isInContainer(probe: ContainerProbe): boolean {
 }
 
 export function containerReasons(probe: ContainerProbe): string[] {
+  if (probe.forcedHost) {
+    return ["HAI_FORCE_HOST=1"];
+  }
   if (probe.forced) {
     return ["HAI_FORCE_CONTAINER=1"];
   }
@@ -38,6 +47,7 @@ export async function probeContainer(deps: { env: Env; fs: Fs }): Promise<Contai
   const { env, fs } = deps;
   const cgroup = (await fs.readText(CGROUP_FILE)) ?? "";
   return {
+    forcedHost: isEnabled(env, "HAI_FORCE_HOST"),
     forced: isEnabled(env, "HAI_FORCE_CONTAINER"),
     ownMarker: isEnabled(env, "HAI_IN_CONTAINER"),
     hasDockerEnv: await fs.exists(DOCKER_ENV_FILE),
@@ -50,6 +60,7 @@ export async function probeContainer(deps: { env: Env; fs: Fs }): Promise<Contai
 }
 
 export interface ContainerProbe {
+  forcedHost: boolean;
   forced: boolean;
   ownMarker: boolean;
   hasDockerEnv: boolean;
@@ -61,7 +72,7 @@ export interface ContainerProbe {
 }
 
 interface ContainerSignal {
-  key: Exclude<keyof ContainerProbe, "forced">;
+  key: Exclude<keyof ContainerProbe, "forced" | "forcedHost">;
   label: string;
   decides: boolean;
 }

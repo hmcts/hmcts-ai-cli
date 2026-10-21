@@ -23,6 +23,15 @@ const SECRET_ENV_KEYS = new Set([
   "AGENT_HUB_LAUNCH_TOKEN"
 ]);
 
+/**
+ * The one list of which environment variables hold a credential. Container mode splits
+ * the route's environment on it: these go to the container on a `docker exec` stdin, the
+ * rest on `docker run --env`, where `docker inspect` would read them back.
+ */
+export function isSecretEnvKey(name: string): boolean {
+  return SECRET_ENV_KEYS.has(name);
+}
+
 export function redact(text: string): string {
   let masked = text.replace(KEYED_SECRET_PATTERN, (_match, key: string, separator: string) => `${key}${separator}${MASK}`);
   for (const pattern of SECRET_PATTERNS) {

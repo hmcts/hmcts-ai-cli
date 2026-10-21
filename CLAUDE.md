@@ -33,8 +33,9 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
 - **Every log line and error goes through `redact()`.** `createLogger` applies it, and
   `main` routes every thrown error through the logger. Do not write to stderr directly.
 - **Only `src/system/runner.ts` imports `node:child_process`; only `src/system/fs.ts`
-  imports `node:fs`.** Enforced by Biome's `noRestrictedImports` with per-file overrides,
-  and independently by `src/system/import-restrictions.test.ts`.
+  imports `node:fs`; only `src/system/net.ts` imports `node:net`.** Enforced by Biome's
+  `noRestrictedImports` with per-file overrides, and independently by
+  `src/system/import-restrictions.test.ts`.
 - **Never a shell.** `Runner` spawns `argv[0]` directly with `shell: false`.
 - **The hmcts-lib feed allows anonymous reads, so the self-update needs no credential.**
   The packument and the tarballs answer without an `Authorization` header — measured — so
@@ -45,6 +46,30 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
 - **Never `sudo`.** An unwritable install prefix prints the command instead;
   `detectPackageManager` is given `prefixWritable` up front so that is a decision, not a
   failed install.
+- **No secret ever reaches `docker run`.** Anything in `--env` or `--env-file` is recorded
+  in the container's config, readable afterwards with `docker inspect` and written to disk
+  with the container. `splitEnv` divides the route's environment on `isSecretEnvKey`; the
+  secret half goes in one credential per `docker exec -i` stdin, onto a `0700` tmpfs, and
+  the entrypoint exports and deletes each one. `buildDockerArgs` never reads `secretEnv` —
+  it is in the context only so the test, parameterised over every route, has a real value
+  to look for.
+- **The container never gets host networking.** A second `dockerd` sharing the host's
+  network namespace reconfigures the host's `docker0` and flushes the host daemon's
+  iptables chains, breaking every container on the machine. `--network=host` is therefore
+  stripped out of the devcontainer's `runArgs` (`DROPPED_RUN_ARGS`) and the session runs on
+  a user-defined bridge. `--privileged` stays; the host's Docker socket does not
+  (`DROPPED_MOUNT_SOURCES`) — the session runs its own engine.
+- **A private network namespace cannot reach `127.0.0.53`, so the VPN resolvers are passed
+  explicitly.** `src/container/dns.ts` finds the link whose *routing* domains include
+  `~internal` or `~hmcts.net` — that is how the F5 client publishes them, and they are
+  per-link, so they never appear in systemd-resolved's global uplink list. Those servers go
+  first and `8.8.8.8` trails for the case where the VPN drops. Measured: the HMCTS
+  resolvers answer public names too, so ordering them first costs nothing, and the glibc
+  "no failover on NXDOMAIN" trap does not apply because an unreachable server times out
+  instead. On macOS no `--dns` is passed at all: Docker Desktop's resolver already proxies
+  the host. **When no link carries the internal domains, say so and start anyway** — never
+  substitute a public resolver as the only server, or every internal name becomes a
+  confident NXDOMAIN.
 
 ## Shape
 
@@ -57,8 +82,12 @@ src/net/        the VPN probe (informational only, never blocks)
 src/claude/     the claude argv and settings
 src/workspace/  cft-workspace detection and plugin-dir resolution
 src/update/     the Azure Artifacts feed and the self-update
-src/launch.ts   the orchestration; src/main.ts wraps it in error handling
+src/container/  container mode: the docker argv, mounts, DNS, ports, lock, ACR, staging
+src/sbx/        Docker Sandboxes mode: the sbx argv, the kit and the host settings it needs
+src/launch.ts   `hai`'s orchestration; src/sbx-launch.ts is `sbx-hai`'s
+src/main.ts     wraps either of them in error handling: main() and sbxMain()
 src/bin/        two-line shims, excluded from coverage
+runtime/        the shell the container runs, shipped in the package and staged at launch
 ```
 
 Pure functions over gathered facts, with the I/O separated out, so the decisions are
@@ -73,9 +102,127 @@ table-testable:
 | `packumentUrl(feed, name)`, `latestFromPackument(body)` | `maybeSelfUpdate` |
 | `extractUserSettings(argv)`, `mergeSettings(ours, theirs)` | `readUserSettings` |
 | `resolvePluginDirs` is the exception — it reads the marketplace itself | — |
+| `buildDockerArgs(ctx)` | `gatherContext` in `src/container/run.ts` |
+| `selectDnsServers`, `parseResolvectl`, `parseNetif`, `parseNmcli` | `discoverDns` |
+| `parseDevcontainer`, `defaultSpec`, `resolveMounts`, `hostPrepPaths` | `readSpec`, `prepareHost` |
+| `resolvePorts`, `expandPorts`, `selectPorts`, `portClashMessage` | `choosePorts` |
+| `sessionName`, `projectSlug` | — |
+| `lockDecision`, `parseLock` | `takeLock` |
+| `needsAcrLogin`, `shouldPull`, `dockerConfigJson` | `pullImage` |
+| `mergeClaudeJson` | `seedClaudeJson` |
+| `stagingDecision` | `stageRuntime` |
+| `splitEnv`, `passthroughEnv` | — |
+| `buildCreateArgs`, `buildReattachArgs` | `gatherContext` in `src/sbx/run.ts` |
+| `parseSbxVersion`, `daemonMismatch` | `requireSbxDaemon` |
+| `allowedSourcesDecision`, `sizeMib`, `volumeSizeDecision` | `allowKitSource`, `raiseDockerVolume` |
+| `parseKitRecord`, `kitComparable`, `kitStaleness`, `parseIndexDigests` | `warnIfKitStale` |
 
 Keep that split when adding anything: the decision goes in a pure function with a
 table-driven test, the probing goes next to it.
+
+## Container mode
+
+`hai` on a bare host is container mode: it runs `claude` inside the CFT workspace image
+with a nested Docker engine. `isInContainer` decides which way it goes — already inside a
+container or a sandbox keeps the old behaviour, which is to resolve the route, set the
+environment and hand over to `claude` in place.
+
+The shape of a launch, all in `src/container/run.ts`:
+
+1. The **route is resolved on the host**, not inside. That is where `az`, the agent-hub and
+   the Key Vault are reachable, and on macOS a mounted `~/.azure` may hold no usable
+   session at all.
+2. `gatherContext` collects the facts; `buildDockerArgs(ctx)` turns them into the argv.
+3. Host prep mirrors `devcontainer.json`'s `initializeCommand` — every bind source has to
+   exist, and `~/.claude.json` has to exist *as a file* or Docker creates a directory at it
+   and nothing starts. `~/.claude.json` is then merged, never overwritten.
+4. `runtime/*.sh` is staged into the state directory, content-hash gated, and bind-mounted
+   at `/opt/hai:ro`. It is invoked as `bash /opt/hai/<script>` so the staged copies need no
+   execute bit. A global install's `node_modules` is not somewhere to mount from.
+5. `docker run -d` runs the supervisor as root, because `dockerd` must be. The interactive
+   session is a second `docker exec --user <containerUser>` — **by name**, because
+   `--user 1000:1000` sets exactly that uid and gid and drops the supplementary groups, so
+   the session would not be in `docker` and could not reach the nested socket.
+6. The entrypoint **must** source `~/.nvm/nvm.sh` and `~/.sdkman/bin/sdkman-init.sh` first:
+   `docker exec` runs it under non-interactive bash with no rc file, and without those
+   `claude`, `node`, `java` and `gradle` are all absent.
+7. `Runner.interactive` rather than `Runner.exec`, so there is still a process to remove the
+   container and release the lock when the session ends.
+
+Other things that are the way they are for a reason:
+
+- **The repo is bind-mounted at its own host path.** That is what makes Claude Code's
+  project slug match a host session's, so the conversation history carries over — and it is
+  why the transcript lock in `src/container/lock.ts` exists at all, since a host session and
+  a container session would otherwise write the same transcript. A stale lock is reclaimed
+  silently; an unanswerable question about the holder is *not* grounds to take it.
+- **`hai-*` cache volumes, not the devcontainer's `cft-*` ones**, so a hai session and a
+  devcontainer cannot fight over the same Gradle lock. `HAI_SHARE_CACHES=1` opts back in.
+- **The nested daemon needs its own `daemon.json` DNS.** On a user-defined bridge this
+  container's `/etc/resolv.conf` is Docker's `127.0.0.11`, a loopback address the nested
+  `dockerd` discards — so without `HAI_NESTED_DNS` its containers fall back to a public
+  resolver and lose every internal name.
+- **The nested daemon also needs its own registry login.** The token is minted on the host
+  and delivered on the same exec-stdin channel; it lives on the secrets tmpfs with
+  `~/.docker/config.json` symlinked at it, so it is where every tool looks without being
+  written to a disk. `az account get-access-token` is the session probe, not
+  `az account show`, which still answers after the refresh token has expired.
+- **The published ports are chosen by a bind probe, once per launch.** `docker run`
+  publishes all or nothing — one port another process holds fails the whole start — so
+  `choosePorts` probes every port in the profile on the host and publishes only the free
+  ones. A clash is **skipped, never remapped**: cftlib's IDAM simulator issues and
+  validates tokens on a fixed port, so a moved port breaks XUI's sign-in redirect. The
+  skipped ports are named in one line at normal verbosity, because an engineer has to know
+  a service will not be reachable on its usual number. The decision is not revisited: the
+  race between the probe and `docker run` cannot be closed, only reported, which is what
+  `portClashMessage` does when the daemon refuses the bind anyway.
+
+`HAI_FORCE_HOST=1` forces container mode — it overrides both the probe and
+`HAI_FORCE_CONTAINER`, and it is the only way to exercise container mode from inside a
+devcontainer, which otherwise detects itself and takes the in-place path.
+
+## Docker Sandboxes mode (`sbx-hai`)
+
+`sbx-hai` is the third backend: the same argv-forwarding contract and the same self-update,
+with the session in an sbx microVM built from `hmctsprod.azurecr.io/cft-workspace/sbx:latest`
+instead of a container hai starts. It is a port of cft-workspace's `scripts/sbx-claude`;
+read that script before changing anything here, because most of this is its hard-won
+behaviour:
+
+- **`sbx` is host-only, so `sbx-hai` refuses inside a container.** `HAI_FORCE_HOST=1` is
+  the escape hatch, as it is for container mode.
+- **`sbx version --json` is the one command that answers without the daemon-version gate.**
+  When the CLI and the running `sandboxd` disagree, sbx holds every command behind a stderr
+  prompt it then waits on, so a piped or captured call hangs for good having printed
+  nothing. `daemonMismatch` detects that and says to run `sbx daemon restart` — hai never
+  runs it, because it stops every running sandbox, other sessions' included.
+- **The create needs three host-wide settings put right first**: `kit.allowedSources` (sbx
+  only pulls allow-listed kits and defaults to Docker Hub alone), `sandbox.disk.dockerVolume`
+  raised to 40g (sbx's 10g default is overrun by the CFT images; read only at create time,
+  and **only ever raised**), and the ACR pull token.
+- **The registry secret goes in both scopes.** The host scope pulls the kit; the separate
+  `--all-sandboxes` scope is what the sandbox's *own* Docker engine uses, and without it
+  every hmctsprod pull inside fails with "authentication required". One
+  `az acr login --expose-token` feeds both, on a `--password-stdin` stdin, and the token
+  lasts about 3h so only the create refreshes it — a reattach refreshes neither.
+- **Kit staleness is a warning, never a block, and has a known false positive.** A sandbox
+  records the digest of the one architecture it pulled, so a difference from the tag's
+  digest is only stale if the recorded digest is *not* a child of the published multi-arch
+  index. Every path that cannot tell reports not stale.
+- **The claude argv is not built here.** The kit's own launch script chooses between
+  `claude --dangerously-skip-permissions` and `.claude/run.sh` depending on which credential
+  sbx bound, so `sbx-hai` forwards the arguments after a `--` and nothing else.
+- **No credential and no route environment is forwarded.** sbx injects the Anthropic
+  credential from its own secret store (`scripts/sbx-setup` puts it there), and the kit owns
+  the Bedrock environment, so forwarding hai's would fight it. The route is still resolved
+  on the host, but only to report which one would apply — and a host where nothing resolves
+  must still be able to start a sandbox, so that resolution is best-effort.
+
+Deliberately **not** ported from `scripts/sbx-claude`: the port watcher and its stale-port
+repair, `--update`'s state snapshot/restore, the host `settings.json` denylist
+(`CFT_HOST_CLAUDE_SETTINGS`), `--local` kit builds and `-p` publishes. There is also no
+transcript lock: the shared `~/.claude/projects` means the same rule as the shell script —
+do not run Claude on the host in the same checkout at the same time.
 
 ## Testing
 
@@ -96,21 +243,3 @@ const seams = createFakeSeams({
 `seams.lines` holds every logged line, `seams.out` every stdout write,
 `seams.runner.calls` and `seams.runner.execCalls` every process launched, and `seams.exit`
 throws a signal you read with `exitCodeOf`.
-
-## Faithfulness to run.sh
-
-The bedrock environment, the prompt behaviour, the `can_prompt` rule and `add_plugin_dirs`
-are reimplementations of cft-workspace's `.claude/run.sh`, and the gateway environment of
-`apps/cath/cath-service/.claude/run.sh` + `token.sh` + `cnp.settings.json`. Changing any
-of them means re-reading the original first.
-
-One deliberate difference: the gateway route also sets the three
-`ANTHROPIC_DEFAULT_*_MODEL` variables (cath's `run.sh` does, the brief's env block did
-not) — without them `claude` asks the gateway for `us.anthropic.*` model ids.
-
-## Out of scope for now
-
-Container mode — `docker run`, mounts, DNS, ports, the secrets tmpfs — is not built.
-`launch` detects that it is not already containerised and says so. `sbx-hai` is a
-placeholder that exits 2. Do not start on either without checking what the current slice
-is meant to cover.

@@ -3,6 +3,7 @@ import { createFakeFs } from "../__fixtures__/fake-seams.js";
 import { type ContainerProbe, containerReasons, isInContainer, probeContainer } from "./container.js";
 
 const NOTHING: ContainerProbe = {
+  forcedHost: false,
   forced: false,
   ownMarker: false,
   hasDockerEnv: false,
@@ -52,6 +53,14 @@ describe("isInContainer", () => {
     // Act / Assert
     expect(isInContainer(probe({ forced: true }))).toBe(true);
   });
+
+  it.each<[string, Partial<ContainerProbe>]>([
+    ["a probe that found a container", { hasDockerEnv: true }],
+    ["HAI_FORCE_CONTAINER as well", { hasDockerEnv: true, forced: true }]
+  ])("should let HAI_FORCE_HOST override %s, which is how container mode is tested from inside one", (_name, overrides) => {
+    // Act / Assert
+    expect(isInContainer(probe({ ...overrides, forcedHost: true }))).toBe(false);
+  });
 });
 
 describe("containerReasons", () => {
@@ -84,6 +93,11 @@ describe("containerReasons", () => {
   it("should list nothing when no signal fired", () => {
     // Act / Assert
     expect(containerReasons(NOTHING)).toEqual([]);
+  });
+
+  it("should report HAI_FORCE_HOST ahead of everything else", () => {
+    // Act / Assert
+    expect(containerReasons(probe({ forcedHost: true, forced: true, hasDockerEnv: true }))).toEqual(["HAI_FORCE_HOST=1"]);
   });
 });
 
@@ -129,6 +143,14 @@ describe("probeContainer", () => {
 
     // Assert
     expect(isInContainer(result)).toBe(true);
+  });
+
+  it("should read HAI_FORCE_HOST out of the environment", async () => {
+    // Act
+    const result = await probeContainer({ env: { HAI_FORCE_HOST: "1", HAI_IN_CONTAINER: "1" }, fs: createFakeFs() });
+
+    // Assert
+    expect(isInContainer(result)).toBe(false);
   });
 
   it("should ignore an empty REMOTE_CONTAINERS", async () => {

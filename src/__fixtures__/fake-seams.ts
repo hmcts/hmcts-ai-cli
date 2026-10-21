@@ -1,3 +1,4 @@
+import { packagedRuntimeDir, RUNTIME_SCRIPTS } from "../container/runtime-staging.js";
 import type { Logger } from "../log/logger.js";
 import { createLogger } from "../log/logger.js";
 import type { DirEntry, Fs } from "../system/fs.js";
@@ -10,9 +11,16 @@ export const FIXED_NOW = Date.parse("2026-10-21T09:00:00Z");
 export function createFakeRunner(respond: RunResponder = () => undefined): FakeRunner {
   const calls: RunnerCall[] = [];
   const execCalls: RunnerCall[] = [];
+  const interactiveCalls: RunnerCall[] = [];
   return {
     calls,
     execCalls,
+    interactiveCalls,
+    async interactive(argv, opts = {}) {
+      interactiveCalls.push({ argv, opts });
+      const scripted = respond(argv);
+      return scripted instanceof Error || scripted === undefined ? 0 : (scripted.code ?? 0);
+    },
     async run(argv, opts = {}) {
       calls.push({ argv, opts });
       const scripted = respond(argv);
@@ -56,6 +64,26 @@ export function createFakeFs(files: Record<string, string> = {}): FakeFs {
         modes.set(path, opts.mode);
       }
     },
+
+    async rename(from, to) {
+      const content = store.get(from);
+      if (content === undefined) {
+        throw new Error(`no such file ${from}`);
+      }
+      store.delete(from);
+      store.set(to, content);
+      const mode = modes.get(from);
+      if (mode !== undefined) {
+        modes.delete(from);
+        modes.set(to, mode);
+      }
+    },
+
+    async remove(path) {
+      store.delete(path);
+      dirs.delete(path);
+      modes.delete(path);
+    },
     async exists(path) {
       return store.has(path) || dirs.has(path);
     },
@@ -95,9 +123,9 @@ export function createFakeHiddenInput(answers: string[] = [], isTty = true): Hid
 }
 
 export function createFakeSeams(
-  overrides: Partial<Seams> & { files?: Record<string, string>; respond?: RunResponder; fetch?: Seams["net"]["fetch"] } = {}
+  overrides: Partial<Seams> & { files?: Record<string, string>; respond?: RunResponder; fetch?: Seams["net"]["fetch"]; portsInUse?: number[] } = {}
 ): FakeSeams {
-  const { files, respond, fetch, ...rest } = overrides;
+  const { files, respond, fetch, portsInUse, ...rest } = overrides;
   const lines: string[] = [];
   const out: string[] = [];
   const env = rest.env ?? {};
@@ -105,14 +133,18 @@ export function createFakeSeams(
   const seams: Seams = {
     runner: rest.runner ?? createFakeRunner(respond),
     fs: rest.fs ?? createFakeFs(files),
-    clock: rest.clock ?? { now: () => FIXED_NOW },
-    net: rest.net ?? { fetch: fetch ?? (async () => new Response("{}", { status: 404 })) },
+    clock: rest.clock ?? { now: () => FIXED_NOW, sleep: async () => undefined },
+    net: rest.net ?? {
+      fetch: fetch ?? (async () => new Response("{}", { status: 404 })),
+      isPortFree: async (port) => !(portsInUse ?? []).includes(port)
+    },
     hiddenInput: rest.hiddenInput ?? createFakeHiddenInput(),
     env,
     platform: rest.platform ?? "linux",
     cwd: rest.cwd ?? "/work",
     execPath: rest.execPath ?? "/usr/local/bin/node",
     scriptPath: rest.scriptPath ?? "/usr/local/lib/node_modules/@hmcts-cft/hai-cli/dist/bin/hai.js",
+    pid: rest.pid ?? 4242,
     exit:
       rest.exit ??
       ((code) => {
@@ -122,6 +154,11 @@ export function createFakeSeams(
     logger
   };
   return { ...seams, runner: seams.runner as FakeRunner, fs: seams.fs as FakeFs, lines, out };
+}
+
+/** The runtime scripts as the package ships them, for any test that reaches container mode. */
+export function packagedRuntime(): Record<string, string> {
+  return Object.fromEntries(RUNTIME_SCRIPTS.map((name) => [`${packagedRuntimeDir()}${name}`, `# ${name}\n`]));
 }
 
 export function exitSignal(code: number): ExitSignal {
@@ -142,6 +179,7 @@ export interface RunnerCall {
 export interface FakeRunner extends Runner {
   calls: RunnerCall[];
   execCalls: RunnerCall[];
+  interactiveCalls: RunnerCall[];
 }
 
 export interface FakeFs extends Fs {

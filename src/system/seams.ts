@@ -20,6 +20,7 @@ export function createSeams(): Seams {
     execPath: process.execPath,
     // hai always runs as a script through its bin shim, so argv[1] is its own path.
     scriptPath: process.argv[1]!,
+    pid: process.pid,
     exit: (code) => process.exit(code),
     stdout: (text) => {
       process.stdout.write(text);
@@ -39,6 +40,8 @@ export interface Seams {
   cwd: string;
   execPath: string;
   scriptPath: string;
+  /** Recorded in the transcript lock, so a stale one can be told from a live one. */
+  pid: number;
   exit(code: number): never;
   stdout(text: string): void;
   logger: Logger;

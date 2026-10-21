@@ -164,4 +164,29 @@ describe("createRunner", () => {
       await expect(runner.exec(["definitely-not-a-real-binary-9f8a7b"])).rejects.toThrow(/ENOENT/);
     });
   });
+
+  describe("interactive", () => {
+    it("should come back with the child's status rather than exit, so the caller can clean up", async () => {
+      // Act
+      const code = await createRunner().interactive([NODE, "-e", "process.exit(7)"]);
+
+      // Assert
+      expect(code).toBe(7);
+    });
+
+    it("should report 128 when the child was killed by a signal", async () => {
+      // Act / Assert
+      expect(await createRunner().interactive([NODE, "-e", "process.kill(process.pid, 'SIGTERM')"])).toBe(128);
+    });
+
+    it("should run where and with what it was given", async () => {
+      // Act / Assert
+      expect(await createRunner().interactive([NODE, "-e", "process.exit(0)"], { cwd: "/tmp", env: { PATH: process.env.PATH ?? "" } })).toBe(0);
+    });
+
+    it("should reject when the command cannot be started at all", async () => {
+      // Act / Assert
+      await expect(createRunner().interactive(["definitely-not-a-real-binary-9f8a7b"])).rejects.toThrow(/ENOENT/);
+    });
+  });
 });

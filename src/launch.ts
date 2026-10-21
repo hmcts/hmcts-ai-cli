@@ -7,6 +7,7 @@ import type { RouteResolution } from "./auth/route.js";
 import { buildClaudeArgs, forwardArgv } from "./claude/args.js";
 import { buildSettings, materialiseSettings } from "./claude/settings.js";
 import { extractUserSettings, mergeSettings, readUserSettings } from "./claude/user-settings.js";
+import { runContainerMode } from "./container/run.js";
 import { describeEnv } from "./log/redact.js";
 import { containerReasons, isInContainer, probeContainer } from "./system/container.js";
 import { asProcessEnv, isEnabled } from "./system/env.js";
@@ -15,19 +16,13 @@ import { maybeSelfUpdate, readCurrentVersion } from "./update/self-update.js";
 import { parsePluginNames, resolvePluginDirs } from "./workspace/plugin-dirs.js";
 import { findWorkspaceRoot } from "./workspace/workspace-root.js";
 
-const NO_CONTAINER_MODE =
-  "container mode is not implemented yet; run hai inside a devcontainer or sandbox for now (or set HAI_FORCE_CONTAINER=1 if you know you are already containerised)";
-
 export async function launch(deps: { seams: Seams; processArgv: string[] }): Promise<void> {
   const { seams } = deps;
   const forwarded = forwardArgv(deps.processArgv);
 
   const probe = await probeContainer(seams);
   const contained = isInContainer(probe);
-  seams.logger.verbose(contained ? `already containerised: ${containerReasons(probe).join("; ")}` : "no container signals");
-  if (!contained) {
-    throw new Error(NO_CONTAINER_MODE);
-  }
+  seams.logger.verbose(contained ? `already containerised: ${containerReasons(probe).join("; ")}` : `${hostReason(probe)}, so hai starts the container itself`);
 
   // Re-exec with the argv as typed, so the new release makes its own decisions about it.
   if (await updatedAndReExeced(deps, forwarded)) {
@@ -52,6 +47,18 @@ export async function launch(deps: { seams: Seams; processArgv: string[] }): Pro
 
   const root = await findWorkspaceRoot(seams);
   const pluginDirs = root === null ? [] : await resolvePluginDirs({ ...seams, root, names: parsePluginNames(seams.env.AGENT_HUB_PLUGINS) });
+
+  if (!contained) {
+    return await runContainerMode({
+      seams,
+      forwarded,
+      added,
+      hasGateway: credentials.gateway !== undefined,
+      workspaceRoot: root,
+      pluginDirs
+    });
+  }
+
   const user = extractUserSettings(forwarded);
   const ours = buildSettings({ inWorkspace: root !== null, apiKeyHelperPath: credentials.gateway?.helperPath });
   const merged = mergeSettings(ours, user.value === undefined ? {} : await readUserSettings(seams, user.value));
@@ -78,6 +85,10 @@ export async function launch(deps: { seams: Seams; processArgv: string[] }): Pro
   await seams.runner.exec(argv, { env });
 }
 
+function hostReason(probe: { forcedHost: boolean }): string {
+  return probe.forcedHost ? "HAI_FORCE_HOST=1" : "no container signals";
+}
+
 async function collectCredentials(
   deps: { seams: Seams; agentHub: AgentHub },
   resolution: RouteResolution
@@ -93,7 +104,7 @@ async function collectCredentials(
 }
 
 /** Re-exec rather than carry on in-process, so the new release is the one that runs. */
-async function updatedAndReExeced(deps: { seams: Seams }, userArgs: string[]): Promise<boolean> {
+export async function updatedAndReExeced(deps: { seams: Seams }, userArgs: string[]): Promise<boolean> {
   const { seams } = deps;
   const outcome = await maybeSelfUpdate({ seams, currentVersion: await readCurrentVersion(seams) });
   if (!outcome.reExec) {

@@ -11,7 +11,8 @@ const SRC = dirname(dirname(fileURLToPath(import.meta.url)));
 const RESTRICTIONS: Restriction[] = [
   { module: "node:child_process", allowedIn: [join(SRC, "system", "runner.ts")] },
   { module: "node:fs", allowedIn: [join(SRC, "system", "fs.ts")] },
-  { module: "node:fs/promises", allowedIn: [join(SRC, "system", "fs.ts")] }
+  { module: "node:fs/promises", allowedIn: [join(SRC, "system", "fs.ts")] },
+  { module: "node:net", allowedIn: [join(SRC, "system", "net.ts")] }
 ];
 
 async function sourceFiles(fs: Fs, dir: string): Promise<string[]> {

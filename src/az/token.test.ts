@@ -8,7 +8,7 @@ const TOKEN = "eyJhbGciOiJSUzI1NiJ9.eyJvaWQiOiJmYWtlIn0.c2ln";
 const deps = (respond: Parameters<typeof createFakeRunner>[0]) => ({
   runner: createFakeRunner(respond),
   env: { PATH: "/usr/bin" },
-  clock: { now: () => FIXED_NOW }
+  clock: { now: () => FIXED_NOW, sleep: async () => undefined }
 });
 
 describe("parseAzToken", () => {

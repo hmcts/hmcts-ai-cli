@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createFakeSeams, exitCodeOf } from "./__fixtures__/fake-seams.js";
-import { main } from "./main.js";
+import { main, sbxMain } from "./main.js";
 
 const HOME = "/home/dev";
 const KEY = "ABSKQmVkcm9jay1mYWtlLWtleS0wMDAwMDAwMDAw";
@@ -24,14 +24,17 @@ describe("main", () => {
 
   it("should report a failure on stderr and exit 1", async () => {
     // Arrange
-    const seams = createFakeSeams({ env: { HOME, HAI_NO_UPDATE: "1" } });
+    const seams = createFakeSeams({
+      env: { HOME, HAI_NO_UPDATE: "1", AWS_BEARER_TOKEN_BEDROCK: KEY, HAI_PORTS: "nonsense" },
+      respond: () => ({ code: 0 })
+    });
 
     // Act
     const err = await main(["node", "hai"], seams).catch((e) => e);
 
     // Assert
     expect(exitCodeOf(err)).toBe(1);
-    expect(seams.lines.join("")).toContain("container mode is not implemented yet");
+    expect(seams.lines.join("")).toContain("HAI_PORTS=nonsense is not cft, minimal, none");
   });
 
   it("should redact a secret that reached an error message", async () => {
@@ -49,6 +52,39 @@ describe("main", () => {
     const said = seams.lines.join("");
     expect(said).not.toContain(KEY);
     expect(said).toContain("[redacted]");
+  });
+
+  it("should hand over to a sandbox from sbxMain", async () => {
+    // Arrange
+    const seams = createFakeSeams({
+      env: { HOME, HAI_NO_UPDATE: "1", AWS_BEARER_TOKEN_BEDROCK: KEY },
+      cwd: "/work",
+      respond: (argv) => {
+        if (argv[0] === "sbx" && argv[1] === "version") {
+          return { code: 0, stdout: JSON.stringify({ client: { version: "v1" }, server: { version: "v1", state: "running" } }) };
+        }
+        return { code: 0, stdout: argv[1] === "rev-parse" ? "/work\n" : "" };
+      }
+    });
+
+    // Act
+    await sbxMain(["node", "sbx-hai", "-c"], seams).catch(() => undefined);
+
+    // Assert
+    expect(seams.runner.interactiveCalls[0]?.argv.slice(0, 2)).toEqual(["sbx", "run"]);
+    expect(seams.runner.interactiveCalls[0]?.argv.slice(-2)).toEqual(["--", "-c"]);
+  });
+
+  it("should report an sbx failure on stderr and exit 1", async () => {
+    // Arrange
+    const seams = createFakeSeams({ env: { HOME, HAI_NO_UPDATE: "1" }, files: { "/.dockerenv": "" } });
+
+    // Act
+    const err = await sbxMain(["node", "sbx-hai"], seams).catch((e) => e);
+
+    // Assert
+    expect(exitCodeOf(err)).toBe(1);
+    expect(seams.lines.join("")).toContain("sbx-hai runs on the host, not inside a container");
   });
 
   it("should report a thrown non-Error too", async () => {

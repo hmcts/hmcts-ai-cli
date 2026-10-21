@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { access, chmod, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 
 export function createFs(): Fs {
   return {
@@ -25,6 +25,14 @@ export function createFs(): Fs {
       if (opts.mode !== undefined) {
         await chmod(path, opts.mode);
       }
+    },
+
+    async rename(from, to) {
+      await rename(from, to);
+    },
+
+    async remove(path) {
+      await rm(path, { force: true, recursive: true });
     },
 
     async exists(path) {
@@ -66,6 +74,9 @@ export interface Fs {
   readText(path: string): Promise<string | null>;
   writeText(path: string, content: string, opts?: { mode?: number }): Promise<void>;
   mkdirp(path: string, opts?: { mode?: number }): Promise<void>;
+  /** Atomic within a filesystem, so a config seeded by writing a temp file next to it is never half-written. */
+  rename(from: string, to: string): Promise<void>;
+  remove(path: string): Promise<void>;
   exists(path: string): Promise<boolean>;
   isWritable(path: string): Promise<boolean>;
   listDir(path: string): Promise<DirEntry[]>;

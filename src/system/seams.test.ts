@@ -11,6 +11,7 @@ describe("createSeams", () => {
     expect(seams.cwd).toBe(process.cwd());
     expect(seams.execPath).toBe(process.execPath);
     expect(seams.scriptPath).toBe(process.argv[1]);
+    expect(seams.pid).toBe(process.pid);
     expect(typeof seams.runner.run).toBe("function");
     expect(typeof seams.fs.readText).toBe("function");
     expect(typeof seams.net.fetch).toBe("function");

@@ -31,7 +31,8 @@
             "paths": {
               "node:child_process": "Spawning processes belongs to the Runner seam: import it from src/system/runner.ts instead.",
               "node:fs": "File access belongs to the Fs seam: import it from src/system/fs.ts instead.",
-              "node:fs/promises": "File access belongs to the Fs seam: import it from src/system/fs.ts instead."
+              "node:fs/promises": "File access belongs to the Fs seam: import it from src/system/fs.ts instead.",
+              "node:net": "Sockets belong to the Net seam: import it from src/system/net.ts instead."
             }
           }
         }
@@ -46,7 +47,7 @@
   },
   "overrides": [
     {
-      "includes": ["src/system/runner.ts", "src/system/fs.ts"],
+      "includes": ["src/system/runner.ts", "src/system/fs.ts", "src/system/net.ts"],
       "linter": {
         "rules": {
           "style": {

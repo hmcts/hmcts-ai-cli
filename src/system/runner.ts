@@ -47,6 +47,23 @@ export function createRunner({ exit = defaultExit }: { exit?: (code: number) => 
       });
     },
 
+    interactive(argv, opts = {}) {
+      return new Promise<number>((resolve, reject) => {
+        const child = spawn(binary(argv), argv.slice(1), {
+          cwd: opts.cwd,
+          env: opts.env,
+          shell: false,
+          stdio: "inherit"
+        });
+        child.on("error", (err: Error) => {
+          reject(err);
+        });
+        child.on("close", (code) => {
+          resolve(code ?? SIGNALLED_CODE);
+        });
+      });
+    },
+
     exec(argv, opts = {}) {
       return new Promise<never>((_resolve, reject) => {
         const child = spawn(binary(argv), argv.slice(1), {
@@ -99,6 +116,12 @@ export interface RunResult {
 
 export interface Runner {
   run(argv: string[], opts?: RunOptions): Promise<RunResult>;
+  /**
+   * Hands the terminal over the same way `exec` does, but comes back with the child's
+   * status instead of leaving: container mode has a container to remove and a lock to
+   * release once the session ends.
+   */
+  interactive(argv: string[], opts?: Pick<RunOptions, "cwd" | "env">): Promise<number>;
   /**
    * Hands the terminal to another process and does not come back: the returned promise
    * only ever rejects, when the process could not be started at all. Node cannot replace

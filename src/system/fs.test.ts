@@ -97,4 +97,36 @@ describe("createFs", () => {
     // Act / Assert
     expect(await fs.listDir(join(root, "not-there"))).toEqual([]);
   });
+
+  it("should rename a file over an existing one, so a seeded config is never half-written", async () => {
+    // Arrange
+    await fs.mkdirp(root);
+    await fs.writeText(join(root, "target.json"), "old");
+    await fs.writeText(join(root, "temp.json"), "new");
+
+    // Act
+    await fs.rename(join(root, "temp.json"), join(root, "target.json"));
+
+    // Assert
+    expect(await fs.readText(join(root, "target.json"))).toBe("new");
+    expect(await fs.exists(join(root, "temp.json"))).toBe(false);
+  });
+
+  it("should report a rename of something that is not there", async () => {
+    // Act / Assert
+    await expect(fs.rename(join(root, "gone"), join(root, "elsewhere"))).rejects.toThrow();
+  });
+
+  it("should remove a file, and say nothing about one that was already gone", async () => {
+    // Arrange
+    await fs.mkdirp(root);
+    await fs.writeText(join(root, "doomed"), "x");
+
+    // Act
+    await fs.remove(join(root, "doomed"));
+    await fs.remove(join(root, "doomed"));
+
+    // Assert
+    expect(await fs.exists(join(root, "doomed"))).toBe(false);
+  });
 });

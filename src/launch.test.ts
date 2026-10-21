@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createFakeHiddenInput, createFakeSeams, exitCodeOf, type FakeSeams } from "./__fixtures__/fake-seams.js";
+import { createFakeHiddenInput, createFakeSeams, exitCodeOf, type FakeSeams, packagedRuntime } from "./__fixtures__/fake-seams.js";
 import { DEFAULT_BEDROCK_GROUP_ID } from "./az/group-membership.js";
 import { launch } from "./launch.js";
 import { packageRoot } from "./update/self-update.js";
@@ -43,12 +43,70 @@ const execEnv = (seams: FakeSeams) => seams.runner.execCalls[0]?.opts.env ?? {};
 
 describe("launch", () => {
   describe("container mode", () => {
-    it("should refuse to run on a bare host, saying container mode is not built yet", async () => {
-      // Arrange
-      const seams = createFakeSeams({ env: { HOME, HAI_NO_UPDATE: "1" } });
+    /** A bare host: no container signals, so hai starts the container itself. */
+    const onHost = (env: Record<string, string> = {}) =>
+      createFakeSeams({
+        env: { HOME, HAI_NO_UPDATE: "1", AWS_BEARER_TOKEN_BEDROCK: KEY, ...env },
+        cwd: "/work",
+        files: packagedRuntime(),
+        respond: (argv) => (argv[0] === "docker" && argv[1] === "inspect" ? { code: 1, stderr: "No such object" } : respond(argv))
+      });
 
-      // Act / Assert
-      await expect(launch({ seams, processArgv: ["node", "hai"] })).rejects.toThrow("container mode is not implemented yet");
+    it("should start a container on a bare host", async () => {
+      // Arrange
+      const seams = onHost();
+
+      // Act
+      const err = await launch({ seams, processArgv: ["node", "hai", "-c"] }).catch((e) => e);
+
+      // Assert
+      expect(exitCodeOf(err)).toBe(0);
+      expect(seams.runner.calls.find((call) => call.argv[1] === "run")?.argv).toContain("hmctsprod.azurecr.io/cft-workspace/devcontainer:latest");
+      expect(seams.runner.interactiveCalls[0]?.argv.slice(-2)).toEqual(["claude", "-c"]);
+      expect(seams.runner.execCalls).toEqual([]);
+    });
+
+    it("should resolve the route on the host and deliver its credential over a docker exec", async () => {
+      // Arrange
+      const seams = onHost();
+
+      // Act
+      await launch({ seams, processArgv: ["node", "hai"] }).catch(() => undefined);
+
+      // Assert
+      expect(seams.runner.calls.find((call) => call.argv.includes("/opt/hai/receive-secret.sh"))?.opts.stdin).toBe(KEY);
+      expect(seams.runner.calls.find((call) => call.argv[1] === "run")?.argv.join(" ")).not.toContain(KEY);
+    });
+
+    it("should print the docker run argv and the exec under HAI_DRY_RUN", async () => {
+      // Arrange
+      const seams = onHost({ HAI_DRY_RUN: "1" });
+
+      // Act
+      const err = await launch({ seams, processArgv: ["node", "hai"] }).catch((e) => e);
+
+      // Assert
+      expect(exitCodeOf(err)).toBe(0);
+      expect(seams.out[0]).toContain("docker run -d --name hai-work-");
+      expect(seams.out[1]).toContain("/opt/hai/entrypoint.sh claude");
+      expect(seams.runner.calls.filter((call) => call.argv[1] === "run")).toEqual([]);
+    });
+
+    it("should take the container path even inside a container under HAI_FORCE_HOST", async () => {
+      // Arrange
+      const seams = createFakeSeams({
+        env: { HOME, HAI_NO_UPDATE: "1", HAI_FORCE_HOST: "1", HAI_VERBOSE: "1", AWS_BEARER_TOKEN_BEDROCK: KEY },
+        cwd: "/work",
+        files: { ...IN_CONTAINER, ...packagedRuntime() },
+        respond: (argv) => (argv[0] === "docker" && argv[1] === "inspect" ? { code: 1, stderr: "No such object" } : respond(argv))
+      });
+
+      // Act
+      await launch({ seams, processArgv: ["node", "hai"] }).catch(() => undefined);
+
+      // Assert
+      expect(seams.lines.join("")).toContain("HAI_FORCE_HOST=1, so hai starts the container itself");
+      expect(seams.runner.calls.some((call) => call.argv[1] === "run")).toBe(true);
     });
 
     it("should say what it found under verbosity", async () => {
@@ -64,13 +122,13 @@ describe("launch", () => {
 
     it("should report finding nothing under verbosity on a bare host", async () => {
       // Arrange
-      const seams = createFakeSeams({ env: { HOME, HAI_NO_UPDATE: "1", HAI_VERBOSE: "1" } });
+      const seams = onHost({ HAI_VERBOSE: "1" });
 
       // Act
       await launch({ seams, processArgv: ["node", "hai"] }).catch(() => undefined);
 
       // Assert
-      expect(seams.lines.join("")).toContain("no container signals");
+      expect(seams.lines.join("")).toContain("no container signals, so hai starts the container itself");
     });
 
     it("should accept HAI_FORCE_CONTAINER on a host with no signals", async () => {

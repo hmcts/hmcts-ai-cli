@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { describeEnv, MASK, redact, redactEnvValue } from "./redact.js";
+import { describeEnv, isSecretEnvKey, MASK, redact, redactEnvValue } from "./redact.js";
 
 // Fake, but the right shape for each thing this CLI handles or logs near.
 const BEDROCK_KEY = "ABSKQmVkcm9jay1mYWtlLWtleS0wMDAwMDAwMDAw";
@@ -91,5 +91,21 @@ describe("describeEnv", () => {
 
     // Assert
     expect(lines).toEqual([`AWS_BEARER_TOKEN_BEDROCK=${MASK}`, "AWS_REGION=eu-west-2", "CLAUDE_CODE_USE_BEDROCK=1"]);
+  });
+});
+
+describe("isSecretEnvKey", () => {
+  it.each<[string, boolean]>([
+    ["AWS_BEARER_TOKEN_BEDROCK", true],
+    ["CLAUDE_CODE_OAUTH_TOKEN", true],
+    ["ANTHROPIC_CUSTOM_HEADERS", true],
+    ["ANTHROPIC_API_KEY", true],
+    ["AGENT_HUB_LAUNCH_TOKEN", true],
+    ["AWS_REGION", false],
+    ["CLAUDE_CODE_USE_BEDROCK", false],
+    ["ANTHROPIC_BEDROCK_BASE_URL", false]
+  ])("should classify %s", (name, expected) => {
+    // Act / Assert
+    expect(isSecretEnvKey(name)).toBe(expected);
   });
 });
