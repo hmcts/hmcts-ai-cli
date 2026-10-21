@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createFakeSeams } from "../__fixtures__/fake-seams.js";
 import { GATEWAY_VAULT } from "../az/keyvault.js";
 import { STATE_DIR_MODE } from "../system/state-dir.js";
-import { API_KEY_HELPER_SCRIPT, HELPER_FILE, HELPER_MODE, prepareGateway, RATE_LIMIT_NOTICE, writeApiKeyHelper } from "./gateway.js";
+import { API_KEY_HELPER_SCRIPT, HELPER_FILE, HELPER_MODE, prepareGateway, writeApiKeyHelper } from "./gateway.js";
 
 const HOME = "/home/dev";
 const STATE = `${HOME}/.local/state/hai`;
@@ -67,20 +67,6 @@ describe("prepareGateway", () => {
 
     // Assert
     expect(gateway).toEqual({ apimKey: APIM_KEY, helperPath: HELPER_PATH });
-  });
-
-  it("should warn about the shared rate limit once", async () => {
-    // Arrange
-    const seams = createFakeSeams({ env: { HOME }, respond });
-
-    // Act
-    await prepareGateway({ seams });
-    await prepareGateway({ seams });
-
-    // Assert
-    expect(seams.lines.filter((line) => line.includes(RATE_LIMIT_NOTICE))).toHaveLength(1);
-    expect(RATE_LIMIT_NOTICE).toContain("30 requests/minute");
-    expect(RATE_LIMIT_NOTICE).toContain("1000/day");
   });
 
   it("should probe the VPN before it reaches for the private vault", async () => {

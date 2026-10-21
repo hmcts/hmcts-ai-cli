@@ -609,7 +609,7 @@ describe("runContainerMode", () => {
       // Assert
       expect(exitCodeOf(err)).toBe(0);
       const argv = argvOf(seams, ["docker", "run"]).join(" ");
-      expect(argv).toContain("-p 3000:3000");
+      expect(argv).toContain("-p 127.0.0.1:3000:3000");
       expect(argv).not.toContain("9200");
       expect(seams.lines.join("")).toContain("not publishing 9200");
     });
@@ -635,7 +635,7 @@ describe("runContainerMode", () => {
 
       // Assert
       const argv = argvOf(seams, ["docker", "run"]).join(" ");
-      expect(argv).toContain("-p 9200:9200");
+      expect(argv).toContain("-p 127.0.0.1:9200:9200");
       expect(argv).not.toContain("3000");
       expect(seams.lines.join("")).toContain("not publishing 3000");
     });
@@ -663,6 +663,49 @@ describe("runContainerMode", () => {
       // Assert
       expect(probed).toHaveLength(20);
       expect(new Set(probed).size).toBe(20);
+    });
+
+    it("should bind every mapping to loopback, and to 0.0.0.0 only with HAI_PORTS_PUBLIC=1", async () => {
+      // Arrange
+      const loopback = seamsIn({ HAI_PORTS: "minimal" });
+      const open = seamsIn({ HAI_PORTS: "minimal", HAI_PORTS_PUBLIC: "1" });
+
+      // Act
+      await runContainerMode(input(loopback)).catch(() => undefined);
+      await runContainerMode(input(open)).catch(() => undefined);
+
+      // Assert
+      expect(argvOf(loopback, ["docker", "run"]).join(" ")).toContain("-p 127.0.0.1:3000:3000 -p 127.0.0.1:3001:3001");
+      expect(argvOf(open, ["docker", "run"]).join(" ")).toContain("-p 3000:3000 -p 3001:3001");
+    });
+
+    it("should sweep a killed session's sidecars before it probes, so a port is not a clash with its own corpse", async () => {
+      // Arrange: hai-...-port-5062 outlived its session and is still holding 5062
+      let held = true;
+      const seams = seamsIn(
+        { HAI_PORTS: "cft" },
+        {},
+        {
+          respond: (argv) => {
+            if (argv[1] === "ps") {
+              return { code: 0, stdout: held ? "stale5062\n" : "" };
+            }
+            if (argv.join(" ") === "docker rm -f stale5062") {
+              held = false;
+              return { code: 0 };
+            }
+            return respond(argv);
+          },
+          net: { fetch: async () => new Response(""), isPortFree: async (port) => !(held && port === 5062) }
+        }
+      );
+
+      // Act
+      await runContainerMode(input(seams)).catch(() => undefined);
+
+      // Assert
+      expect(seams.lines.join("")).not.toContain("not publishing");
+      expect(argvOf(seams, ["docker", "run"]).join(" ")).toContain("-p 127.0.0.1:5062:5062");
     });
 
     it("should name the port and say it was free moments earlier when docker still clashes", async () => {

@@ -4,13 +4,19 @@ import {
   CFT_PORTS,
   chooseFreePorts,
   choosePorts,
+  EPHEMERAL_LOW_FALLBACK,
   expandPorts,
+  LOCAL_PORT_RANGE_PATH,
   MINIMAL_PORTS,
   type PortProbe,
+  parseEphemeralLow,
   portClashMessage,
+  publishArg,
+  readEphemeralLow,
   resolvePorts,
   selectPorts,
-  skippedPortsMessage
+  skippedPortsMessage,
+  splitEphemeral
 } from "./ports.js";
 
 const probes = (free: number[], taken: number[] = []): PortProbe[] => [
@@ -96,6 +102,63 @@ describe("selectPorts", () => {
 
     // Assert
     expect(publish).toEqual([9200, 3001]);
+  });
+});
+
+describe("publishArg", () => {
+  it.each<[string, number, boolean, string]>([
+    ["loopback by default, which is the URL hai reports", 5062, false, "127.0.0.1:5062:5062"],
+    ["0.0.0.0 when HAI_PORTS_PUBLIC asked for it", 5062, true, "5062:5062"]
+  ])("should bind %s", (_name, port, isPublic, expected) => {
+    // Act / Assert
+    expect(publishArg(port, isPublic)).toBe(expected);
+  });
+});
+
+describe("parseEphemeralLow", () => {
+  it.each<[string, string | null, number]>([
+    ["this host's range", "32768\t60999\n", 32768],
+    ["a range a sysctl lowered", "10000 65535\n", 10000],
+    ["a single number, however unlikely", "32768", 32768],
+    ["no such file, as on macOS", null, EPHEMERAL_LOW_FALLBACK],
+    ["an empty file", "", EPHEMERAL_LOW_FALLBACK],
+    ["something that is not a number", "lots of ports\n", EPHEMERAL_LOW_FALLBACK],
+    ["a nonsense zero", "0 65535\n", EPHEMERAL_LOW_FALLBACK]
+  ])("should read %s", (_name, text, expected) => {
+    // Act / Assert
+    expect(parseEphemeralLow(text)).toBe(expected);
+  });
+});
+
+describe("splitEphemeral", () => {
+  it.each<[string, number[], number, number[], number[]]>([
+    ["the whole cft profile, which is well below the range", expandPorts(CFT_PORTS), 32768, expandPorts(CFT_PORTS), []],
+    ["a Testcontainers mapping", [5062, 41235], 32768, [5062], [41235]],
+    ["the bound itself, which is the kernel's", [32768], 32768, [], [32768]],
+    ["the port below it", [32767], 32768, [32767], []],
+    ["a host whose range starts lower", [15000, 9200], 10000, [9200], [15000]],
+    ["no candidates at all", [], 32768, [], []]
+  ])("should split %s", (_name, candidates, low, keep, ephemeral) => {
+    // Act / Assert
+    expect(splitEphemeral(candidates, low)).toEqual({ keep, ephemeral });
+  });
+});
+
+describe("readEphemeralLow", () => {
+  it("should read the host's range from behind the Fs seam", async () => {
+    // Arrange
+    const seams = createFakeSeams({ files: { [LOCAL_PORT_RANGE_PATH]: "32768\t60999\n" } });
+
+    // Act / Assert
+    expect(await readEphemeralLow(seams)).toBe(32768);
+  });
+
+  it("should fall back on a platform that has no such file", async () => {
+    // Arrange
+    const seams = createFakeSeams();
+
+    // Act / Assert
+    expect(await readEphemeralLow(seams)).toBe(EPHEMERAL_LOW_FALLBACK);
   });
 });
 
@@ -232,6 +295,18 @@ describe("choosePorts", () => {
     // Assert
     expect(published).toEqual([3000, 4451, 4452, 4454, 4455, 4456]);
     expect(seams.lines.join("")).toContain("not publishing 4453");
+  });
+
+  it("should leave an explicit port in the host's ephemeral range unpublished, and say why", async () => {
+    // Arrange
+    const seams = createFakeSeams({ files: { [LOCAL_PORT_RANGE_PATH]: "32768\t60999\n" } });
+
+    // Act
+    const published = await choosePorts(seams, "3000,40000");
+
+    // Assert
+    expect(published).toEqual([3000]);
+    expect(seams.lines.join("")).toContain("not publishing 40000: at or above 32768");
   });
 
   it("should fail on a mistyped profile before probing anything", async () => {

@@ -105,7 +105,7 @@ table-testable:
 | `buildDockerArgs(ctx)` | `gatherContext` in `src/container/run.ts` |
 | `selectDnsServers`, `parseResolvectl`, `parseNetif`, `parseNmcli` | `discoverDns` |
 | `parseDevcontainer`, `defaultSpec`, `resolveMounts`, `hostPrepPaths` | `readSpec`, `prepareHost` |
-| `resolvePorts`, `expandPorts`, `selectPorts`, `portClashMessage` | `choosePorts`, `chooseFreePorts` |
+| `resolvePorts`, `expandPorts`, `selectPorts`, `portClashMessage`, `publishArg`, `parseEphemeralLow`, `splitEphemeral` | `choosePorts`, `chooseFreePorts`, `readEphemeralLow` |
 | `parseProcNet`, `addressKind`, `listeners`, `createDebounce` | the tick in `createPortPublisher` |
 | `pendingPorts`, `buildSidecarArgs`, `sweepIds`, `describePortEntry` | `startPortWatch`, `sweepSidecars` |
 | `sessionName`, `projectSlug` | — |
@@ -189,12 +189,32 @@ Other things that are the way they are for a reason:
   is unreachable from the Mac. Every sidecar carries `hai.session=<name>`, and that label is
   swept with `docker rm -f` both before a container is created and after its session ends,
   because a sidecar outliving its session holds a host port whose server is already gone.
+  **The pre-create sweep runs before `choosePorts` probes the host**, not after: a SIGKILLed
+  session's sidecar is holding one of the numbers about to be probed, so probing first reports
+  a create-time clash against hai's own corpse and drops a mapping the engineer asked for. A
+  session that is still up owns its sidecars, so a reattach sweeps nothing.
+- **Published ports bind `127.0.0.1`, not `0.0.0.0`.** Docker's iptables chain bypasses the
+  host firewall, so a published port answers anyone on the network whatever ufw says — and
+  `describePortEntry` reports `http://localhost:<port>`, which says loopback. Publishing is
+  automatic now, so the binding matches the URL; `HAI_PORTS_PUBLIC=1` restores `0.0.0.0` for a
+  session that has to be reached from another device. cftlib publishes 3000, 6432, 5062 and
+  9200 on `0.0.0.0` itself, so for those this changes nothing; what it covers is the ports
+  nobody chose.
+- **The host's ephemeral range is never published.** Testcontainers publishes each container
+  to a random host port, which is a docker-proxy LISTEN in the session's namespace like any
+  other, so a `./gradlew integration` run would otherwise leave a sidecar and a held host port
+  per mapping for the rest of the session — each *accepting* connections and failing against a
+  dead target. `readEphemeralLow` reads `/proc/sys/net/ipv4/ip_local_port_range` and any
+  candidate at or above its low bound is dropped, falling back to 32768 where the file is
+  absent. Every port a CFT stack listens on is well below it.
 - **The watcher prints nothing.** Claude Code's TUI owns the terminal from the moment the
   session starts, so every decision goes to `<state>/ports/<session>.log` and the ports with
   what became of each to `<state>/ports/<session>.ports.json` — and to
   `/tmp/hai-ports.json` inside the session, which is how the agent in there discovers the
-  URLs its own servers answer at. The only thing said on the terminal is what stopped the
-  watch from starting at all, which is said before the handover.
+  URLs its own servers answer at. The state is emptied as the watch starts, the session name
+  being stable per repo: a session that publishes nothing must not leave the last one's URLs
+  in place with a fresh timestamp over them. The only thing said on the terminal is what
+  stopped the watch from starting at all, which is said before the handover.
 - **A port is decided once, and a clash is skipped, never remapped.** cftlib's IDAM
   simulator issues and validates tokens on a fixed port, so a port moved to another number
   breaks XUI's sign-in redirect. Both the create-time list and the watcher go through

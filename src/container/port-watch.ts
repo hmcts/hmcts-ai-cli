@@ -7,7 +7,7 @@ import type { Net } from "../system/net.js";
 import type { Runner } from "../system/runner.js";
 import { STATE_DIR_MODE, STATE_FILE_MODE, statePath } from "../system/state-dir.js";
 import { DOCKER_BIN } from "./docker-args.js";
-import { chooseFreePorts } from "./ports.js";
+import { chooseFreePorts, ephemeralPortsMessage, publishArg, readEphemeralLow } from "./ports.js";
 import { createDebounce, listeners, parseProcNet } from "./proc-net.js";
 
 /**
@@ -39,7 +39,7 @@ export function sidecarName(session: string, port: number): string {
  * the Mac. A sidecar is a container with a real `-p`, so Docker Desktop forwards it like
  * any other.
  */
-export function buildSidecarArgs(input: { sessionName: string; network: string; port: number }): string[] {
+export function buildSidecarArgs(input: { sessionName: string; network: string; port: number; publicPorts: boolean }): string[] {
   return [
     DOCKER_BIN,
     "run",
@@ -50,7 +50,7 @@ export function buildSidecarArgs(input: { sessionName: string; network: string; 
     "--network",
     input.network,
     "-p",
-    `${input.port}:${input.port}`,
+    publishArg(input.port, input.publicPorts),
     "--label",
     `${SESSION_LABEL}=${input.sessionName}`,
     SOCAT_IMAGE,
@@ -93,14 +93,18 @@ export function portsStatePath(env: Env, sessionName: string): string {
 /**
  * Which of the ports now listening still need a decision. A port is decided once and never
  * revisited: a host number another process holds is reported once rather than every tick,
- * and a port already published at create time was decided by `choosePorts`.
+ * and a port already published at create time was decided by `choosePorts`. One in the
+ * host's ephemeral range is nothing to hold, which is what bounds the sidecars.
  */
-export function pendingPorts(input: { open: number[]; local: number[]; decided: number[]; noted: number[] }): PendingPorts {
+export function pendingPorts(input: { open: number[]; local: number[]; decided: number[]; noted: number[]; ephemeralLow: number }): PendingPorts {
   const decided = new Set(input.decided);
   const noted = new Set(input.noted);
+  const undecided = (port: number) => !decided.has(port);
+  const wanted = (port: number) => undecided(port) && port < input.ephemeralLow;
   return {
-    publish: input.open.filter((port) => !decided.has(port)),
-    loopback: input.local.filter((port) => !decided.has(port) && !noted.has(port))
+    publish: input.open.filter(wanted),
+    loopback: input.local.filter((port) => wanted(port) && !noted.has(port)),
+    ephemeral: [...input.open, ...input.local].filter((port) => undecided(port) && port >= input.ephemeralLow)
   };
 }
 
@@ -113,7 +117,8 @@ export function describePortEntry(entry: PortEntry): string {
     case "loopback-only":
       return `skipped ${entry.port}: it listens on 127.0.0.1 inside the session, which nothing outside can reach. Bind it to 0.0.0.0 to have it published.`;
     default:
-      return `could not publish ${entry.port}: ${entry.detail}`;
+      // The sidecar's `docker run` hitting the runner's timeout says nothing at all.
+      return `could not publish ${entry.port}: ${firstLine(entry.detail ?? "")}`;
   }
 }
 
@@ -166,25 +171,33 @@ export async function sweepSidecars(deps: { runner: Runner; logger: Logger }, se
 export function createPortRecord(deps: { fs: Fs; runner: Runner; clock: Clock; env: Env; logger: Logger }, ctx: SessionRef): PortRecord {
   const path = portsStatePath(deps.env, ctx.sessionName);
   const entries = new Map<number, PortEntry>();
+
+  async function write(): Promise<void> {
+    const body = `${JSON.stringify(
+      { session: ctx.sessionName, updated: stamp(deps.clock), ports: [...entries.values()].sort((a, b) => a.port - b.port) },
+      null,
+      2
+    )}\n`;
+    try {
+      await deps.fs.writeText(path, body, { mode: STATE_FILE_MODE });
+    } catch (err) {
+      deps.logger.say(`could not write ${path}: ${(err as Error).message}`);
+    }
+    const written = await deps.runner.run(buildWriteStateArgs(ctx), { stdin: body });
+    if (written.code !== 0) {
+      deps.logger.say(`could not write ${IN_SESSION_PORTS_FILE} inside the session: ${written.stderr.trim()}`);
+    }
+  }
+
   return {
     path,
+    // The session name is stable per repo, so without this a session that publishes nothing
+    // leaves the last one's URLs in the state dir, advertised as current.
+    reset: write,
     async note(entry) {
       entries.set(entry.port, { ...entry, at: stamp(deps.clock) });
       deps.logger.say(describePortEntry(entry));
-      const body = `${JSON.stringify(
-        { session: ctx.sessionName, updated: stamp(deps.clock), ports: [...entries.values()].sort((a, b) => a.port - b.port) },
-        null,
-        2
-      )}\n`;
-      try {
-        await deps.fs.writeText(path, body, { mode: STATE_FILE_MODE });
-      } catch (err) {
-        deps.logger.say(`could not write ${path}: ${(err as Error).message}`);
-      }
-      const written = await deps.runner.run(buildWriteStateArgs(ctx), { stdin: body });
-      if (written.code !== 0) {
-        deps.logger.say(`could not write ${IN_SESSION_PORTS_FILE} inside the session: ${written.stderr.trim()}`);
-      }
+      await write();
     }
   };
 }
@@ -196,8 +209,8 @@ export function createPortRecord(deps: { fs: Fs; runner: Runner; clock: Clock; e
  */
 export function createPortPublisher(
   deps: { runner: Runner; net: Net; logger: Logger },
-  ctx: SessionRef & { network: string },
-  input: { record: PortRecord; published: number[] }
+  ctx: PublishRef,
+  input: { record: PortRecord; published: number[]; ephemeralLow: number }
 ): () => Promise<TickResult> {
   const settleOpen = createDebounce();
   const settleLocal = createDebounce();
@@ -215,7 +228,14 @@ export function createPortPublisher(
     const found = listeners(sockets);
     const open = settleOpen(found.open);
     const local = settleLocal(found.local).filter((port) => !open.includes(port));
-    const pending = pendingPorts({ open, local, decided: [...decided], noted: [...noted] });
+    const pending = pendingPorts({ open, local, decided: [...decided], noted: [...noted], ephemeralLow: input.ephemeralLow });
+
+    if (pending.ephemeral.length > 0) {
+      for (const port of pending.ephemeral) {
+        decided.add(port);
+      }
+      deps.logger.verbose(ephemeralPortsMessage(pending.ephemeral, input.ephemeralLow));
+    }
 
     for (const port of pending.loopback) {
       noted.add(port);
@@ -233,7 +253,7 @@ export function createPortPublisher(
         await input.record.note({ port, state: "skipped-host-port-in-use" });
         continue;
       }
-      const started = await deps.runner.run(buildSidecarArgs({ sessionName: ctx.sessionName, network: ctx.network, port }));
+      const started = await deps.runner.run(buildSidecarArgs({ sessionName: ctx.sessionName, network: ctx.network, port, publicPorts: ctx.publicPorts }));
       await input.record.note(
         started.code === 0 ? { port, state: "published", url: `http://localhost:${port}` } : { port, state: "sidecar-failed", detail: started.stderr.trim() }
       );
@@ -250,7 +270,7 @@ export function createPortPublisher(
  */
 export async function startPortWatch(
   deps: { runner: Runner; fs: Fs; net: Net; clock: Clock; env: Env; logger: Logger },
-  ctx: SessionRef & { network: string },
+  ctx: PublishRef,
   input: { published: number[] }
 ): Promise<PortWatch> {
   const idle: PortWatch = { stop: async () => undefined };
@@ -275,12 +295,17 @@ export async function startPortWatch(
 
 async function beginWatch(
   deps: { runner: Runner; fs: Fs; net: Net; clock: Clock; env: Env; logger: Logger },
-  ctx: SessionRef & { network: string },
+  ctx: PublishRef,
   input: { published: number[] }
 ): Promise<PortWatch> {
   const log = await createWatchLog(deps, ctx.sessionName);
   const record = createPortRecord({ ...deps, logger: log.logger }, ctx);
-  const tick = createPortPublisher({ runner: deps.runner, net: deps.net, logger: log.logger }, ctx, { record, published: input.published });
+  await record.reset();
+  const tick = createPortPublisher({ runner: deps.runner, net: deps.net, logger: log.logger }, ctx, {
+    record,
+    published: input.published,
+    ephemeralLow: await readEphemeralLow(deps)
+  });
 
   let stopping = false;
   let wake: (() => void) | null = null;
@@ -348,10 +373,14 @@ export interface PortEntry {
 export interface PendingPorts {
   publish: number[];
   loopback: number[];
+  /** In the host's ephemeral range: decided, so they are not revisited, and left unpublished. */
+  ephemeral: number[];
 }
 
 export interface PortRecord {
   path: string;
+  /** The state as this session starts: empty, so the last session's URLs stop being advertised. */
+  reset(): Promise<void>;
   note(entry: PortEntry): Promise<void>;
 }
 
@@ -363,4 +392,10 @@ export interface PortWatch {
 export interface SessionRef {
   sessionName: string;
   containerUser: string;
+}
+
+export interface PublishRef extends SessionRef {
+  network: string;
+  /** 0.0.0.0 rather than loopback for each sidecar's mapping, which HAI_PORTS_PUBLIC=1 asks for. */
+  publicPorts: boolean;
 }

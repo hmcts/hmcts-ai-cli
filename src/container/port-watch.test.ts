@@ -27,7 +27,10 @@ import {
 
 const HOME = "/home/linus";
 const SESSION = "hai-hmcts-7293fcec";
-const CTX = { sessionName: SESSION, containerUser: "hmcts", network: "hai" };
+const CTX = { sessionName: SESSION, containerUser: "hmcts", network: "hai", publicPorts: false };
+
+/** Linux's default low bound, which is what a host that publishes no range is read as. */
+const EPHEMERAL_LOW = 32768;
 const PORTS_DIR = `${HOME}/.local/state/hai/ports`;
 const STATE_FILE = `${PORTS_DIR}/${SESSION}.ports.json`;
 const LOG_FILE = `${PORTS_DIR}/${SESSION}.log`;
@@ -50,9 +53,9 @@ const respondWith =
 
 const seamsIn = (over: Partial<Parameters<typeof createFakeSeams>[0]> = {}) => createFakeSeams({ env: { HOME }, ...over });
 
-const publisherIn = (seams: FakeSeams, published: number[] = []) => {
-  const record = createPortRecord(seams, CTX);
-  return createPortPublisher(seams, CTX, { record, published });
+const publisherIn = (seams: FakeSeams, published: number[] = [], ctx = CTX) => {
+  const record = createPortRecord(seams, ctx);
+  return createPortPublisher(seams, ctx, { record, published, ephemeralLow: EPHEMERAL_LOW });
 };
 
 const stateOf = (seams: FakeSeams): { ports: PortEntry[] } => JSON.parse(seams.fs.store.get(STATE_FILE) ?? '{"ports":[]}');
@@ -74,25 +77,30 @@ describe("sidecarName", () => {
 });
 
 describe("buildSidecarArgs", () => {
-  it("should build the whole socat argv", () => {
-    // Act
-    const argv = buildSidecarArgs({ sessionName: SESSION, network: "hai", port: 8111 });
+  const sidecar = (publicPorts = false) => buildSidecarArgs({ sessionName: SESSION, network: "hai", port: 8111, publicPorts }).join(" ");
 
-    // Assert
-    expect(argv.join(" ")).toMatchInlineSnapshot(
-      `"docker run -d --rm --name hai-hmcts-7293fcec-port-8111 --network hai -p 8111:8111 --label hai.session=hai-hmcts-7293fcec alpine/socat TCP-LISTEN:8111,fork,reuseaddr TCP:hai-hmcts-7293fcec:8111"`
+  it("should build the whole socat argv", () => {
+    // Act / Assert
+    expect(sidecar()).toMatchInlineSnapshot(
+      `"docker run -d --rm --name hai-hmcts-7293fcec-port-8111 --network hai -p 127.0.0.1:8111:8111 --label hai.session=hai-hmcts-7293fcec alpine/socat TCP-LISTEN:8111,fork,reuseaddr TCP:hai-hmcts-7293fcec:8111"`
     );
   });
 
   it.each<[string, string]>([
-    ["the host mapping at the same number, never a different one", "-p 8111:8111"],
+    ["the host mapping at the same number, never a different one", "-p 127.0.0.1:8111:8111"],
     ["the session's own network, so container-name DNS resolves", "--network hai"],
     ["the label the sweep matches on", `--label ${SESSION_LABEL}=${SESSION}`],
     ["a forward to the session by name", `TCP:${SESSION}:8111`],
     ["--rm, so a sidecar whose socat dies leaves nothing behind", "--rm"]
   ])("should carry %s", (_name, expected) => {
     // Act / Assert
-    expect(buildSidecarArgs({ sessionName: SESSION, network: "hai", port: 8111 }).join(" ")).toContain(expected);
+    expect(sidecar()).toContain(expected);
+  });
+
+  it("should bind to 0.0.0.0 only when HAI_PORTS_PUBLIC asked for it", () => {
+    // Act / Assert
+    expect(sidecar(true)).toContain("-p 8111:8111");
+    expect(sidecar(true)).not.toContain("127.0.0.1");
   });
 });
 
@@ -142,17 +150,32 @@ describe("the state paths", () => {
 });
 
 describe("pendingPorts", () => {
-  it.each<[string, Parameters<typeof pendingPorts>[0], number[], number[]]>([
-    ["a port that has just appeared", { open: [8111], local: [], decided: [], noted: [] }, [8111], []],
-    ["a port decided on an earlier tick", { open: [8111], local: [], decided: [8111], noted: [] }, [], []],
-    ["a port already published at create time", { open: [3000, 8111], local: [], decided: [3000], noted: [] }, [8111], []],
-    ["a loopback-only listener", { open: [], local: [9876], decided: [], noted: [] }, [], [9876]],
-    ["a loopback-only listener already reported", { open: [], local: [9876], decided: [], noted: [9876] }, [], []],
-    ["a loopback-only listener on a port that was published", { open: [], local: [8111], decided: [8111], noted: [] }, [], []],
-    ["nothing listening", { open: [], local: [], decided: [8111], noted: [9876] }, [], []]
-  ])("should decide %s", (_name, input, publish, loopback) => {
+  const over = (input: Partial<Parameters<typeof pendingPorts>[0]>): Parameters<typeof pendingPorts>[0] => ({
+    open: [],
+    local: [],
+    decided: [],
+    noted: [],
+    ephemeralLow: EPHEMERAL_LOW,
+    ...input
+  });
+
+  it.each<[string, Parameters<typeof pendingPorts>[0], number[], number[], number[]]>([
+    ["a port that has just appeared", over({ open: [8111] }), [8111], [], []],
+    ["a port decided on an earlier tick", over({ open: [8111], decided: [8111] }), [], [], []],
+    ["a port already published at create time", over({ open: [3000, 8111], decided: [3000] }), [8111], [], []],
+    ["a loopback-only listener", over({ local: [9876] }), [], [9876], []],
+    ["a loopback-only listener already reported", over({ local: [9876], noted: [9876] }), [], [], []],
+    ["a loopback-only listener on a port that was published", over({ local: [8111], decided: [8111] }), [], [], []],
+    ["nothing listening", over({ decided: [8111], noted: [9876] }), [], [], []],
+    ["a Testcontainers mapping in the ephemeral range", over({ open: [41235] }), [], [], [41235]],
+    ["the lowest ephemeral port, the bound being inclusive", over({ open: [32768] }), [], [], [32768]],
+    ["the port just below the bound", over({ open: [32767] }), [32767], [], []],
+    ["an ephemeral port already decided", over({ open: [41235], decided: [41235] }), [], [], []],
+    ["a loopback-only ephemeral listener, whose 0.0.0.0 hint would be wrong", over({ local: [41235] }), [], [], [41235]],
+    ["a host whose ephemeral range starts lower", over({ open: [15000], ephemeralLow: 10000 }), [], [], [15000]]
+  ])("should decide %s", (_name, input, publish, loopback, ephemeral) => {
     // Act / Assert
-    expect(pendingPorts(input)).toEqual({ publish, loopback });
+    expect(pendingPorts(input)).toEqual({ publish, loopback, ephemeral });
   });
 });
 
@@ -169,6 +192,12 @@ describe("describePortEntry", () => {
       "a sidecar that would not start, with the reason",
       { port: 8111, state: "sidecar-failed", detail: "no such image" },
       "could not publish 8111: no such image"
+    ],
+    ["a sidecar whose docker run timed out, which says nothing at all", { port: 8111, state: "sidecar-failed" }, "could not publish 8111: no reason given"],
+    [
+      "a sidecar failure the daemon wrote several lines about",
+      { port: 8111, state: "sidecar-failed", detail: "docker: no such image\nSee 'docker run --help'\n" },
+      "could not publish 8111: docker: no such image"
     ]
   ])("should describe %s", (_name, entry, expected) => {
     // Act
@@ -286,6 +315,19 @@ describe("createPortRecord", () => {
     expect(stateOf(seams).ports).toEqual([{ port: 8111, state: "published", url: "http://localhost:8111", at: "2026-10-21T09:00:00.000Z" }]);
     const inside = seams.runner.calls.find((call) => call.argv.includes(`cat > ${IN_SESSION_PORTS_FILE}`));
     expect(inside?.opts.stdin).toContain('"port": 8111');
+  });
+
+  it("should write an empty state on reset, so a previous session's URLs stop being advertised", async () => {
+    // Arrange
+    const seams = seamsIn({ files: { [STATE_FILE]: '{"ports":[{"port":5062,"state":"published"}]}' }, respond: () => ({ code: 0 }) });
+    const record = createPortRecord(seams, CTX);
+
+    // Act
+    await record.reset();
+
+    // Assert
+    expect(JSON.parse(seams.fs.store.get(STATE_FILE)!)).toEqual({ session: SESSION, updated: "2026-10-21T09:00:00.000Z", ports: [] });
+    expect(seams.lines).toEqual([]);
   });
 
   it("should keep every port decided so far, in port order", async () => {
@@ -436,6 +478,40 @@ describe("createPortPublisher", () => {
     ]);
   });
 
+  it("should bind a sidecar to loopback, unless the session asked for public ports", async () => {
+    // Arrange
+    const loopback = seamsIn({ respond: respondWith(OPEN_8111) });
+    const open = seamsIn({ respond: respondWith(OPEN_8111) });
+
+    // Act
+    for (const tick of [publisherIn(loopback), publisherIn(open, [], { ...CTX, publicPorts: true })]) {
+      await tick();
+      await tick();
+    }
+
+    // Assert
+    expect(loopback.runner.calls.some((call) => call.argv.join(" ").includes("-p 127.0.0.1:8111:8111"))).toBe(true);
+    expect(open.runner.calls.some((call) => call.argv.join(" ").includes("-p 8111:8111"))).toBe(true);
+  });
+
+  it("should leave an ephemeral-range listener alone, so Testcontainers cannot accumulate sidecars", async () => {
+    // Arrange: one docker-proxy mapping per inner container, each on a random high port
+    const churn = table(row("00000000", 41235), row("00000000", 41236));
+    const seams = seamsIn({ env: { HOME, HAI_VERBOSE: "1" }, respond: respondWith(churn) });
+    const tick = publisherIn(seams);
+
+    // Act
+    await tick();
+    await tick();
+    await tick();
+
+    // Assert
+    expect(seams.runner.calls.some((call) => call.argv.includes("alpine/socat"))).toBe(false);
+    expect(stateOf(seams).ports).toEqual([]);
+    expect(seams.lines.filter((line) => line.includes("41235"))).toHaveLength(1);
+    expect(seams.lines.join("")).toContain("not publishing 41235, 41236: at or above 32768");
+  });
+
   it("should publish a port a nested container is forwarding, which is the cftlib case", async () => {
     // Arrange: docker-proxy inside the session listens on 0.0.0.0 for each inner -p
     const nested = table(row("00000000", 5062), row("00000000", 4452), row("0100007F", 9876));
@@ -473,6 +549,22 @@ describe("startPortWatch", () => {
     expect(seams.lines).toEqual([]);
     expect(seams.fs.store.get(LOG_FILE)).toContain("published 8111 -> http://localhost:8111");
     expect(seams.fs.dirs.has(PORTS_DIR)).toBe(true);
+  });
+
+  it("should empty the state as it starts, a session that publishes nothing leaving no stale URLs", async () => {
+    // Arrange: the previous session for this repo published 5062, and this one listens on nothing
+    const seams = seamsIn({
+      files: { [STATE_FILE]: '{"ports":[{"port":5062,"state":"published","url":"http://localhost:5062"}]}' },
+      respond: respondWith(table())
+    });
+
+    // Act
+    const watch = await startPortWatch(seams, CTX, { published: [] });
+    await watch.stop();
+
+    // Assert
+    expect(stateOf(seams).ports).toEqual([]);
+    expect(seams.lines).toEqual([]);
   });
 
   it("should stop reading the session once the session has ended", async () => {

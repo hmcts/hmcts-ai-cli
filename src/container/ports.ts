@@ -1,4 +1,5 @@
 import type { Logger } from "../log/logger.js";
+import type { Fs } from "../system/fs.js";
 import type { Net } from "../system/net.js";
 
 /** The ports a CFT stack actually listens on: cftlib, XUI, CCD, IDAM, Postgres, Redis, Elasticsearch. */
@@ -11,6 +12,15 @@ export const PORT_PROFILES: Record<string, string[]> = { cft: CFT_PORTS, minimal
 
 const PORT_SPEC = /^\d{1,5}(-\d{1,5})?$/;
 const MAX_PORT = 65535;
+
+/** Where the kernel publishes the range it hands out as source ports. Linux only. */
+export const LOCAL_PORT_RANGE_PATH = "/proc/sys/net/ipv4/ip_local_port_range";
+
+/** Linux's own default, for a host that does not publish the range. */
+export const EPHEMERAL_LOW_FALLBACK = 32768;
+
+/** Loopback, which is what `describePortEntry` reports and so what a mapping should bind. */
+const LOOPBACK_ADDRESS = "127.0.0.1";
 
 const ALLOCATED = /port is already allocated/i;
 const BIND_FAILURE = /Bind for \S*?:(\d{1,5}) failed/i;
@@ -75,6 +85,41 @@ export function selectPorts(probed: PortProbe[]): PortSelection {
   return { publish, skipped };
 }
 
+/**
+ * Docker's iptables chain bypasses the host firewall, so a published port answers anyone on
+ * the network whatever ufw says, while the URL hai reports is `localhost`. The ports cftlib
+ * publishes itself were already on 0.0.0.0; what is new is hai doing it for every port a
+ * session turns out to listen on, so the default is loopback and HAI_PORTS_PUBLIC=1 opts out.
+ */
+export function publishArg(port: number, isPublic: boolean): string {
+  return isPublic ? `${port}:${port}` : `${LOOPBACK_ADDRESS}:${port}:${port}`;
+}
+
+/** The low bound of the host's ephemeral range, from `ip_local_port_range`'s two numbers. */
+export function parseEphemeralLow(text: string | null): number {
+  const low = Number(text?.trim().split(/\s+/)[0]);
+  return Number.isInteger(low) && low > 0 ? low : EPHEMERAL_LOW_FALLBACK;
+}
+
+/**
+ * A candidate at or above the ephemeral low bound is the kernel's to hand out, and
+ * Testcontainers publishes every container to one — so holding it would mean a sidecar per
+ * inner container for the rest of the session, each answering and failing against a dead
+ * target. Every port a CFT stack listens on is well below it.
+ */
+export function splitEphemeral(candidates: number[], low: number): { keep: number[]; ephemeral: number[] } {
+  return { keep: candidates.filter((port) => port < low), ephemeral: candidates.filter((port) => port >= low) };
+}
+
+export function ephemeralPortsMessage(ephemeral: number[], low: number): string {
+  return `not publishing ${ephemeral.join(", ")}: at or above ${low}, where the host hands out ephemeral source ports, so holding the number would break whatever wanted it next.`;
+}
+
+/** Read once per launch and once per watch; a platform without the file gets the fallback. */
+export async function readEphemeralLow(deps: { fs: Fs }): Promise<number> {
+  return parseEphemeralLow(await deps.fs.readText(LOCAL_PORT_RANGE_PATH));
+}
+
 export function skippedPortsMessage(skipped: number[]): string {
   return `not publishing ${skipped.join(", ")}: already in use on this host, so nothing in the session will answer on those numbers. A clashing port is skipped rather than moved to another number, because a moved port breaks the XUI to IDAM OAuth redirect.`;
 }
@@ -111,9 +156,15 @@ export async function chooseFreePorts(deps: { net: Net; logger: Logger }, candid
   return publish;
 }
 
-/** The create-time list: the profile `HAI_PORTS` asks for, probed once. */
-export async function choosePorts(deps: { net: Net; logger: Logger }, spec: string | undefined): Promise<number[]> {
-  return await chooseFreePorts(deps, expandPorts(resolvePorts(spec)));
+/** The create-time list: the profile `HAI_PORTS` asks for, minus the ephemeral range, probed once. */
+export async function choosePorts(deps: { net: Net; logger: Logger; fs: Fs }, spec: string | undefined): Promise<number[]> {
+  const candidates = expandPorts(resolvePorts(spec));
+  const low = await readEphemeralLow(deps);
+  const { keep, ephemeral } = splitEphemeral(candidates, low);
+  if (ephemeral.length > 0) {
+    deps.logger.say(ephemeralPortsMessage(ephemeral, low));
+  }
+  return await chooseFreePorts(deps, keep);
 }
 
 function inRange(entry: string): boolean {

@@ -5,6 +5,7 @@ import { buildSettings, materialiseSettings } from "../claude/settings.js";
 import { extractUserSettings, mergeSettings, readUserSettings } from "../claude/user-settings.js";
 import { describeEnv } from "../log/redact.js";
 import { isEnabled } from "../system/env.js";
+import type { RunResult } from "../system/runner.js";
 import type { Seams } from "../system/seams.js";
 import { acrPullToken, dockerConfigJson, pullImage } from "./acr.js";
 import { seedClaudeJson } from "./claude-json.js";
@@ -106,13 +107,20 @@ async function gatherContext(input: { seams: Seams; added: Record<string, string
   if (home === undefined || home === "") {
     throw new Error("HOME is not set, so there is no way to work out what to mount into the container");
   }
+  const repoPath = await gitToplevel(seams);
+  const session = sessionName({ repoPath, requested: seams.env.HAI_SESSION });
+  seams.logger.verbose(`container session ${session} for ${repoPath}`);
+
+  // Before the probe, not after: a sidecar a SIGKILLed session left behind is holding one of
+  // the very ports about to be probed, and probing first reports it as a clash with its own
+  // corpse. A session that is up owns its sidecars, so that one is reattached to untouched.
+  if (!(await sessionRunning(seams, session))) {
+    await sweepSidecars(seams, session);
+  }
   // Up front, so a mistyped HAI_PORTS fails before anything has been prepared, and so one
   // port another process already holds costs its own mapping rather than the whole launch:
   // `docker run` publishes all or nothing.
   const ports = await choosePorts(seams, seams.env.HAI_PORTS);
-  const repoPath = await gitToplevel(seams);
-  const session = sessionName({ repoPath, requested: seams.env.HAI_SESSION });
-  seams.logger.verbose(`container session ${session} for ${repoPath}`);
 
   const spec = await readSpec(seams, { repoPath, home });
   const containerHome = `/home/${spec.containerUser}`;
@@ -149,6 +157,7 @@ async function gatherContext(input: { seams: Seams; added: Record<string, string
     runtimeDir,
     dns: dns.servers,
     ports,
+    publicPorts: isEnabled(seams.env, "HAI_PORTS_PUBLIC"),
     mounts,
     tty: seams.hiddenInput.isTty,
     env: {
@@ -217,9 +226,18 @@ async function ensureNetwork(seams: Seams, network: string): Promise<void> {
   }
 }
 
+function inspectRunning(seams: Seams, sessionName: string): Promise<RunResult> {
+  return seams.runner.run([DOCKER_BIN, "inspect", "-f", "{{.State.Running}}", sessionName]);
+}
+
+async function sessionRunning(seams: Seams, sessionName: string): Promise<boolean> {
+  const existing = await inspectRunning(seams, sessionName);
+  return existing.code === 0 && existing.stdout.trim() === "true";
+}
+
 /** True when this run started the container, which is the only case that may remove it. */
 async function ensureContainer(seams: Seams, ctx: ContainerContext, dockerArgv: string[]): Promise<boolean> {
-  const existing = await seams.runner.run([DOCKER_BIN, "inspect", "-f", "{{.State.Running}}", ctx.sessionName]);
+  const existing = await inspectRunning(seams, ctx.sessionName);
   if (existing.code === 0 && existing.stdout.trim() === "true") {
     seams.logger.verbose(`${ctx.sessionName} is already up, so this session reattaches to it`);
     return false;
@@ -227,9 +245,6 @@ async function ensureContainer(seams: Seams, ctx: ContainerContext, dockerArgv: 
   if (existing.code === 0) {
     await seams.runner.run([DOCKER_BIN, "rm", "-f", ctx.sessionName], { timeoutMs: START_TIMEOUT_MS });
   }
-  // A sidecar a killed session left behind holds a host port that this one may need, and
-  // the server it forwarded to died with that session.
-  await sweepSidecars(seams, ctx.sessionName);
   const created = await seams.runner.run(dockerArgv, { timeoutMs: START_TIMEOUT_MS });
   if (created.code !== 0) {
     const clash = portClashMessage({ stderr: created.stderr, published: ctx.ports });

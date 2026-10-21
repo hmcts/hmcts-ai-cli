@@ -39,6 +39,7 @@ function context(overrides: Partial<ContainerContext> = {}): ContainerContext {
     runtimeDir: `${HOME}/.local/state/hai/runtime`,
     dns: ["10.11.75.4", "168.63.129.16", "8.8.8.8"],
     ports: expandPorts(resolvePorts("minimal")),
+    publicPorts: false,
     mounts: resolveMounts({ spec, shareCaches: false, ownHistory: false, sessionName: SESSION, containerHome: "/home/hmcts" }),
     tty: true,
     env: { HAI_ENV_READY: "1", HAI_IN_CONTAINER: "1", HAI_SECRETS_DIR: SECRETS_DIR },
@@ -64,7 +65,7 @@ describe("buildDockerArgs", () => {
 
     // Assert
     expect(argv.join(" ")).toMatchInlineSnapshot(
-      `"docker run -d --name hai-hmcts-7293fcec --user 0:0 --privileged --init --network hai --dns 10.11.75.4 --dns 168.63.129.16 --dns 8.8.8.8 --add-host idam-simulator:127.0.0.1 --shm-size=2g --ulimit nofile=65536:65536 --cgroupns=private --tmpfs /run:exec,mode=0755 --tmpfs /run/hai-secrets:mode=0700,uid=1000,gid=1000 --mount type=volume,source=hai-hmcts-7293fcec-docker,target=/var/lib/docker --mount type=bind,source=/home/linus/Work/solirius/hmcts,target=/home/linus/Work/solirius/hmcts --mount type=bind,source=/home/linus/.claude,target=/home/hmcts/.claude --mount type=bind,source=/home/linus/.claude.json,target=/home/hmcts/.claude.json --mount type=bind,source=/home/linus/.zsh_history,target=/home/hmcts/.zsh_history --mount type=bind,source=/home/linus/.bash_history,target=/home/hmcts/.bash_history --mount type=bind,source=/home/linus/.azure,target=/home/hmcts/.azure --mount type=bind,source=/home/linus/.kube,target=/home/hmcts/.kube --mount type=bind,source=/home/linus/.config/gh,target=/home/hmcts/.config/gh --mount type=bind,source=/home/linus/.config/twg,target=/home/hmcts/.config/twg --mount type=bind,source=/home/linus/.ssh,target=/home/hmcts/.ssh,readonly --mount type=volume,source=hai-gradle,target=/home/hmcts/.gradle --mount type=volume,source=hai-m2,target=/home/hmcts/.m2 --mount type=volume,source=hai-npm,target=/home/hmcts/.npm --mount type=volume,source=hai-yarn,target=/home/hmcts/.cache/yarn --mount type=volume,source=hai-codex,target=/home/hmcts/.codex --mount type=bind,source=/home/linus/.local/state/hai/runtime,target=/opt/hai,readonly -w /home/linus/Work/solirius/hmcts -p 3000:3000 -p 3001:3001 -p 3100:3100 -p 3206:3206 -p 3209:3209 -p 3453:3453 -p 3460:3460 -p 4096:4096 -p 4451:4451 -p 4452:4452 -p 4453:4453 -p 4454:4454 -p 4455:4455 -p 4456:4456 -p 5062:5062 -p 5555:5555 -p 6432:6432 -p 8087:8087 -p 8489:8489 -p 9200:9200 --env HAI_ENV_READY=1 --env HAI_IN_CONTAINER=1 --env HAI_SECRETS_DIR=/run/hai-secrets hmctsprod.azurecr.io/cft-workspace/devcontainer:latest bash /opt/hai/supervisor.sh"`
+      `"docker run -d --name hai-hmcts-7293fcec --user 0:0 --privileged --init --network hai --dns 10.11.75.4 --dns 168.63.129.16 --dns 8.8.8.8 --add-host idam-simulator:127.0.0.1 --shm-size=2g --ulimit nofile=65536:65536 --cgroupns=private --tmpfs /run:exec,mode=0755 --tmpfs /run/hai-secrets:mode=0700,uid=1000,gid=1000 --mount type=volume,source=hai-hmcts-7293fcec-docker,target=/var/lib/docker --mount type=bind,source=/home/linus/Work/solirius/hmcts,target=/home/linus/Work/solirius/hmcts --mount type=bind,source=/home/linus/.claude,target=/home/hmcts/.claude --mount type=bind,source=/home/linus/.claude.json,target=/home/hmcts/.claude.json --mount type=bind,source=/home/linus/.zsh_history,target=/home/hmcts/.zsh_history --mount type=bind,source=/home/linus/.bash_history,target=/home/hmcts/.bash_history --mount type=bind,source=/home/linus/.azure,target=/home/hmcts/.azure --mount type=bind,source=/home/linus/.kube,target=/home/hmcts/.kube --mount type=bind,source=/home/linus/.config/gh,target=/home/hmcts/.config/gh --mount type=bind,source=/home/linus/.config/twg,target=/home/hmcts/.config/twg --mount type=bind,source=/home/linus/.ssh,target=/home/hmcts/.ssh,readonly --mount type=volume,source=hai-gradle,target=/home/hmcts/.gradle --mount type=volume,source=hai-m2,target=/home/hmcts/.m2 --mount type=volume,source=hai-npm,target=/home/hmcts/.npm --mount type=volume,source=hai-yarn,target=/home/hmcts/.cache/yarn --mount type=volume,source=hai-codex,target=/home/hmcts/.codex --mount type=bind,source=/home/linus/.local/state/hai/runtime,target=/opt/hai,readonly -w /home/linus/Work/solirius/hmcts -p 127.0.0.1:3000:3000 -p 127.0.0.1:3001:3001 -p 127.0.0.1:3100:3100 -p 127.0.0.1:3206:3206 -p 127.0.0.1:3209:3209 -p 127.0.0.1:3453:3453 -p 127.0.0.1:3460:3460 -p 127.0.0.1:4096:4096 -p 127.0.0.1:4451:4451 -p 127.0.0.1:4452:4452 -p 127.0.0.1:4453:4453 -p 127.0.0.1:4454:4454 -p 127.0.0.1:4455:4455 -p 127.0.0.1:4456:4456 -p 127.0.0.1:5062:5062 -p 127.0.0.1:5555:5555 -p 127.0.0.1:6432:6432 -p 127.0.0.1:8087:8087 -p 127.0.0.1:8489:8489 -p 127.0.0.1:9200:9200 --env HAI_ENV_READY=1 --env HAI_IN_CONTAINER=1 --env HAI_SECRETS_DIR=/run/hai-secrets hmctsprod.azurecr.io/cft-workspace/devcontainer:latest bash /opt/hai/supervisor.sh"`
     );
   });
 
@@ -93,8 +94,26 @@ describe("buildDockerArgs", () => {
     const argv = buildDockerArgs(context({ ports: [3000, 3001] })).join(" ");
 
     // Assert
-    expect(argv).toContain("-p 3000:3000 -p 3001:3001");
+    expect(argv).toContain("-p 127.0.0.1:3000:3000 -p 127.0.0.1:3001:3001");
     expect(argv).not.toContain("9200");
+  });
+
+  it("should bind every mapping to loopback, which is the URL hai reports", () => {
+    // Act
+    const argv = buildDockerArgs(context({ ports: [5062] })).join(" ");
+
+    // Assert
+    expect(argv).toContain("-p 127.0.0.1:5062:5062");
+    expect(argv).not.toContain("-p 5062:5062");
+  });
+
+  it("should bind to 0.0.0.0 with HAI_PORTS_PUBLIC, for a session reached from another device", () => {
+    // Act
+    const argv = buildDockerArgs(context({ ports: [5062], publicPorts: true })).join(" ");
+
+    // Assert
+    expect(argv).toContain("-p 5062:5062");
+    expect(argv).not.toContain("-p 127.0.0.1");
   });
 
   it("should never give the container host networking, whatever else is asked for", () => {

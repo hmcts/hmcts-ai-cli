@@ -1,4 +1,5 @@
 import { type Mount, renderMount } from "./mounts.js";
+import { publishArg } from "./ports.js";
 
 export const DOCKER_BIN = "docker";
 export const DEFAULT_IMAGE = "hmctsprod.azurecr.io/cft-workspace/devcontainer:latest";
@@ -73,7 +74,7 @@ export function buildDockerArgs(ctx: ContainerContext): string[] {
   }
   argv.push("--mount", renderMount({ kind: "bind", source: ctx.runtimeDir, target: RUNTIME_MOUNT_POINT, readonly: true }), "-w", ctx.workdir);
   for (const port of ctx.ports) {
-    argv.push("-p", `${port}:${port}`);
+    argv.push("-p", publishArg(port, ctx.publicPorts));
   }
   for (const [name, value] of Object.entries(ctx.env).sort(([a], [b]) => a.localeCompare(b))) {
     argv.push("--env", `${name}=${value}`);
@@ -116,6 +117,8 @@ export interface ContainerContext {
   dns: string[];
   /** Only the ports found free on the host: one clash must not abort the whole `docker run`. */
   ports: number[];
+  /** 0.0.0.0 rather than loopback for every mapping, which HAI_PORTS_PUBLIC=1 asks for. */
+  publicPorts: boolean;
   mounts: Mount[];
   tty: boolean;
   /** Everything safe to record in the container config. */
