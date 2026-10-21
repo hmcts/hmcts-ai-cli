@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createFakeHiddenInput, createFakeSeams, exitCodeOf, type FakeSeams } from "./__fixtures__/fake-seams.js";
 import { DEFAULT_BEDROCK_GROUP_ID } from "./az/group-membership.js";
 import { launch } from "./launch.js";
+import { packageRoot } from "./update/self-update.js";
 
 const HOME = "/home/dev";
 const KEY = "ABSKQmVkcm9jay1mYWtlLWtleS0wMDAwMDAwMDAw";
@@ -10,6 +11,8 @@ const MANIFEST = "repos:\n  apps/pcs/pcs-api:\n    url: hmcts/pcs-api\n";
 const MARKETPLACE = JSON.stringify({ plugins: [{ name: "pcs", source: "./apps/pcs/.claude" }] });
 
 const IN_CONTAINER = { "/.dockerenv": "" };
+/** A published version, so the update check is not skipped as an unpublished local build. */
+const PUBLISHED = { [`${packageRoot()}package.json`]: JSON.stringify({ version: "0.1.0" }) };
 
 function respond(argv: string[]) {
   if (argv[1] === "account") {
@@ -248,7 +251,7 @@ describe("launch", () => {
       // Arrange
       const seams = createFakeSeams({
         env: { HOME, AWS_BEARER_TOKEN_BEDROCK: KEY },
-        files: IN_CONTAINER,
+        files: { ...IN_CONTAINER, ...PUBLISHED },
         respond,
         fetch: async () => new Response(JSON.stringify({ "dist-tags": { latest: "99.0.0" } }))
       });
@@ -402,7 +405,7 @@ describe("launch", () => {
       // Arrange
       const seams = createFakeSeams({
         env: { HOME, AWS_BEARER_TOKEN_BEDROCK: KEY },
-        files: IN_CONTAINER,
+        files: { ...IN_CONTAINER, ...PUBLISHED },
         respond,
         fetch: async () => new Response(JSON.stringify({ "dist-tags": { latest: "99.0.0" } }))
       });
@@ -420,9 +423,9 @@ describe("launch", () => {
       // Arrange
       const seams = createFakeSeams({
         env: { HOME, AWS_BEARER_TOKEN_BEDROCK: KEY },
-        files: IN_CONTAINER,
+        files: { ...IN_CONTAINER, ...PUBLISHED },
         respond,
-        fetch: async () => new Response(JSON.stringify({ "dist-tags": { latest: "0.0.0" } }))
+        fetch: async () => new Response(JSON.stringify({ "dist-tags": { latest: "0.1.0" } }))
       });
 
       // Act
@@ -431,6 +434,42 @@ describe("launch", () => {
       // Assert
       expect(seams.lines).toEqual([]);
       expect(execArgv(seams)[0]).toBe("claude");
+    });
+
+    it("should not update from a working copy, whose version is always behind the feed", async () => {
+      // Arrange — no manifest in the fake fs, so the running version reads as 0.0.0.
+      const seams = createFakeSeams({
+        env: { HOME, AWS_BEARER_TOKEN_BEDROCK: KEY },
+        files: IN_CONTAINER,
+        respond,
+        fetch: async () => new Response(JSON.stringify({ "dist-tags": { latest: "99.0.0" } }))
+      });
+
+      // Act
+      await launch({ seams, processArgv: ["node", "hai"] });
+
+      // Assert
+      expect(seams.runner.calls).toEqual([]);
+      expect(execArgv(seams)[0]).toBe("claude");
+    });
+
+    it("should install nothing under HAI_DRY_RUN=1, even with a newer version on the feed", async () => {
+      // Arrange
+      const seams = createFakeSeams({
+        env: { HOME, HAI_DRY_RUN: "1", AWS_BEARER_TOKEN_BEDROCK: KEY },
+        files: { ...IN_CONTAINER, ...PUBLISHED },
+        respond,
+        fetch: async () => new Response(JSON.stringify({ "dist-tags": { latest: "99.0.0" } }))
+      });
+
+      // Act
+      const err = await launch({ seams, processArgv: ["node", "hai"] }).catch((e) => e);
+
+      // Assert
+      expect(exitCodeOf(err)).toBe(0);
+      expect(seams.runner.calls).toEqual([]);
+      expect(seams.runner.execCalls).toEqual([]);
+      expect(seams.lines.join("")).not.toContain("updating");
     });
   });
 

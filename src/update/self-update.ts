@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { messageOf } from "../log/error-message.js";
-import { isEnabled } from "../system/env.js";
+import { type Env, isEnabled } from "../system/env.js";
 import type { Fs } from "../system/fs.js";
 import type { Seams } from "../system/seams.js";
 import { STATE_DIR_MODE, STATE_FILE_MODE, stateDir, statePath, tryStatePath } from "../system/state-dir.js";
@@ -15,6 +15,38 @@ export const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 1500;
 const INSTALL_TIMEOUT_MS = 120_000;
 
+/** The placeholder version in the repo; CI owns the real one and bumps it on publish. */
+export const UNPUBLISHED_VERSION = "0.0.0";
+
+/**
+ * Whether to leave the installed version alone, and what to say about it. First match
+ * wins, so the precedence between the switches is this one table.
+ */
+export function skipUpdateCheck(input: { env: Env; currentVersion: string }): SkipUpdateCheck {
+  const { env } = input;
+  if (isEnabled(env, "HAI_NO_UPDATE")) {
+    return { skip: true, reason: "HAI_NO_UPDATE=1, so the update check is skipped" };
+  }
+  if (isEnabled(env, "HAI_UPDATED")) {
+    // We are the re-exec after an update. Checking again here is how a broken release
+    // turns into a loop, and saying anything would be noise on every post-update run.
+    return { skip: true, reason: null };
+  }
+  if (isEnabled(env, "HAI_DRY_RUN")) {
+    // A dry run shows what would happen, so it may not install anything or even ask.
+    return { skip: true, reason: "HAI_DRY_RUN=1, so the update check is skipped" };
+  }
+  if (isEnabled(env, "HAI_OFFLINE")) {
+    return { skip: true, reason: "HAI_OFFLINE=1, so the update check is skipped" };
+  }
+  if (input.currentVersion === UNPUBLISHED_VERSION) {
+    // An unpublished local build: every published version looks newer, so a working copy
+    // would replace itself with the feed's copy on every single run.
+    return { skip: true, reason: `running an unpublished ${UNPUBLISHED_VERSION} build, so the update check is skipped` };
+  }
+  return { skip: false, reason: null };
+}
+
 /**
  * Automatic and quiet: there is no subcommand because every name worth taking already
  * belongs to `claude`. Any network trouble is invisible unless HAI_VERBOSE=1, because an
@@ -22,17 +54,11 @@ const INSTALL_TIMEOUT_MS = 120_000;
  */
 export async function maybeSelfUpdate(deps: { seams: Seams; currentVersion: string }): Promise<SelfUpdateOutcome> {
   const { seams } = deps;
-  if (isEnabled(seams.env, "HAI_NO_UPDATE")) {
-    seams.logger.verbose("HAI_NO_UPDATE=1, so the update check is skipped");
-    return { reExec: false };
-  }
-  if (isEnabled(seams.env, "HAI_UPDATED")) {
-    // We are the re-exec after an update. Checking again here is how a broken release
-    // turns into a loop.
-    return { reExec: false };
-  }
-  if (isEnabled(seams.env, "HAI_OFFLINE")) {
-    seams.logger.verbose("HAI_OFFLINE=1, so the update check is skipped");
+  const skip = skipUpdateCheck({ env: seams.env, currentVersion: deps.currentVersion });
+  if (skip.skip) {
+    if (skip.reason !== null) {
+      seams.logger.verbose(skip.reason);
+    }
     return { reExec: false };
   }
 
@@ -75,12 +101,12 @@ export function packageRoot(): string {
 export async function readCurrentVersion(deps: { fs: Fs }): Promise<string> {
   const contents = await deps.fs.readText(fileURLToPath(new URL("../../package.json", import.meta.url)));
   if (contents === null) {
-    return "0.0.0";
+    return UNPUBLISHED_VERSION;
   }
   try {
-    return String((JSON.parse(contents) as { version?: unknown }).version ?? "0.0.0");
+    return String((JSON.parse(contents) as { version?: unknown }).version ?? UNPUBLISHED_VERSION);
   } catch {
-    return "0.0.0";
+    return UNPUBLISHED_VERSION;
   }
 }
 
@@ -137,4 +163,10 @@ async function writeCache(seams: Seams, latest: string): Promise<void> {
 
 export interface SelfUpdateOutcome {
   reExec: boolean;
+}
+
+export interface SkipUpdateCheck {
+  skip: boolean;
+  /** Null when there is nothing worth saying, even under verbosity. */
+  reason: string | null;
 }

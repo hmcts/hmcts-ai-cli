@@ -68,6 +68,7 @@ table-testable:
 |---|---|
 | `resolveRoute(signals)` | `gatherSignals` |
 | `isInContainer(probe)` | `probeContainer` |
+| `skipUpdateCheck(input)` | `maybeSelfUpdate` |
 | `detectPackageManager(input)` | `maybeSelfUpdate` |
 | `packumentUrl(feed, name)`, `latestFromPackument(body)` | `maybeSelfUpdate` |
 | `extractUserSettings(argv)`, `mergeSettings(ours, theirs)` | `readUserSettings` |

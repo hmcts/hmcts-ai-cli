@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createFakeSeams, FIXED_NOW } from "../__fixtures__/fake-seams.js";
 import { PACKAGE_NAME, REGISTRY_ARG } from "./package-manager.js";
-import { CACHE_FILE, CACHE_TTL_MS, maybeSelfUpdate, PACKUMENT_URL, packageRoot, readCurrentVersion } from "./self-update.js";
+import { CACHE_FILE, CACHE_TTL_MS, maybeSelfUpdate, PACKUMENT_URL, packageRoot, readCurrentVersion, skipUpdateCheck } from "./self-update.js";
 
 const HOME = "/home/dev";
 const CACHE_PATH = `${HOME}/.local/state/hai/${CACHE_FILE}`;
@@ -63,6 +63,27 @@ describe("readCurrentVersion", () => {
   });
 });
 
+describe("skipUpdateCheck", () => {
+  const skipped = (reason: string | null) => ({ skip: true, reason });
+
+  it.each([
+    ["nothing is set and the build is a published one", {}, CURRENT, { skip: false, reason: null }],
+    ["HAI_NO_UPDATE=1", { HAI_NO_UPDATE: "1" }, CURRENT, skipped("HAI_NO_UPDATE=1, so the update check is skipped")],
+    ["HAI_UPDATED=1", { HAI_UPDATED: "1" }, CURRENT, skipped(null)],
+    ["HAI_DRY_RUN=1", { HAI_DRY_RUN: "1" }, CURRENT, skipped("HAI_DRY_RUN=1, so the update check is skipped")],
+    ["HAI_OFFLINE=1", { HAI_OFFLINE: "1" }, CURRENT, skipped("HAI_OFFLINE=1, so the update check is skipped")],
+    ["the running build is an unpublished 0.0.0", {}, "0.0.0", skipped("running an unpublished 0.0.0 build, so the update check is skipped")],
+    ["HAI_NO_UPDATE=1 outranks HAI_UPDATED=1", { HAI_NO_UPDATE: "1", HAI_UPDATED: "1" }, CURRENT, skipped("HAI_NO_UPDATE=1, so the update check is skipped")],
+    ["HAI_UPDATED=1 outranks HAI_DRY_RUN=1", { HAI_UPDATED: "1", HAI_DRY_RUN: "1" }, CURRENT, skipped(null)],
+    ["HAI_DRY_RUN=1 outranks HAI_OFFLINE=1", { HAI_DRY_RUN: "1", HAI_OFFLINE: "1" }, CURRENT, skipped("HAI_DRY_RUN=1, so the update check is skipped")],
+    ["HAI_OFFLINE=1 outranks an unpublished build", { HAI_OFFLINE: "1" }, "0.0.0", skipped("HAI_OFFLINE=1, so the update check is skipped")],
+    ["a flag is set to something other than 1", { HAI_DRY_RUN: "0" }, CURRENT, { skip: false, reason: null }]
+  ])("should decide given %s", (_name, env, currentVersion, expected) => {
+    // Act / Assert
+    expect(skipUpdateCheck({ env, currentVersion })).toEqual(expected);
+  });
+});
+
 describe("the version check", () => {
   it("should percent-encode the scope separator in the packument path", () => {
     // Act / Assert
@@ -99,21 +120,24 @@ describe("maybeSelfUpdate", () => {
   });
 
   it.each([
-    ["HAI_NO_UPDATE=1", { HAI_NO_UPDATE: "1" }],
-    ["HAI_UPDATED=1", { HAI_UPDATED: "1" }],
-    ["HAI_OFFLINE=1", { HAI_OFFLINE: "1" }]
-  ])("should do nothing under %s", async (_name, env) => {
+    ["HAI_NO_UPDATE=1", { HAI_NO_UPDATE: "1" }, CURRENT],
+    ["HAI_UPDATED=1", { HAI_UPDATED: "1" }, CURRENT],
+    ["HAI_OFFLINE=1", { HAI_OFFLINE: "1" }, CURRENT],
+    ["HAI_DRY_RUN=1", { HAI_DRY_RUN: "1" }, CURRENT],
+    ["an unpublished 0.0.0 build", {}, "0.0.0"]
+  ])("should be completely inert under %s: no fetch, no install, no cache write", async (_name, env, currentVersion) => {
     // Arrange
     const { requests, fetch } = feed(LATEST);
     const seams = createFakeSeams({ env: { HOME, ...env }, fetch, respond: installs });
 
     // Act
-    const outcome = await maybeSelfUpdate({ seams, currentVersion: CURRENT });
+    const outcome = await maybeSelfUpdate({ seams, currentVersion });
 
     // Assert
     expect(outcome.reExec).toBe(false);
     expect(requests).toEqual([]);
     expect(seams.runner.calls).toEqual([]);
+    expect(seams.fs.store.has(CACHE_PATH)).toBe(false);
   });
 
   it("should say nothing at all under HAI_UPDATED=1, so a broken release cannot loop", async () => {
@@ -210,14 +234,16 @@ describe("maybeSelfUpdate", () => {
   });
 
   it.each([
-    ["HAI_NO_UPDATE=1", { HAI_NO_UPDATE: "1" }, "HAI_NO_UPDATE=1, so the update check is skipped"],
-    ["HAI_OFFLINE=1", { HAI_OFFLINE: "1" }, "HAI_OFFLINE=1, so the update check is skipped"]
-  ])("should say under verbosity that %s turned the check off", async (_name, env, expected) => {
+    ["HAI_NO_UPDATE=1", { HAI_NO_UPDATE: "1" }, CURRENT, "HAI_NO_UPDATE=1, so the update check is skipped"],
+    ["HAI_OFFLINE=1", { HAI_OFFLINE: "1" }, CURRENT, "HAI_OFFLINE=1, so the update check is skipped"],
+    ["HAI_DRY_RUN=1", { HAI_DRY_RUN: "1" }, CURRENT, "HAI_DRY_RUN=1, so the update check is skipped"],
+    ["an unpublished build", {}, "0.0.0", "running an unpublished 0.0.0 build, so the update check is skipped"]
+  ])("should say under verbosity that %s turned the check off", async (_name, env, currentVersion, expected) => {
     // Arrange
     const seams = createFakeSeams({ env: { HOME, HAI_VERBOSE: "1", ...env }, fetch: feed(LATEST).fetch, respond: installs });
 
     // Act
-    await maybeSelfUpdate({ seams, currentVersion: CURRENT });
+    await maybeSelfUpdate({ seams, currentVersion });
 
     // Assert
     expect(seams.lines.join("")).toContain(expected);
