@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  check:
+    # macOS too: the platform detection, the Keychain fallback for a claude.ai
+    # licence and the Docker Desktop paths only run there.
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: Install
+        run: yarn install --immutable
+
+      - name: Lint
+        run: yarn lint
+
+      # Biome silently inspects 0 files and exits 1 when its resolved root holds no
+      # matching paths, which reads as a lint failure with no findings. Assert it saw
+      # something so a misconfigured `files.includes` cannot pass as a clean run.
+      - name: Assert Biome inspected files
+        shell: bash
+        run: |
+          set -euo pipefail
+          summary="$(yarn biome check --reporter=summary . 2>&1 || true)"
+          printf '%s\n' "$summary"
+          checked="$(printf '%s\n' "$summary" | sed -n 's/.*Checked \([0-9][0-9]*\) file.*/\1/p' | head -n 1)"
+          if [[ -z "$checked" ]]; then
+            echo "could not read a file count out of the Biome summary reporter" >&2
+            exit 1
+          fi
+          if [[ "$checked" -eq 0 ]]; then
+            echo "Biome inspected 0 files" >&2
+            exit 1
+          fi
+          echo "Biome inspected $checked files"
+
+      - name: Typecheck
+        run: yarn typecheck
+
+      - name: Test
+        run: yarn test:coverage
+
+      - name: Build
+        run: yarn build

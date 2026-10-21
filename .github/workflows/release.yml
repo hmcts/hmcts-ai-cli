@@ -1,0 +1,95 @@
+name: Release
+
+on:
+  push:
+    branches: [master]
+
+# Never cancel a release in progress: two overlapping publishes would race on the version
+# number and one of them would publish a version that is already taken.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    # No id-token: npm provenance is npmjs.org-only and Azure Artifacts does not support it.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: yarn
+
+      - name: Install
+        run: yarn install --immutable
+
+      # CI runs on pull requests only, so without these a direct push to master would publish
+      # whatever it was given.
+      - name: Lint
+        run: yarn lint
+
+      - name: Typecheck
+        run: yarn typecheck
+
+      - name: Test
+        run: yarn test:coverage
+
+      - name: Build
+        run: yarn build
+
+      - name: Bump the patch version
+        id: bump
+        run: |
+          npm version patch --no-git-tag-version
+          echo "version=$(node -p 'require("./package.json").version')" >> "$GITHUB_OUTPUT"
+
+      # Kept line-for-line from cnp-githubactions-library/npm-publish-library so that moving
+      # to the shared action later is a straight substitution.
+      - name: Configure npm authentication for Azure Artifacts
+        env:
+          AZURE_DEVOPS_ARTIFACT_USERNAME: ${{ secrets.AZURE_DEVOPS_ARTIFACT_USERNAME }}
+          AZURE_DEVOPS_ARTIFACT_TOKEN: ${{ secrets.AZURE_DEVOPS_ARTIFACT_TOKEN }}
+          FEED_URL: https://pkgs.dev.azure.com/hmcts/Artifacts/_packaging/hmcts-lib/npm/registry/
+          NPM_SCOPE: '@hmcts-cft'
+        run: |
+          token_b64="$(printf %s "$AZURE_DEVOPS_ARTIFACT_TOKEN" | base64 | tr -d '\n')"
+          username="${AZURE_DEVOPS_ARTIFACT_USERNAME:-github}"
+          feed="${FEED_URL%/}/"
+          # Strip the scheme to build the npm-style "//host/path/" auth keys.
+          feed_no_scheme="${feed#https:}"
+          cat > "$HOME/.npmrc" <<EOF
+          registry=${feed}
+          always-auth=true
+          ${feed_no_scheme}:username=${username}
+          ${feed_no_scheme}:_password=${token_b64}
+          ${feed_no_scheme}:email=github-actions@hmcts.net
+          EOF
+          # Defend against publishConfig.registry going missing — npm prefers @<scope>:registry
+          # over the default `registry=` line.
+          echo "@${NPM_SCOPE#@}:registry=${feed}" >> "$HOME/.npmrc"
+
+      - name: Publish
+        run: npm publish
+
+      # Publish first: a tag with no package behind it is worse than an unbumped master.
+      - name: Commit the bump and tag the release
+        env:
+          VERSION: ${{ steps.bump.outputs.version }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add package.json
+          # This cannot loop: pushes made with GITHUB_TOKEN do not trigger workflows.
+          git commit -m "chore: release v${VERSION} [skip ci]"
+          git tag "v${VERSION}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+          git push origin "v${VERSION}"

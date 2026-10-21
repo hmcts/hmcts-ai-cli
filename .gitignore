@@ -1,0 +1,20 @@
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+.yarn/cache/
+.yarn/install-state.gz
+.yarn/build-state.yml
+.yarn/unplugged/
+.pnp.*
+
+.vscode/
+.idea/
+*.swp
+
+.DS_Store
+Thumbs.db
+
+# Agent worktrees, which are git repositories in their own right: committable as a gitlink otherwise.
+.claude/worktrees/
