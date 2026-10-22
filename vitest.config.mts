@@ -7,6 +7,7 @@ import { defineConfig } from "vitest/config";
  */
 const PURE_DECISION_MODULES = [
   "src/auth/route.ts",
+  "src/claude/hooks.ts",
   "src/claude/user-settings.ts",
   "src/container/acr.ts",
   "src/container/claude-json.ts",
@@ -21,6 +22,11 @@ const PURE_DECISION_MODULES = [
   "src/container/proc-net.ts",
   "src/container/runtime-staging.ts",
   "src/container/session.ts",
+  "src/hair/args.ts",
+  "src/hair/claim.ts",
+  "src/hair/hook.ts",
+  "src/hair/registry.ts",
+  "src/hair/restore.ts",
   "src/sbx/kit.ts",
   "src/sbx/sbx-args.ts",
   "src/system/container.ts",

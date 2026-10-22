@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createFakeSeams } from "../__fixtures__/fake-seams.js";
+import { REGISTRATION_HOOK_OVERRIDE_WARNING, registrationHooks } from "./hooks.js";
 import { API_KEY_HELPER_OVERRIDE_WARNING, extractUserSettings, mergeSettings, readUserSettings } from "./user-settings.js";
 
 const HELPER = "/home/dev/.local/state/hai/gateway-token.sh";
@@ -73,6 +74,75 @@ describe("mergeSettings", () => {
     // Assert
     expect(result.settings).toEqual(expectedSettings);
     expect(result.warnings).toEqual(expectedWarnings);
+  });
+});
+
+/**
+ * A shallow spread would let any user who registers a hook of their own silently discard
+ * the session-registry hooks, and the only symptom would be `hair` finding nothing to
+ * restore weeks later.
+ */
+describe("mergeSettings over hooks", () => {
+  const OURS = { hooks: registrationHooks({ bin: ["hair"] }) };
+  const THEIRS = { hooks: { PreToolUse: [{ hooks: [{ type: "command", command: "mine.sh" }] }] } };
+
+  it("should keep both when the user registers a different event", () => {
+    // Act
+    const result = mergeSettings(OURS, THEIRS);
+
+    // Assert
+    expect(Object.keys(result.settings.hooks as object)).toEqual(["UserPromptSubmit", "SessionEnd", "PreToolUse"]);
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("should run ours first and then theirs when they register the same event", () => {
+    // Act
+    const result = mergeSettings(OURS, { hooks: { SessionEnd: [{ hooks: [{ type: "command", command: "mine.sh" }] }] } });
+
+    // Assert
+    expect((result.settings.hooks as Record<string, unknown[]>).SessionEnd).toEqual([
+      { hooks: [{ type: "command", command: "'hair' hook SessionEnd" }] },
+      { hooks: [{ type: "command", command: "mine.sh" }] }
+    ]);
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("should warn when the user's hooks are a shape that cannot be merged, theirs winning", () => {
+    // Act
+    const result = mergeSettings(OURS, { hooks: "nonsense" });
+
+    // Assert
+    expect(result.settings.hooks).toBe("nonsense");
+    expect(result.warnings).toEqual([REGISTRATION_HOOK_OVERRIDE_WARNING]);
+  });
+
+  it("should warn when the user's hooks are a list, which claude's schema is not", () => {
+    // Act / Assert
+    expect(mergeSettings(OURS, { hooks: [] }).warnings).toEqual([REGISTRATION_HOOK_OVERRIDE_WARNING]);
+  });
+
+  it("should carry the user's hooks through untouched when hai registered none", () => {
+    // Act
+    const result = mergeSettings({}, THEIRS);
+
+    // Assert
+    expect(result.settings).toEqual(THEIRS);
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("should set no hooks key at all when neither side has any", () => {
+    // Act / Assert
+    expect(mergeSettings({ crossSessionInbound: "accept" }, {})).toEqual({ settings: { crossSessionInbound: "accept" }, warnings: [] });
+  });
+
+  it.each<[string, unknown]>([
+    ["an event whose value is not a list of groups", { SessionEnd: "not a list" }],
+    ["a group that is not an object", { SessionEnd: ["not a group"] }],
+    ["a group whose hooks are not a list", { SessionEnd: [{ hooks: "not a list" }] }],
+    ["an entry with no command", { SessionEnd: [{ hooks: [{ type: "command" }] }] }]
+  ])("should find no command of ours to lose in %s", (_name, hooks) => {
+    // Act / Assert
+    expect(mergeSettings({ hooks }, {}).warnings).toEqual([]);
   });
 });
 

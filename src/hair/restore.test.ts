@@ -1,0 +1,239 @@
+import { describe, expect, it } from "vitest";
+import { createFakeSeams, type RunResponder } from "../__fixtures__/fake-seams.js";
+import type { SessionRecord } from "./registry.js";
+import { describeCandidate, livenessPlan, probeDirs, probeLiveness, restoreCandidates, restoreDecision } from "./restore.js";
+
+const HOST = "workstation";
+const record = (over: Partial<SessionRecord> = {}): SessionRecord => ({ sessionId: "a", cwd: "/work", state: "open", at: 10, pid: 100, host: HOST, ...over });
+
+const decide = (over: Partial<Parameters<typeof restoreDecision>[0]> = {}) => restoreDecision({ record: record(), cwdExists: true, alive: false, ...over });
+
+describe("restoreDecision", () => {
+  it.each<[string, Partial<Parameters<typeof restoreDecision>[0]>, "restore" | "skip"]>([
+    ["an open session whose process is gone", {}, "restore"],
+    ["an open session whose process is still there", { alive: true }, "skip"],
+    ["an open session whose process cannot be asked about", { alive: null }, "skip"],
+    ["a session that was closed cleanly", { record: record({ state: "closed" }) }, "skip"],
+    ["a session whose directory has been deleted since", { cwdExists: false }, "skip"]
+  ])("should %s", (_name, over, action) => {
+    // Act / Assert
+    expect(decide(over).action).toBe(action);
+  });
+
+  it("should say why a live session is left alone, because it would be forked rather than resumed", () => {
+    // Act / Assert
+    expect(decide({ alive: true }).reason).toBe("pid 100 is still running, so the session is live");
+  });
+
+  it("should refuse to guess about a pid it could not ask about, as the transcript lock does", () => {
+    // Act / Assert
+    expect(decide({ alive: null }).reason).toContain("cannot be told");
+  });
+
+  /**
+   * `process.chdir` throws, and the claim is taken first, so a record pointing at a
+   * deleted worktree would end `hair` with the claim held and the next run would reclaim
+   * it and fail again — for every conversation, until the registry was hand-edited.
+   */
+  it("should decide a missing directory before liveness, rather than let the chdir throw later", () => {
+    // Act / Assert
+    expect(decide({ cwdExists: false, alive: false }).reason).toBe("its directory /work is gone, so there is nowhere to resume it");
+  });
+});
+
+describe("restoreCandidates", () => {
+  const all = (records: SessionRecord[], over: Partial<Parameters<typeof restoreCandidates>[0]> = {}) =>
+    restoreCandidates({
+      records,
+      cwd: "/work",
+      liveness: new Map(records.map((r) => [r.sessionId, false as boolean | null])),
+      existingDirs: new Set(records.map((r) => r.cwd)),
+      ...over
+    });
+
+  it("should prefer this directory and then take the oldest, cwd being a preference and not a filter", () => {
+    // Arrange
+    const records = [
+      record({ sessionId: "elsewhere-new", cwd: "/other", at: 40 }),
+      record({ sessionId: "here-new", cwd: "/work", at: 30 }),
+      record({ sessionId: "elsewhere-old", cwd: "/other", at: 10 }),
+      record({ sessionId: "here-old", cwd: "/work", at: 20 })
+    ];
+
+    // Act
+    const { candidates } = all(records);
+
+    // Assert
+    expect(candidates.map((r) => r.sessionId)).toEqual(["here-old", "here-new", "elsewhere-old", "elsewhere-new"]);
+  });
+
+  it("should break a tie on the id, so two terminals walk the candidates in the same order", () => {
+    // Arrange
+    const records = [record({ sessionId: "b" }), record({ sessionId: "a" })];
+
+    // Act
+    const { candidates } = all(records);
+
+    // Assert
+    expect(candidates.map((r) => r.sessionId)).toEqual(["a", "b"]);
+  });
+
+  it("should report what it skipped and why", () => {
+    // Arrange
+    const records = [record({ sessionId: "live" }), record({ sessionId: "dead" })];
+
+    // Act
+    const { candidates, skipped } = all(records, {
+      liveness: new Map<string, boolean | null>([
+        ["live", true],
+        ["dead", false]
+      ])
+    });
+
+    // Assert
+    expect(candidates.map((r) => r.sessionId)).toEqual(["dead"]);
+    expect(skipped).toEqual([{ record: record({ sessionId: "live" }), reason: "pid 100 is still running, so the session is live" }]);
+  });
+
+  it("should treat a session it has no liveness answer for as unanswerable", () => {
+    // Act / Assert
+    expect(all([record()], { liveness: new Map() }).candidates).toEqual([]);
+  });
+
+  it("should offer nothing for a record whose directory is not in the set", () => {
+    // Act / Assert
+    expect(all([record()], { existingDirs: new Set() }).candidates).toEqual([]);
+  });
+});
+
+describe("describeCandidate", () => {
+  it.each<[string, Partial<SessionRecord>, string, string]>([
+    ["this directory by name", {}, "/work", "a  (unnamed)  this directory"],
+    ["another directory in full", { cwd: "/other", name: "pcs" }, "/work", "a  pcs  /other"]
+  ])("should describe %s", (_name, over, cwd, expected) => {
+    // Act / Assert
+    expect(describeCandidate(record(over), cwd)).toBe(expected);
+  });
+});
+
+/**
+ * A pid only means something in its own PID namespace, and the hook that records one
+ * routinely runs in a different one from the `hair` that reads it: container mode passes
+ * no `--pid=host`.
+ */
+describe("livenessPlan", () => {
+  it.each<[string, Partial<SessionRecord>, string | undefined, "pid" | "container" | "none"]>([
+    ["ask ps when the record was written where we are standing", {}, HOST, "pid"],
+    ["ask docker when the pid belongs to a hai container", { host: "a1b2c3", container: "hai-pcs-123" }, HOST, "container"],
+    ["ask nothing when the hosts differ and no container is named", { host: "a1b2c3" }, HOST, "none"],
+    ["ask nothing when the record names no host at all", { host: undefined }, HOST, "none"],
+    ["ask nothing when we do not know our own host", {}, undefined, "none"],
+    ["ask nothing about a registration with no pid", { pid: 0 }, HOST, "none"],
+    ["prefer ps over docker when the container is this one", { host: HOST, container: "hai-pcs-123" }, HOST, "pid"]
+  ])("should %s", (_name, over, host, probe) => {
+    // Act / Assert
+    expect(livenessPlan({ record: record(over), host }).probe).toBe(probe);
+  });
+
+  it("should say which namespace it could not compare against", () => {
+    // Act / Assert
+    expect(livenessPlan({ record: record({ host: "a1b2c3" }), host: HOST }).reason).toBe(
+      "pid 100 was recorded on a1b2c3, which cannot be compared with this one"
+    );
+    expect(livenessPlan({ record: record({ host: undefined }), host: HOST }).reason).toContain("an unnamed host");
+  });
+});
+
+describe("probeLiveness", () => {
+  const seamsFor = (respond: RunResponder) => createFakeSeams({ respond });
+
+  it.each<[string, number, string, boolean | null]>([
+    ["a pid that is still there", 0, "42\n", true],
+    ["a pid that is gone", 1, "", false],
+    ["a machine with no ps on it, which is not grounds to resume anything", 127, "", null]
+  ])("should read %s", async (_name, code, stdout, expected) => {
+    // Arrange
+    const seams = seamsFor((argv) => (argv[0] === "ps" ? { code, stdout } : undefined));
+
+    // Act
+    const liveness = await probeLiveness({ ...seams, host: HOST }, [record({ pid: 42 })]);
+
+    // Assert
+    expect(seams.runner.calls[0]?.argv).toEqual(["ps", "-p", "42", "-o", "pid="]);
+    expect(liveness.get("a")).toBe(expected);
+  });
+
+  /**
+   * Pid 0 cannot be `false`. "No pid recorded" is not "no process": the session may be
+   * the very one running in this terminal, and calling it dead would let a second `hair`
+   * claim it and fork the conversation.
+   */
+  it("should treat a registration with no pid as unanswerable rather than as gone", async () => {
+    // Arrange
+    const seams = seamsFor(() => undefined);
+
+    // Act
+    const liveness = await probeLiveness({ ...seams, host: HOST }, [record({ pid: 0 })]);
+
+    // Assert
+    expect(seams.runner.calls).toEqual([]);
+    expect(liveness.get("a")).toBeNull();
+  });
+
+  it.each<[string, number, string, boolean | null]>([
+    ["gone, which is what a reboot leaves behind", 1, "Error: No such object: hai-pcs-123", false],
+    ["still up, which is not grounds to resume it", 0, "", null]
+  ])("should read a container that is %s", async (_name, code, stderr, expected) => {
+    // Arrange
+    const seams = seamsFor((argv) => (argv[0] === "docker" ? { code, stderr, stdout: code === 0 ? "true\n" : "" } : undefined));
+
+    // Act
+    const liveness = await probeLiveness({ ...seams, host: HOST }, [record({ host: "a1b2c3", container: "hai-pcs-123" })]);
+
+    // Assert
+    expect(seams.runner.calls[0]?.argv).toEqual(["docker", "inspect", "-f", "{{.State.Running}}", "hai-pcs-123"]);
+    expect(liveness.get("a")).toBe(expected);
+  });
+
+  it("should read a docker that cannot answer as unanswerable, not as a dead container", async () => {
+    // Arrange
+    const seams = seamsFor((argv) => (argv[0] === "docker" ? { code: 127, stderr: "docker: not found" } : undefined));
+
+    // Act
+    const liveness = await probeLiveness({ ...seams, host: HOST }, [record({ host: "a1b2c3", container: "hai-pcs-123" })]);
+
+    // Assert
+    expect(liveness.get("a")).toBeNull();
+  });
+
+  it("should ask nothing about the tombstones, whose answers are thrown away anyway", async () => {
+    // Arrange
+    const seams = seamsFor(() => ({ code: 1 }));
+
+    // Act
+    const liveness = await probeLiveness({ ...seams, host: HOST }, [record({ sessionId: "closed", state: "closed" })]);
+
+    // Assert
+    expect(seams.runner.calls).toEqual([]);
+    expect(liveness.size).toBe(0);
+  });
+});
+
+describe("probeDirs", () => {
+  it("should check each open record's directory once and leave the tombstones alone", async () => {
+    // Arrange
+    const seams = createFakeSeams();
+    await seams.fs.mkdirp("/work");
+
+    // Act
+    const dirs = await probeDirs(seams, [
+      record({ sessionId: "a", cwd: "/work" }),
+      record({ sessionId: "b", cwd: "/work" }),
+      record({ sessionId: "c", cwd: "/gone" }),
+      record({ sessionId: "d", cwd: "/also-gone", state: "closed" })
+    ]);
+
+    // Assert
+    expect([...dirs]).toEqual(["/work"]);
+  });
+});
