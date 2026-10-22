@@ -1,3 +1,4 @@
+import { hostname } from "node:os";
 import { createLogger, type Logger } from "../log/logger.js";
 import { type Clock, createClock } from "./clock.js";
 import { createEnv, type Env, isEnabled } from "./env.js";
@@ -16,6 +17,7 @@ export function createSeams(): Seams {
     hiddenInput: createHiddenInput(),
     env,
     platform: process.platform,
+    hostname: hostname(),
     cwd: process.cwd(),
     execPath: process.execPath,
     // hai always runs as a script through its bin shim, so argv[1] is its own path.
@@ -50,6 +52,13 @@ export interface Seams {
   hiddenInput: HiddenInput;
   env: Env;
   platform: string;
+  /**
+   * Which machine — or which container — this process is on. The session registry records
+   * it beside each pid, because a pid means nothing outside its own PID namespace and the
+   * hook that writes a record is routinely in a different one from the `hair` that reads
+   * it. Same hostname is the cheap, no-plumbing test for "the same namespace".
+   */
+  hostname: string;
   cwd: string;
   execPath: string;
   scriptPath: string;

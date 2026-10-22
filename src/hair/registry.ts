@@ -75,8 +75,15 @@ export function parseRecord(line: string): SessionRecord | null {
     state,
     at: Number(parsed.at) || 0,
     pid: Number(parsed.pid) || 0,
-    ...(typeof parsed.name === "string" && parsed.name !== "" ? { name: parsed.name } : {})
+    ...text("name", parsed.name),
+    ...text("host", parsed.host),
+    ...text("container", parsed.container)
   };
+}
+
+/** Absent rather than empty, so a record carries no field it could not fill. */
+function text<K extends string>(key: K, value: unknown): Record<K, string> | Record<string, never> {
+  return typeof value === "string" && value !== "" ? ({ [key]: value } as Record<K, string>) : {};
 }
 
 export function recordLine(record: SessionRecord): string {
@@ -117,13 +124,17 @@ export async function appendRecord(deps: { fs: Fs; env: Env }, record: SessionRe
  * registry. An append that lands between the read and the rename is lost, which is why
  * this only runs once the file is long: losing one registration is a session the engineer
  * reopens by hand, and the alternative is a file that grows for ever.
+ *
+ * The temporary name carries the pid. One shared `.tmp` would let two sessions compacting
+ * at once write different content to the same path before either renamed it, which is
+ * exactly the half-written file the rename is there to rule out.
  */
-export async function compactRegistry(deps: { fs: Fs; env: Env }, records: SessionRecord[]): Promise<void> {
+export async function compactRegistry(deps: { fs: Fs; env: Env; pid: number }, records: SessionRecord[]): Promise<void> {
   const path = registryPath(deps.env);
   if (path === null) {
     return;
   }
-  const temp = `${path}.tmp`;
+  const temp = `${path}.${deps.pid}.tmp`;
   await deps.fs.writeText(temp, compacted(records), { mode: REGISTRY_FILE_MODE });
   await deps.fs.rename(temp, path);
 }
@@ -143,4 +154,17 @@ export interface SessionRecord {
   at: number;
   /** The owning `claude` process, from the hook's `CLAUDE_PID`. Liveness is the reaper. */
   pid: number;
+  /**
+   * The hostname the pid lives on, which is what makes the pid comparable: a pid means
+   * nothing outside its own PID namespace, and the hook that writes this often runs in a
+   * different one from the `hair` that reads it.
+   */
+  host?: string;
+  /**
+   * The hai container the session ran in, when it ran in one. A pid cannot be asked about
+   * across a namespace but a container can, so this is what lets a `hair` on the host tell
+   * that a reboot took the session with its container — the same thing `lockDecision`
+   * uses the field for.
+   */
+  container?: string;
 }

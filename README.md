@@ -86,10 +86,10 @@ once, and the usual ways back are no help:
 - `tmux` does not survive it either, because the reboot stops the devcontainer the
   sessions were running in.
 
-`hair` ("hai resume") fixes that. Every session `hai` starts records itself in a registry
-as you drive it, and removes itself when you exit. A reboot cannot remove anything, so
-anything still marked open is a conversation that was taken from you — and that is what
-`hair` hands back, one per terminal:
+`hair` ("hai resume") fixes that. A session records itself in a registry as you drive it,
+and removes itself when you exit. A reboot cannot remove anything, so anything still
+marked open is a conversation that was taken from you — and that is what `hair` hands
+back, one per terminal:
 
 ```bash
 hair          # claim one of the interrupted conversations and resume it
@@ -103,17 +103,42 @@ resuming — resume-by-id is not directory-scoped, so resuming from the wrong pl
 quietly rebind the session's project settings, hooks and `CLAUDE.md`. When nothing is
 waiting it just starts a fresh session.
 
-Everything after `hair` is forwarded, so `hair --model opus` works like `hai --model opus`.
 `hair` does not run `claude` itself — it works out which conversation is yours and then
 hands over to `hai`, so the route, the credentials, the container and the self-update are
 all the same as any other session.
 
+Everything after `hair` is forwarded, so `hair --model opus` works like `hai --model opus`.
+If the arguments already name a conversation — `hair -r <id>`, `hair -c` — nothing is
+claimed and `hair` is simply `hai` with the arguments as typed.
+
+### Where this works today
+
+The registry is written by hooks that run **inside the session**, so it needs `hai` to be
+installed where the session runs:
+
+| How you start sessions | Recorded? |
+|---|---|
+| `hai` inside a devcontainer or any other container (the in-place path) | yes |
+| `hai` on a bare host, which starts a container for the session | **no, not yet** |
+| `sbx-hai` | no |
+
+On the bare-host path `hai` runs the session inside
+`hmctsprod.azurecr.io/cft-workspace/devcontainer`, which does not install
+`@hmcts-cft/hai-cli`, so the hook has no `hair` to run and nothing reaches
+`sessions.jsonl`. Installing hai into that image is a change to cft-workspace rather than
+to this repo. Until then, `hair` is for engineers whose sessions run in a container that
+already has hai on its `PATH` — which is the devcontainer case, and the one the story
+above describes.
+
+A hook that cannot be run changes nothing else: Claude Code ignores the failure, and the
+session's output and exit status are untouched.
+
 ### The registry
 
 `~/.claude/sessions.jsonl`, one JSON object per line: the session id, its directory, its
-`-n/--name` if it has one, whether it is open, when it was last seen and the process that
-owned it. `hai` installs the hooks that maintain it, so there is nothing to put in
-`.claude/settings.json` yourself.
+`-n/--name` if it has one, whether it is open, when it was last seen, the process that
+owned it and where that process lived. `hai` installs the hooks that maintain it, so there
+is nothing to put in `.claude/settings.json` yourself.
 
 A conversation is recorded on the first prompt **you** type into it, not when it starts.
 That is deliberate: a registry that recorded every session start would fill up with
@@ -121,8 +146,10 @@ subagent runs, `claude -p` scripts and background jobs, and after a reboot they 
 look like conversations waiting for you. Only a session someone is sitting in front of is
 recorded, so `-p` runs and `--bg` jobs never appear.
 
-A session whose process is still running is never offered, and `hair --list` with
-`HAI_VERBOSE=1` says what it passed over and why.
+A conversation is never offered if it is still running, if its directory has since been
+deleted, or if `hair` cannot work out whether the process that owned it is alive — it
+would rather hand you nothing than a copy of a session you already have open. Run
+`hair --list` with `HAI_VERBOSE=1` and it says what it passed over and why.
 
 ## Environment variables
 

@@ -2,6 +2,10 @@ export const LIST_FLAG = "--list";
 export const HOOK_COMMAND = "hook";
 export const NAME_FLAG = "--name";
 
+const END_OF_OPTIONS = "--";
+const SESSION_FLAGS = new Set(["-r", "--resume", "-c", "--continue"]);
+const SESSION_PREFIXES = ["--resume=", "--continue="];
+
 /**
  * `hai` has no arguments of its own because `claude` owns the subcommand namespace and
  * every one of them has to reach it untouched. `hair` is a different binary, so it is not
@@ -21,6 +25,26 @@ export function parseHairArgs(processArgv: string[]): HairMode {
     return { kind: "list" };
   }
   return { kind: "resume", forward: args };
+}
+
+/**
+ * Argv that already says which conversation to open. `hair -r abc` is a natural typo of
+ * `hai -r abc`, and `hair -c` an equally natural one: without this, `hair` would claim an
+ * unrelated conversation, emit `-r <claimed> -r abc`, open `abc` because claude takes the
+ * last, and leave the claimed one held by a live pid so no other terminal could have it.
+ * Nothing to claim, so `hair` is just `hai` with the arguments as typed.
+ */
+export function forwardsItsOwnSession(argv: string[]): boolean {
+  for (const arg of argv) {
+    if (arg === END_OF_OPTIONS) {
+      // Everything after a bare `--` is prompt text rather than flags.
+      return false;
+    }
+    if (SESSION_FLAGS.has(arg) || SESSION_PREFIXES.some((prefix) => arg.startsWith(prefix))) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function nameOption(options: string[]): string | undefined {

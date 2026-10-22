@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createFakeHiddenInput, createFakeSeams, exitCodeOf, type FakeSeams, packagedRuntime } from "./__fixtures__/fake-seams.js";
 import { DEFAULT_BEDROCK_GROUP_ID } from "./az/group-membership.js";
+import { binPath, HAIR_BIN } from "./claude/hooks.js";
 import { launch } from "./launch.js";
 import { packageRoot } from "./update/self-update.js";
 
@@ -16,7 +17,7 @@ const IN_CONTAINER = { "/.dockerenv": "" };
  * rebuilt from `registrationHooks`: these strings are what `sh -c` inside the session
  * actually runs, so a change to the quoting or the command has to be seen here.
  */
-const HOOK_BIN = "'/usr/local/bin/node' '/usr/local/lib/node_modules/@hmcts-cft/hai-cli/dist/bin/hair.js'";
+const HOOK_BIN = `'/usr/local/bin/node' '${binPath(HAIR_BIN)}'`;
 const HOOKS =
   `"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"${HOOK_BIN} hook UserPromptSubmit"}]}],` +
   `"SessionEnd":[{"hooks":[{"type":"command","command":"${HOOK_BIN} hook SessionEnd"}]}]}`;

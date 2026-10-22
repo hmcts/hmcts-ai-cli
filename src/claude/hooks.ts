@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { HOOK_COMMAND, NAME_FLAG } from "../hair/args.js";
 import { SESSION_END, USER_PROMPT_SUBMIT } from "../hair/hook.js";
 import type { Logger } from "../log/logger.js";
@@ -79,6 +80,17 @@ export function registrationHooks(input: { bin: string[]; name?: string }): Hook
 }
 
 /**
+ * A sibling bin of this module, resolved from this module's own location rather than from
+ * `process.argv[1]`. `argv[1]` is the path as it was invoked, which for a global install
+ * is the bin **symlink** — `<prefix>/bin/hair`, with no `.js` and no directory in common
+ * with `dist/bin` — so anything that infers identity or a sibling path from it is reading
+ * the wrong string. `import.meta.url` is realpath'd. Same trick as `packageRoot()`.
+ */
+export function binPath(bin: string): string {
+  return fileURLToPath(new URL(`../bin/${bin}.js`, import.meta.url));
+}
+
+/**
  * `hair` is resolved differently per launch path, which is the one place this feature is
  * not watertight. In-place, hai and hair ship in the same `dist/bin`, so the command is
  * this interpreter and the absolute path of the very release that injected it — no PATH
@@ -86,14 +98,11 @@ export function registrationHooks(input: { bin: string[]; name?: string }): Hook
  * the container cannot see, so the command falls back to `hair` on PATH inside the image;
  * if it is not installed there the hook simply fails, which Claude Code ignores
  * (measured: a `command not found` hook leaves the session's output and exit status
- * untouched) and the conversation goes unregistered.
+ * untouched) and the conversation goes unregistered. The `cft-workspace/devcontainer`
+ * image does not install hai, so today that is what container mode gets.
  */
-export function hairCommand(input: { execPath: string; scriptPath: string; forContainer: boolean }): string[] {
-  const at = input.scriptPath.lastIndexOf("/");
-  if (input.forContainer || at === -1 || !input.scriptPath.endsWith(".js")) {
-    return [HAIR_BIN];
-  }
-  return [input.execPath, `${input.scriptPath.slice(0, at)}/${HAIR_BIN}.js`];
+export function hairCommand(input: { execPath: string; forContainer: boolean }): string[] {
+  return input.forContainer ? [HAIR_BIN] : [input.execPath, binPath(HAIR_BIN)];
 }
 
 /**
@@ -104,7 +113,7 @@ export function hairCommand(input: { execPath: string; scriptPath: string; forCo
  * register.
  */
 export function sessionRegistryHooks(
-  deps: { logger: Logger; execPath: string; scriptPath: string },
+  deps: { logger: Logger; execPath: string },
   input: { forwarded: string[]; forContainer: boolean }
 ): HookSettings | undefined {
   if (!shouldRegisterSession(input.forwarded)) {
@@ -112,20 +121,20 @@ export function sessionRegistryHooks(
     return undefined;
   }
   return registrationHooks({
-    bin: hairCommand({ execPath: deps.execPath, scriptPath: deps.scriptPath, forContainer: input.forContainer }),
+    bin: hairCommand({ execPath: deps.execPath, forContainer: input.forContainer }),
     name: sessionDisplayName(input.forwarded)
   });
 }
 
 /**
- * `hair`'s sibling in the same `dist/bin`. A self-update inside `launch` re-execs
- * `scriptPath` with the arguments it was given, and those arguments are by then
- * `-r <id>`: re-entering `hair` there would send the new release off to claim a *second*
- * conversation. Unrecognisable paths are left alone, since the claim already taken makes
- * that case a conversation left unrestored rather than one resumed twice.
+ * `hai`'s own entrypoint, for `hair` to hand `launch` as the script a self-update should
+ * re-exec. It is a fact `hair` states rather than one anything infers from a filename: a
+ * self-update inside `launch` re-execs `scriptPath` with the arguments it was given, and
+ * by then those are `-r <id>`, so re-entering `hair` would send the new release off to
+ * claim a *second* conversation and emit `claude -r <new> -r <old>`.
  */
-export function haiScriptPath(scriptPath: string): string {
-  return scriptPath.endsWith(`/${HAIR_BIN}.js`) ? `${scriptPath.slice(0, -`${HAIR_BIN}.js`.length)}${HAI_BIN}.js` : scriptPath;
+export function haiScriptPath(): string {
+  return binPath(HAI_BIN);
 }
 
 export interface HookEntry {

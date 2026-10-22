@@ -91,7 +91,12 @@ export async function releaseLock(deps: { fs: Fs }, lock: Lock): Promise<void> {
   }
 }
 
-async function containerRunning(deps: { runner: Runner }, name: string): Promise<boolean | null> {
+/**
+ * Shared with the session registry, which asks it about the container a conversation's
+ * pid lived in. A pid is only meaningful in its own namespace; whether the container is
+ * still there is an answer that crosses one.
+ */
+export async function containerRunning(deps: { runner: Runner }, name: string): Promise<boolean | null> {
   const result = await deps.runner.run(["docker", "inspect", "-f", "{{.State.Running}}", name]);
   if (result.code === 0) {
     return result.stdout.trim() === "true";

@@ -1,17 +1,27 @@
 import { describe, expect, it } from "vitest";
 import { createFakeSeams, FIXED_NOW } from "../__fixtures__/fake-seams.js";
-import { ATTENDED_ENV, type HookPayload, hookDecision, OWNER_PID_ENV, parsePayload, runHook, SESSION_END, USER_PROMPT_SUBMIT } from "./hook.js";
+import { ATTENDED_ENV, CONTAINER_ENV, type HookPayload, hookDecision, OWNER_PID_ENV, parsePayload, runHook, SESSION_END, USER_PROMPT_SUBMIT } from "./hook.js";
 import { COMPACTION_THRESHOLD, claimPath, recordLine, registryPath, type SessionRecord } from "./registry.js";
 
 const HOME = "/home/dev";
 const REGISTRY = registryPath({ HOME })!;
 const ATTENDED = { [ATTENDED_ENV]: "1", [OWNER_PID_ENV]: "900" };
 
+const HOST = "workstation";
+
 const payload = (over: Partial<HookPayload> = {}): HookPayload => ({ session_id: "s1", cwd: "/work", ...over });
-const record = (over: Partial<SessionRecord> = {}): SessionRecord => ({ sessionId: "s1", cwd: "/work", state: "open", at: 10, pid: 900, ...over });
+const record = (over: Partial<SessionRecord> = {}): SessionRecord => ({
+  sessionId: "s1",
+  cwd: "/work",
+  state: "open",
+  at: 10,
+  pid: 900,
+  host: HOST,
+  ...over
+});
 
 const decide = (over: Partial<Parameters<typeof hookDecision>[0]> = {}) =>
-  hookDecision({ event: USER_PROMPT_SUBMIT, payload: payload(), env: ATTENDED, now: FIXED_NOW, records: [], ...over });
+  hookDecision({ event: USER_PROMPT_SUBMIT, payload: payload(), env: ATTENDED, host: HOST, now: FIXED_NOW, records: [], ...over });
 
 describe("hookDecision", () => {
   it("should register the first prompt a human submitted", () => {
@@ -22,7 +32,7 @@ describe("hookDecision", () => {
     expect(outcome).toEqual({
       action: "register",
       reason: "a human drove this session for the first time",
-      record: { sessionId: "s1", cwd: "/work", state: "open", at: FIXED_NOW, pid: 900 }
+      record: { sessionId: "s1", cwd: "/work", state: "open", at: FIXED_NOW, pid: 900, host: HOST }
     });
   });
 
@@ -31,9 +41,31 @@ describe("hookDecision", () => {
     expect(decide({ name: "pcs" })).toMatchObject({ action: "register", record: { name: "pcs" } });
   });
 
-  it("should register a session whose owning pid it could not read, so liveness reaps it", () => {
+  it("should register a session whose owning pid it could not read, liveness then refusing to guess", () => {
     // Act / Assert
     expect(decide({ env: { [ATTENDED_ENV]: "1" } })).toMatchObject({ action: "register", record: { pid: 0 } });
+  });
+
+  /**
+   * A pid means nothing outside its own PID namespace, and container mode passes no
+   * `--pid=host`: without these the `hair` on the host would read a container's pid as if
+   * it were one of its own.
+   */
+  it("should record the namespace the pid is meaningful in", () => {
+    // Act
+    const outcome = decide({ env: { ...ATTENDED, [CONTAINER_ENV]: "hai-pcs-123" }, host: "a1b2c3" });
+
+    // Assert
+    expect(outcome).toMatchObject({ action: "register", record: { host: "a1b2c3", container: "hai-pcs-123" } });
+  });
+
+  it("should carry no container field at all for a session that is not in one hai started", () => {
+    // Act
+    const outcome = decide();
+
+    // Assert
+    expect(outcome.action).toBe("register");
+    expect(Object.keys((outcome as { record: SessionRecord }).record)).not.toContain("container");
   });
 
   it.each<[string, Record<string, string | undefined>]>([
@@ -130,7 +162,7 @@ describe("runHook", () => {
     await runHook(seams, { event: USER_PROMPT_SUBMIT, name: "pcs" });
 
     // Assert
-    expect(seams.fs.store.get(REGISTRY)).toBe(recordLine({ sessionId: "s1", cwd: "/work", state: "open", at: FIXED_NOW, pid: 900, name: "pcs" }));
+    expect(seams.fs.store.get(REGISTRY)).toBe(recordLine({ sessionId: "s1", cwd: "/work", state: "open", at: FIXED_NOW, pid: 900, name: "pcs", host: HOST }));
   });
 
   it("should append a tombstone and release the claim when the session ends", async () => {
@@ -168,7 +200,7 @@ describe("runHook", () => {
     await runHook(seams, { event: USER_PROMPT_SUBMIT });
 
     // Assert
-    expect(seams.fs.store.get(REGISTRY)).toBe(recordLine({ sessionId: "s1", cwd: "/work", state: "open", at: FIXED_NOW, pid: 900 }));
+    expect(seams.fs.store.get(REGISTRY)).toBe(recordLine({ sessionId: "s1", cwd: "/work", state: "open", at: FIXED_NOW, pid: 900, host: HOST }));
   });
 
   it("should exit quietly when anything at all goes wrong, a hook never being what breaks a session", async () => {

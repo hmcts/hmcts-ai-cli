@@ -77,16 +77,35 @@ describe("parseRegistry", () => {
     expect(record).toEqual({ sessionId: "a", cwd: "/work", state: "open", at: 0, pid: 0 });
   });
 
-  it("should keep a name the session was given", () => {
+  it("should keep the name and the namespace the pid belongs to", () => {
     // Act / Assert
-    expect(parseRecord('{"sessionId":"a","cwd":"/work","state":"open","name":"pcs","at":5,"pid":9}')).toEqual({
+    expect(parseRecord('{"sessionId":"a","cwd":"/work","state":"open","name":"pcs","at":5,"pid":9,"host":"a1b2c3","container":"hai-pcs-1"}')).toEqual({
       sessionId: "a",
       cwd: "/work",
       state: "open",
       at: 5,
       pid: 9,
-      name: "pcs"
+      name: "pcs",
+      host: "a1b2c3",
+      container: "hai-pcs-1"
     });
+  });
+
+  it("should still read a record an earlier release wrote with no namespace at all", () => {
+    // Act
+    const parsed = parseRecord('{"sessionId":"a","cwd":"/work","state":"open","at":5,"pid":9}');
+
+    // Assert
+    expect(parsed).toEqual({ sessionId: "a", cwd: "/work", state: "open", at: 5, pid: 9 });
+    expect(Object.keys(parsed!)).not.toContain("host");
+  });
+
+  it.each<[string, string]>([
+    ["an empty host", '{"sessionId":"a","cwd":"/work","state":"open","host":""}'],
+    ["a host that is not a string", '{"sessionId":"a","cwd":"/work","state":"open","host":7}']
+  ])("should drop %s rather than carry a field it could not fill", (_name, line) => {
+    // Act / Assert
+    expect(Object.keys(parseRecord(line)!)).not.toContain("host");
   });
 });
 
@@ -134,6 +153,26 @@ describe("the registry's I/O", () => {
 
     // Assert
     expect(seams.fs.store.get(REGISTRY)).toBe(recordLine(open()));
-    expect(seams.fs.store.has(`${REGISTRY}.tmp`)).toBe(false);
+    expect([...seams.fs.store.keys()].filter((key) => key.endsWith(".tmp"))).toEqual([]);
+  });
+
+  /**
+   * One shared `.tmp` would let two sessions compacting at once write different content
+   * to the same path before either renamed it — the half-written file the rename exists to
+   * rule out.
+   */
+  it("should write to a temporary file of its own, not one every session shares", async () => {
+    // Arrange
+    const seams = createFakeSeams({ env: { HOME }, pid: 4242 });
+    const renames: string[] = [];
+    seams.fs.rename = async (from) => {
+      renames.push(from);
+    };
+
+    // Act
+    await compactRegistry(seams, [open()]);
+
+    // Assert
+    expect(renames).toEqual([`${REGISTRY}.4242.tmp`]);
   });
 });

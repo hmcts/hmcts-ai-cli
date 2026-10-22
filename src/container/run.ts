@@ -4,6 +4,7 @@ import { buildClaudeArgs } from "../claude/args.js";
 import { sessionRegistryHooks } from "../claude/hooks.js";
 import { buildSettings, materialiseSettings } from "../claude/settings.js";
 import { extractUserSettings, mergeSettings, readUserSettings } from "../claude/user-settings.js";
+import { CONTAINER_ENV } from "../hair/hook.js";
 import { describeEnv } from "../log/redact.js";
 import { isEnabled } from "../system/env.js";
 import type { RunResult } from "../system/runner.js";
@@ -154,6 +155,10 @@ async function gatherContext(input: { seams: Seams; added: Record<string, string
       ...(await gitIdentity(seams)),
       HAI_IN_CONTAINER: "1",
       HAI_ENV_READY: "1",
+      // So the session-registry hook inside can record which container its pid belongs
+      // to: no --pid=host is passed, so that pid means nothing to a `hair` on the host,
+      // but whether this container is still running does.
+      [CONTAINER_ENV]: session,
       HAI_SECRETS_DIR: SECRETS_DIR,
       HAI_NESTED_DNS: dns.servers.join(",")
     },

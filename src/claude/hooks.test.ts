@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import { createFakeSeams } from "../__fixtures__/fake-seams.js";
 import { SESSION_END, USER_PROMPT_SUBMIT } from "../hair/hook.js";
 import {
+  binPath,
+  HAI_BIN,
+  HAIR_BIN,
   hairCommand,
   haiScriptPath,
   hookCommand,
@@ -92,44 +95,54 @@ describe("registrationHooks", () => {
   });
 });
 
+/**
+ * Resolved from this module's own realpath'd location, never from `process.argv[1]`:
+ * argv[1] is the path as invoked, which for a global install is the bin **symlink**
+ * (`<prefix>/bin/hair`, no `.js`), so anything inferring a sibling path or an identity
+ * from it is reading the wrong string.
+ */
+describe("binPath", () => {
+  it.each<[string]>([[HAIR_BIN], [HAI_BIN]])("should resolve %s next to this module, not next to argv[1]", (bin) => {
+    // Act
+    const path = binPath(bin);
+
+    // Assert
+    expect(path).toMatch(new RegExp(`/bin/${bin}\\.js$`));
+    expect(path.startsWith("/")).toBe(true);
+  });
+});
+
 describe("hairCommand", () => {
   it("should pin the in-place hook at this interpreter and this release's own hair.js", () => {
     // Act / Assert
-    expect(hairCommand({ execPath: "/bin/node", scriptPath: `${DIST}/hai.js`, forContainer: false })).toEqual(["/bin/node", `${DIST}/hair.js`]);
+    expect(hairCommand({ execPath: "/bin/node", forContainer: false })).toEqual(["/bin/node", binPath(HAIR_BIN)]);
   });
 
-  it.each<[string, Parameters<typeof hairCommand>[0]]>([
-    ["a container, whose session cannot see hai's host install", { execPath: "/bin/node", scriptPath: `${DIST}/hai.js`, forContainer: true }],
-    ["a script path with no directory", { execPath: "/bin/node", scriptPath: "hai.js", forContainer: false }],
-    ["a script path that is not a built bin", { execPath: "/bin/node", scriptPath: "/src/bin/hai.ts", forContainer: false }]
-  ])("should fall back to hair on PATH for %s", (_name, input) => {
+  it("should fall back to hair on PATH for a container, whose session cannot see hai's host install", () => {
     // Act / Assert
-    expect(hairCommand(input)).toEqual(["hair"]);
+    expect(hairCommand({ execPath: "/bin/node", forContainer: true })).toEqual(["hair"]);
   });
 });
 
 describe("haiScriptPath", () => {
-  it.each<[string, string, string]>([
-    ["hair's sibling, so a self-update re-execs hai rather than claiming a second conversation", `${DIST}/hair.js`, `${DIST}/hai.js`],
-    ["a path that is already hai's", `${DIST}/hai.js`, `${DIST}/hai.js`],
-    ["anything it does not recognise, left alone", "/opt/weird", "/opt/weird"]
-  ])("should resolve %s", (_name, given, expected) => {
+  it("should name hai's own entrypoint, so a self-update re-execs it rather than re-entering hair", () => {
     // Act / Assert
-    expect(haiScriptPath(given)).toBe(expected);
+    expect(haiScriptPath()).toBe(binPath(HAI_BIN));
+    expect(haiScriptPath()).toMatch(/\/bin\/hai\.js$/);
   });
 });
 
 describe("sessionRegistryHooks", () => {
   it("should build the hooks for a conversation", () => {
     // Arrange
-    const seams = createFakeSeams({ execPath: "/bin/node", scriptPath: `${DIST}/hair.js` });
+    const seams = createFakeSeams({ execPath: "/bin/node" });
 
     // Act
     const hooks = sessionRegistryHooks(seams, { forwarded: ["-n", "pcs"], forContainer: false });
 
     // Assert
     expect(hooks?.[USER_PROMPT_SUBMIT]).toEqual([
-      { hooks: [{ type: "command", command: `'/bin/node' '${DIST}/hair.js' hook UserPromptSubmit --name 'pcs'` }] }
+      { hooks: [{ type: "command", command: `'/bin/node' '${binPath(HAIR_BIN)}' hook UserPromptSubmit --name 'pcs'` }] }
     ]);
   });
 

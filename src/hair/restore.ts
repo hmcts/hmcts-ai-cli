@@ -1,20 +1,30 @@
-import { pidAlive } from "../container/lock.js";
+import { containerRunning, pidAlive } from "../container/lock.js";
+import type { Fs } from "../system/fs.js";
 import type { Runner } from "../system/runner.js";
 import type { SessionRecord } from "./registry.js";
 
 /**
- * Pure over the two things worth knowing about a registered session: whether anything
- * closed it, and whether the process that owned it is still there. First match wins,
- * the same shape as `lockDecision` in src/container/lock.ts.
+ * Pure over the three things worth knowing about a registered session: whether anything
+ * closed it, whether the directory it belongs to is still there, and whether the process
+ * that owned it is still running. First match wins, the same shape as `lockDecision` in
+ * src/container/lock.ts.
  *
  * A live pid is *not* a restore candidate. `claude -r` on a running session forks a copy
  * of the conversation rather than attaching to it, so resuming one would hand the
  * engineer a duplicate instead of the session they lost. An unanswerable pid is left
  * alone too — the same rule the transcript lock follows, for the same reason.
  */
-export function restoreDecision(input: { record: SessionRecord; alive: boolean | null }): RestoreOutcome {
+export function restoreDecision(input: { record: SessionRecord; cwdExists: boolean; alive: boolean | null }): RestoreOutcome {
   if (input.record.state !== "open") {
     return { action: "skip", reason: "the session was closed cleanly" };
+  }
+  if (!input.cwdExists) {
+    // Decided here, before any claim is taken. `process.chdir` throws on a missing
+    // directory, and a worktree or a clone being deleted under a registered conversation
+    // is routine — so a claim taken first and a chdir that then throws would end `hair`
+    // with the claim held, and the next run would reclaim the same record and fail again,
+    // for every conversation, until someone hand-edited the registry.
+    return { action: "skip", reason: `its directory ${input.record.cwd} is gone, so there is nowhere to resume it` };
   }
   if (input.alive === true) {
     return { action: "skip", reason: `pid ${input.record.pid} is still running, so the session is live` };
@@ -31,14 +41,18 @@ export function restoreDecision(input: { record: SessionRecord; alive: boolean |
  * conversation whatever directory it belongs to, rather than starting a fresh session and
  * leaving one stranded.
  */
-export function restoreCandidates(input: { records: SessionRecord[]; cwd: string; liveness: Map<string, boolean | null> }): {
+export function restoreCandidates(input: { records: SessionRecord[]; cwd: string; liveness: Map<string, boolean | null>; existingDirs: Set<string> }): {
   candidates: SessionRecord[];
   skipped: Skipped[];
 } {
   const candidates: SessionRecord[] = [];
   const skipped: Skipped[] = [];
   for (const record of input.records) {
-    const outcome = restoreDecision({ record, alive: input.liveness.get(record.sessionId) ?? null });
+    const outcome = restoreDecision({
+      record,
+      cwdExists: input.existingDirs.has(record.cwd),
+      alive: input.liveness.get(record.sessionId) ?? null
+    });
     if (outcome.action === "restore") {
       candidates.push(record);
     } else {
@@ -54,21 +68,77 @@ export function describeCandidate(record: SessionRecord, cwd: string): string {
 }
 
 /**
- * Liveness, through the same `pidAlive` the transcript lock uses: whether the process
- * that owned the conversation is still there. Liveness beats comparing a recorded boot
- * time because it answers the question that matters and the code already exists — at the
- * cost of a pid the kernel reused after a reboot reading as "still running", which leaves
- * that conversation to be reopened by hand. That is the right way round: the opposite
- * mistake resumes a live session, and `claude -r` forks one rather than attaching.
+ * How a record's pid can be asked about at all, pure over where it was written and where
+ * we are standing. A pid only means something in its own PID namespace, and the two
+ * halves of this feature are routinely in different ones: the hook runs inside the
+ * container session and records its `CLAUDE_PID`, while `hair` may run on the host, where
+ * `buildDockerArgs` passes no `--pid=host`. Both directions of that mistake bite. A
+ * container pid that happens to exist on the host — low pids are kernel threads, and
+ * after a reboot they are exactly the numbers that come back — hides a crashed
+ * conversation for good; a container pid absent on the host reads as gone, so `hair`
+ * claims a *live* session and `claude -r` forks it, which is the one outcome this whole
+ * design exists to prevent.
+ *
+ * So: the pid is probed only when the record was written where we are standing.
+ * Otherwise, a record that names the hai container it ran in can still be answered
+ * definitively through Docker — a container that is gone took its session with it, which
+ * is what makes the bare-host flow work at all, since a reboot removes every one of them.
+ * Anything else is unanswerable, and `restoreDecision` already leaves those alone.
  */
-export async function probeLiveness(deps: { runner: Runner }, records: SessionRecord[]): Promise<Map<string, boolean | null>> {
+export function livenessPlan(input: { record: SessionRecord; host: string | undefined }): LivenessPlan {
+  if (input.record.pid === 0) {
+    // A registration hai could not read a CLAUDE_PID for. Nothing to ask, and "no pid" is
+    // not "no process": the session may well be the one running in this very terminal.
+    return { probe: "none", reason: "the registration recorded no owning pid" };
+  }
+  if (input.record.host !== undefined && input.record.host === input.host) {
+    return { probe: "pid", reason: `pid ${input.record.pid} is in this namespace (${input.host})` };
+  }
+  if (input.record.container !== undefined) {
+    return { probe: "container", reason: `pid ${input.record.pid} belongs to the ${input.record.container} container` };
+  }
+  return { probe: "none", reason: `pid ${input.record.pid} was recorded on ${input.record.host ?? "an unnamed host"}, which cannot be compared with this one` };
+}
+
+/**
+ * Only the open records: a tombstone's pid is never asked about, and `restoreDecision`
+ * discards them first anyway. One sequential `ps` per record adds up — compaction only
+ * rewrites the registry at 500 lines — and these are answers that would be thrown away.
+ */
+export async function probeLiveness(
+  deps: { runner: Runner; logger: { verbose(message: string): void }; host: string | undefined },
+  records: SessionRecord[]
+): Promise<Map<string, boolean | null>> {
   const liveness = new Map<string, boolean | null>();
-  for (const record of records) {
-    // A record with no pid is a registration hai could not read a CLAUDE_PID for, and a
-    // session no process owns is a session nobody is running.
-    liveness.set(record.sessionId, record.pid === 0 ? false : await pidAlive(deps, record.pid));
+  for (const record of records.filter((candidate) => candidate.state === "open")) {
+    const plan = livenessPlan({ record, host: deps.host });
+    deps.logger.verbose(`${record.sessionId}: ${plan.reason}`);
+    liveness.set(record.sessionId, await answer(deps, record, plan));
   }
   return liveness;
+}
+
+/** The distinct directories of the open records, so a deleted one is a skip and not a throw. */
+export async function probeDirs(deps: { fs: Fs }, records: SessionRecord[]): Promise<Set<string>> {
+  const existing = new Set<string>();
+  for (const dir of new Set(records.filter((record) => record.state === "open").map((record) => record.cwd))) {
+    if (await deps.fs.exists(dir)) {
+      existing.add(dir);
+    }
+  }
+  return existing;
+}
+
+async function answer(deps: { runner: Runner }, record: SessionRecord, plan: LivenessPlan): Promise<boolean | null> {
+  if (plan.probe === "pid") {
+    return await pidAlive(deps, record.pid);
+  }
+  if (plan.probe === "container") {
+    // False only when Docker said "no such object": a container that is gone is a session
+    // that is gone. True or unanswerable both leave the conversation alone.
+    return (await containerRunning(deps, record.container!)) === false ? false : null;
+  }
+  return null;
 }
 
 function rank(record: SessionRecord, cwd: string): number {
@@ -78,6 +148,11 @@ function rank(record: SessionRecord, cwd: string): number {
 /** Only to break a tie, so two terminals walk the candidates in the same order. */
 function compare(a: string, b: string): number {
   return a.localeCompare(b);
+}
+
+export interface LivenessPlan {
+  probe: "pid" | "container" | "none";
+  reason: string;
 }
 
 export interface RestoreOutcome {

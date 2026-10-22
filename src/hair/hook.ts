@@ -22,6 +22,13 @@ export const ATTENDED_ENV = "CLAUDE_CODE_SESSION_ATTENDED";
 export const OWNER_PID_ENV = "CLAUDE_PID";
 
 /**
+ * The container hai started for this session, set as a `--env` in `src/container/run.ts`.
+ * A pid recorded in there cannot be asked about from the host, but the container can, so
+ * this is what a `hair` on the host reads a crashed container session from.
+ */
+export const CONTAINER_ENV = "HAI_CONTAINER_NAME";
+
+/**
  * Pure over the payload, the environment and what the registry already says. First match
  * wins.
  *
@@ -39,6 +46,7 @@ export function hookDecision(input: {
   payload: HookPayload | null;
   env: Env;
   name?: string;
+  host: string;
   now: number;
   records: SessionRecord[];
 }): HookOutcome {
@@ -74,7 +82,11 @@ export function hookDecision(input: {
       state: "open",
       at: input.now,
       pid,
-      ...(input.name === undefined || input.name === "" ? {} : { name: input.name })
+      // The namespace the pid is meaningful in. Without these, `hair` on the host would
+      // read a container pid as if it were one of its own.
+      ...field("name", input.name),
+      ...field("host", input.host),
+      ...field("container", input.env[CONTAINER_ENV])
     }
   };
 }
@@ -86,13 +98,21 @@ export function hookDecision(input: {
  * them the prompt they were submitting.
  */
 export async function runHook(
-  deps: { fs: Fs; clock: Clock; env: Env; logger: Logger; stdin(): Promise<string> },
+  deps: { fs: Fs; clock: Clock; env: Env; logger: Logger; hostname: string; pid: number; stdin(): Promise<string> },
   input: { event: string; name?: string }
 ): Promise<void> {
   try {
     const payload = parsePayload(await deps.stdin());
     const { records, lines } = await readRegistry(deps);
-    const outcome = hookDecision({ event: input.event, payload, env: deps.env, name: input.name, now: deps.clock.now(), records });
+    const outcome = hookDecision({
+      event: input.event,
+      payload,
+      env: deps.env,
+      name: input.name,
+      host: deps.hostname,
+      now: deps.clock.now(),
+      records
+    });
     deps.logger.verbose(`hair hook ${input.event}: ${outcome.reason}`);
     if (outcome.action === "ignore") {
       return;
@@ -120,6 +140,11 @@ export function parsePayload(text: string): HookPayload | null {
 
 function closed(now: number, payload: HookPayload): SessionRecord {
   return { sessionId: payload.session_id!, cwd: payload.cwd!, state: "closed", at: now, pid: 0 };
+}
+
+/** Absent rather than empty, so a record carries no field it could not fill. */
+function field<K extends string>(key: K, value: string | undefined): Record<K, string> | Record<string, never> {
+  return value === undefined || value === "" ? {} : ({ [key]: value } as Record<K, string>);
 }
 
 /**

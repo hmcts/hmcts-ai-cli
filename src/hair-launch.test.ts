@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createFakeSeams, type FakeSeams } from "./__fixtures__/fake-seams.js";
 import { DEFAULT_BEDROCK_GROUP_ID } from "./az/group-membership.js";
+import { haiScriptPath } from "./claude/hooks.js";
 import { claimPath, recordLine, registryPath, type SessionRecord } from "./hair/registry.js";
 import { launchHair, NOTHING_TO_RESTORE } from "./hair-launch.js";
 import { packageRoot } from "./update/self-update.js";
@@ -11,7 +12,18 @@ const REGISTRY = registryPath({ HOME })!;
 /** In a container, so `launch` hands over in place rather than starting one. */
 const IN_CONTAINER = { "/.dockerenv": "" };
 
-const record = (over: Partial<SessionRecord> = {}): SessionRecord => ({ sessionId: "s1", cwd: "/work", state: "open", at: 10, pid: 100, ...over });
+/** The fake seams' own hostname, so a recorded pid is one `hair` may ask `ps` about. */
+const HOST = "workstation";
+
+const record = (over: Partial<SessionRecord> = {}): SessionRecord => ({
+  sessionId: "s1",
+  cwd: "/work",
+  state: "open",
+  at: 10,
+  pid: 100,
+  host: HOST,
+  ...over
+});
 
 /** Everything launch asks a host about, plus a `ps` that says every recorded pid is gone. */
 function respond(argv: string[]) {
@@ -28,13 +40,19 @@ function respond(argv: string[]) {
 }
 
 function seamsIn(files: Record<string, string> = {}, over: Parameters<typeof createFakeSeams>[0] = {}) {
-  return createFakeSeams({
+  const seams = createFakeSeams({
     env: { HOME, HAI_NO_UPDATE: "1", AWS_BEARER_TOKEN_BEDROCK: KEY },
     cwd: "/work",
     files: { ...IN_CONTAINER, ...files },
     respond,
     ...over
   });
+  // The directories the records point at. A registered conversation whose directory has
+  // been deleted is a skip, not a chdir that throws.
+  for (const dir of ["/work", "/other", "/elsewhere"]) {
+    seams.fs.dirs.add(dir);
+  }
+  return seams;
 }
 
 const execArgv = (seams: FakeSeams) => seams.runner.execCalls[0]?.argv ?? [];
@@ -52,6 +70,61 @@ describe("launchHair", () => {
       expect(execArgv(seams)[0]).toBe("claude");
       expect(execArgv(seams).slice(-2)).toEqual(["-r", "s1"]);
       expect(seams.fs.store.has(claimPath({ HOME }, "s1")!)).toBe(true);
+    });
+
+    /**
+     * The one field that makes `hair --list` usable. The resumed session's own hook reads
+     * the name off the argv, so without this a session started as `hai -n pcs` comes back
+     * nameless and shows as "(unnamed)" for ever after.
+     */
+    it("should put the record's name back on the argv, so the re-registration keeps it", async () => {
+      // Arrange
+      const seams = seamsIn({ [REGISTRY]: recordLine(record({ name: "the pcs one" })) });
+
+      // Act
+      await launchHair({ seams, processArgv: ["node", "/bin/hair"] });
+
+      // Assert
+      expect(execArgv(seams).slice(-4)).toEqual(["-r", "s1", "--name", "the pcs one"]);
+    });
+
+    /**
+     * `process.chdir` throws, and the claim is taken before the handover: a claim taken
+     * and then a throw would end `hair` with the claim held, and the next run would
+     * reclaim the same record and fail again until the registry was hand-edited.
+     */
+    it("should skip a conversation whose directory has been deleted, without claiming it", async () => {
+      // Arrange
+      const seams = seamsIn(
+        { [REGISTRY]: recordLine(record({ cwd: "/deleted-worktree" })) },
+        { env: { HOME, HAI_NO_UPDATE: "1", AWS_BEARER_TOKEN_BEDROCK: KEY, HAI_VERBOSE: "1" } }
+      );
+
+      // Act
+      await launchHair({ seams, processArgv: ["node", "/bin/hair"] });
+
+      // Assert
+      expect(seams.chdirs).toEqual([]);
+      expect(seams.fs.store.has(claimPath({ HOME }, "s1")!)).toBe(false);
+      expect(seams.lines.join("")).toContain("its directory /deleted-worktree is gone");
+    });
+
+    it.each<[string, string[]]>([
+      ["-r, a natural typo of hai -r", ["-r", "abc"]],
+      ["--resume=", ["--resume=abc"]],
+      ["-c", ["-c"]],
+      ["--continue", ["--continue"]]
+    ])("should claim nothing when the arguments already say which conversation to open, given %s", async (_name, args) => {
+      // Arrange
+      const seams = seamsIn({ [REGISTRY]: recordLine(record()) });
+
+      // Act
+      await launchHair({ seams, processArgv: ["node", "/bin/hair", ...args] });
+
+      // Assert
+      expect(execArgv(seams).slice(-args.length)).toEqual(args);
+      expect(execArgv(seams)).not.toContain("s1");
+      expect(seams.fs.store.has(claimPath({ HOME }, "s1")!)).toBe(false);
     });
 
     it("should forward the extra arguments it was given after the resume", async () => {
@@ -145,7 +218,12 @@ describe("launchHair", () => {
       expect(execArgv(seams)).not.toContain("-r");
     });
 
-    it("should hand hai's own script path over, so a self-update does not re-enter hair", async () => {
+    /**
+     * `process.argv[1]` for a global install is the bin **symlink** — `<prefix>/bin/hair`,
+     * no `.js` — so the script a self-update re-execs cannot be derived from it. Re-entering
+     * `hair` there would claim a second conversation and emit `-r <new> -r <old>`.
+     */
+    it("should hand hai's own entrypoint over, so a self-update does not re-enter hair", async () => {
       // Arrange
       const seams = seamsIn(
         {
@@ -155,16 +233,18 @@ describe("launchHair", () => {
         },
         {
           env: { HOME, AWS_BEARER_TOKEN_BEDROCK: KEY },
-          scriptPath: "/opt/hai-cli/dist/bin/hair.js",
+          // The bin symlink, as node reports it.
+          scriptPath: "/usr/local/bin/hair",
           fetch: async () => new Response(JSON.stringify({ "dist-tags": { latest: "99.0.0" } }))
         }
       );
 
       // Act
-      await launchHair({ seams, processArgv: ["node", "/opt/hai-cli/dist/bin/hair.js"] });
+      await launchHair({ seams, processArgv: ["node", "/usr/local/bin/hair"] });
 
       // Assert
-      expect(execArgv(seams)).toEqual([seams.execPath, "/opt/hai-cli/dist/bin/hai.js", "-r", "s1"]);
+      expect(execArgv(seams)).toEqual([seams.execPath, haiScriptPath(), "-r", "s1"]);
+      expect(haiScriptPath()).toMatch(/\/bin\/hai\.js$/);
     });
   });
 

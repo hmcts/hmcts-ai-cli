@@ -166,6 +166,7 @@ export function createFakeSeams(
     hiddenInput: rest.hiddenInput ?? createFakeHiddenInput(),
     env,
     platform: rest.platform ?? "linux",
+    hostname: rest.hostname ?? "workstation",
     cwd: rest.cwd ?? "/work",
     execPath: rest.execPath ?? "/usr/local/bin/node",
     scriptPath: rest.scriptPath ?? "/usr/local/lib/node_modules/@hmcts-cft/hai-cli/dist/bin/hai.js",

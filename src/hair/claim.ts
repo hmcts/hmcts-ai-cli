@@ -19,9 +19,15 @@ export const CLAIM_DIR_MODE = 0o700;
  * resume", where the right response to a no is to try the next conversation. Two keys,
  * two outcomes, two lifetimes.
  */
-export function claimDecision(input: { existing: ClaimFile | null; alive: boolean | null }): ClaimOutcome {
+export function claimDecision(input: { existing: ClaimFile | null; host: string; alive: boolean | null }): ClaimOutcome {
   if (input.existing === null) {
     return { action: "take", reason: "nothing holds this conversation" };
+  }
+  if (input.existing.host !== input.host) {
+    // A claimer's pid is in the claimer's PID namespace, same as a session's. Reclaiming
+    // on a liveness answer from the wrong namespace is how two terminals both decide a
+    // conversation is theirs, and `claude -r` forks rather than attaches.
+    return { action: "taken", reason: `another terminal on ${input.existing.host ?? "an unnamed host"} claimed it` };
   }
   if (input.alive === false) {
     return { action: "reclaim", reason: `the terminal that claimed it (pid ${input.existing.pid}) is gone` };
@@ -36,14 +42,17 @@ export function parseClaim(contents: string | null): ClaimFile | null {
   try {
     const parsed = JSON.parse(contents) as Partial<ClaimFile>;
     const pid = Number(parsed.pid);
-    return Number.isFinite(pid) ? { pid, at: Number(parsed.at) || 0 } : null;
+    if (!Number.isFinite(pid)) {
+      return null;
+    }
+    return { pid, at: Number(parsed.at) || 0, ...(typeof parsed.host === "string" && parsed.host !== "" ? { host: parsed.host } : {}) };
   } catch {
     return null;
   }
 }
 
-export function claimContents(input: { pid: number; at: number }): string {
-  return `${JSON.stringify({ pid: input.pid, at: input.at })}\n`;
+export function claimContents(input: { pid: number; at: number; host: string }): string {
+  return `${JSON.stringify({ pid: input.pid, at: input.at, host: input.host })}\n`;
 }
 
 /**
@@ -59,7 +68,7 @@ export function claimContents(input: { pid: number; at: number }): string {
  * the file already gone and moves on rather than both terminals deciding it was theirs.
  */
 export async function claimFirst(
-  deps: { fs: Fs; clock: Clock; runner: Runner; logger: Logger; env: Env; pid: number },
+  deps: { fs: Fs; clock: Clock; runner: Runner; logger: Logger; env: Env; pid: number; hostname: string },
   candidates: SessionRecord[]
 ): Promise<SessionRecord | null> {
   const dir = registryDir(deps.env);
@@ -74,16 +83,19 @@ export async function claimFirst(
   return null;
 }
 
-async function claimOne(deps: { fs: Fs; clock: Clock; runner: Runner; logger: Logger; env: Env; pid: number }, record: SessionRecord): Promise<boolean> {
+async function claimOne(
+  deps: { fs: Fs; clock: Clock; runner: Runner; logger: Logger; env: Env; pid: number; hostname: string },
+  record: SessionRecord
+): Promise<boolean> {
   const path = claimPath(deps.env, record.sessionId)!;
-  const contents = claimContents({ pid: deps.pid, at: deps.clock.now() });
+  const contents = claimContents({ pid: deps.pid, at: deps.clock.now(), host: deps.hostname });
   await deps.fs.mkdirp(dirOf(path), { mode: CLAIM_DIR_MODE });
   if (await deps.fs.createExclusive(path, contents, { mode: REGISTRY_FILE_MODE })) {
     deps.logger.verbose(`claimed ${record.sessionId}: nothing held it`);
     return true;
   }
   const existing = parseClaim(await deps.fs.readText(path));
-  const outcome = claimDecision({ existing, alive: existing === null ? null : await pidAlive(deps, existing.pid) });
+  const outcome = claimDecision({ existing, host: deps.hostname, alive: existing === null ? null : await pidAlive(deps, existing.pid) });
   deps.logger.verbose(`${record.sessionId}: ${outcome.reason}`);
   if (outcome.action === "taken") {
     return false;
@@ -114,6 +126,8 @@ function dirOf(path: string): string {
 
 export interface ClaimFile {
   pid: number;
+  /** The namespace the pid is meaningful in, so a claim is never reclaimed on a foreign one. */
+  host?: string;
   at: number;
 }
 

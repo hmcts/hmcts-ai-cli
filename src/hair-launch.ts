@@ -1,14 +1,15 @@
 import { HAIR_BIN, haiScriptPath } from "./claude/hooks.js";
-import { parseHairArgs } from "./hair/args.js";
+import { forwardsItsOwnSession, NAME_FLAG, parseHairArgs } from "./hair/args.js";
 import { claimFirst } from "./hair/claim.js";
 import { runHook } from "./hair/hook.js";
 import { readRegistry } from "./hair/registry.js";
-import { describeCandidate, probeLiveness, restoreCandidates } from "./hair/restore.js";
+import { describeCandidate, probeDirs, probeLiveness, restoreCandidates } from "./hair/restore.js";
 import { launch } from "./launch.js";
 import type { Seams } from "./system/seams.js";
 
 export const RESUME_FLAG = "-r";
 export const NOTHING_TO_RESTORE = "no conversation is waiting to be restored, so this is a fresh session";
+export const ALREADY_RESUMING = "the arguments already say which conversation to open, so nothing is claimed from the registry";
 
 /**
  * `hair` — "hai resume". A reboot kills every Claude Code session in every VS Code
@@ -30,9 +31,22 @@ export async function launchHair(deps: { seams: Seams; processArgv: string[] }):
     return await runHook(seams, { event: mode.event, name: mode.name });
   }
 
+  // hai's own entrypoint, stated rather than inferred: a self-update inside `launch`
+  // re-execs this path with the arguments it was given, and by then they are `-r <id>`.
+  const handover = { ...seams, scriptPath: haiScriptPath() };
+
+  if (mode.kind === "resume" && forwardsItsOwnSession(mode.forward)) {
+    seams.logger.verbose(ALREADY_RESUMING);
+    return await launch({ seams: handover, processArgv: forwarding(mode.forward) });
+  }
+
   const { records } = await readRegistry(seams);
-  const liveness = await probeLiveness(seams, records);
-  const { candidates, skipped } = restoreCandidates({ records, cwd: seams.cwd, liveness });
+  const { candidates, skipped } = restoreCandidates({
+    records,
+    cwd: seams.cwd,
+    liveness: await probeLiveness({ ...seams, host: seams.hostname }, records),
+    existingDirs: await probeDirs(seams, records)
+  });
   for (const { record, reason } of skipped) {
     seams.logger.verbose(`${record.sessionId}: ${reason}`);
   }
@@ -44,9 +58,10 @@ export async function launchHair(deps: { seams: Seams; processArgv: string[] }):
 
   // Committed before the handover, and before anything else can run: the resumed
   // session's own hook re-registers it as open within seconds, and `claude -r` on a live
-  // session forks a copy of the conversation rather than attaching to it.
+  // session forks a copy of the conversation rather than attaching to it. Every reason a
+  // record cannot be resumed — a closed session, a live pid, a directory that is gone —
+  // is decided before this point, so nothing after the claim can fail and leave it held.
   const claimed = await claimFirst(seams, candidates);
-  const handover = { ...seams, scriptPath: haiScriptPath(seams.scriptPath) };
   if (claimed === null) {
     seams.logger.say(NOTHING_TO_RESTORE);
     return await launch({ seams: handover, processArgv: forwarding(mode.forward) });
@@ -59,8 +74,15 @@ export async function launchHair(deps: { seams: Seams; processArgv: string[] }):
   seams.chdir(claimed.cwd);
   return await launch({
     seams: { ...handover, cwd: claimed.cwd },
-    processArgv: forwarding([RESUME_FLAG, claimed.sessionId, ...mode.forward])
+    // The name goes back on the argv, because the re-registration the resumed session's
+    // own hook writes reads it from there: without it a session started as `hai -n pcs`
+    // comes back nameless and every later `hair --list` shows it as "(unnamed)".
+    processArgv: forwarding([RESUME_FLAG, claimed.sessionId, ...named(claimed.name), ...mode.forward])
   });
+}
+
+function named(name: string | undefined): string[] {
+  return name === undefined ? [] : [NAME_FLAG, name];
 }
 
 /**
