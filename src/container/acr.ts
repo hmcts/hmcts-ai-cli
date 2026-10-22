@@ -107,10 +107,13 @@ export async function pullImage(
   const stamp = await readStamp(deps);
   const present = (await deps.runner.run(["docker", "image", "inspect", input.image])).code === 0;
   const decision = shouldPull({ policy: input.policy, present });
-  deps.logger.verbose(`${decision.yes ? "pulling" : "not pulling"} ${input.image}: ${decision.reason}`);
+  const line = `${decision.yes ? "pulling" : "not pulling"} ${input.image}: ${decision.reason}`;
   if (!decision.yes) {
+    deps.logger.verbose(line);
     return;
   }
+  // Said at normal verbosity: a cold pull is minutes long, and this is on screen before docker's first byte.
+  deps.logger.say(line);
   if (!(await pullOnce(deps, input.image, stamp.loginAt, false)) && !present) {
     throw new Error(`could not pull ${input.image}, and it is not on this machine. Run az login, check the F5 VPN, then try again.`);
   }
@@ -132,7 +135,9 @@ async function pullOnce(
       }
     }
   }
-  const result = await deps.runner.run(["docker", "pull", image], { timeoutMs: PULL_TIMEOUT_MS });
+  // Echoed rather than handed the terminal, so the stderr an `unauthorized` arrives in is still
+  // captured. Piped output means no TTY, so docker prints a line per layer, not the ANSI display.
+  const result = await deps.runner.run(["docker", "pull", image], { timeoutMs: PULL_TIMEOUT_MS, echo: true });
   if (result.code === 0) {
     return true;
   }

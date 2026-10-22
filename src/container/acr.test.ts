@@ -207,7 +207,7 @@ describe("pullImage", () => {
     expect(seams.runner.calls.map((call) => call.argv[1])).toEqual(["image", "pull"]);
   });
 
-  it("should refresh the token and retry once on an unauthorized", async () => {
+  it("should stream the pull and still read an unauthorized out of the captured stderr, refreshing the token and retrying once", async () => {
     // Arrange
     let pulls = 0;
     const seams = createFakeSeams({
@@ -231,6 +231,29 @@ describe("pullImage", () => {
     // Assert
     expect(pulls).toBe(2);
     expect(seams.runner.calls.filter((call) => call.argv[1] === "login")).toHaveLength(1);
+    expect(seams.runner.calls.filter((call) => call.argv[1] === "pull").map((call) => call.opts.echo)).toEqual([true, true]);
+  });
+
+  it("should say what it is pulling without being asked to be verbose, and say it once", async () => {
+    // Arrange
+    const seams = createFakeSeams({ env: { HOME }, respond: (argv) => ({ code: argv[1] === "image" ? 1 : 0, stdout: argv[1] === "acr" ? TOKEN : "" }) });
+
+    // Act
+    await pullImage(seams, { image, policy: undefined });
+
+    // Assert
+    expect(seams.lines).toEqual([`hai: pulling ${image}: no HAI_PULL set, so the default is always\n`]);
+  });
+
+  it("should leave a decision not to pull verbose-only, so a HAI_PULL=never launch says nothing", async () => {
+    // Arrange
+    const seams = createFakeSeams({ env: { HOME }, respond: () => ({ code: 0 }) });
+
+    // Act
+    await pullImage(seams, { image, policy: "never" });
+
+    // Assert
+    expect(seams.lines).toEqual([]);
   });
 
   it("should not retry twice", async () => {

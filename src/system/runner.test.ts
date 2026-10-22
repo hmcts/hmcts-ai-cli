@@ -108,6 +108,54 @@ describe("createRunner", () => {
       expect(result.stdout).toBe("a; rm -rf /");
     });
 
+    it("should forward output as it arrives and still capture it", async () => {
+      // Arrange
+      const echoed: string[] = [];
+      const runner = createRunner({ echo: (text) => echoed.push(text) });
+
+      // Act
+      const result = await runner.run([NODE, "-e", "process.stdout.write('layer one\\n');process.stderr.write('layer two\\n')"], { echo: true });
+
+      // Assert
+      expect(result).toEqual({ code: 0, stdout: "layer one\n", stderr: "layer two\n" });
+      expect(echoed.join("")).toContain("layer one\n");
+      expect(echoed.join("")).toContain("layer two\n");
+    });
+
+    it("should capture without forwarding anything when it was not asked to echo", async () => {
+      // Arrange
+      const echoed: string[] = [];
+      const runner = createRunner({ echo: (text) => echoed.push(text) });
+
+      // Act
+      const result = await runner.run([NODE, "-e", "process.stdout.write('out');process.stderr.write('err')"]);
+
+      // Assert
+      expect(result).toEqual({ code: 0, stdout: "out", stderr: "err" });
+      expect(echoed).toEqual([]);
+    });
+
+    it("should echo to stderr through redact by default", async () => {
+      // Arrange
+      const written: string[] = [];
+      const real = process.stderr.write.bind(process.stderr);
+      process.stderr.write = ((text: string) => {
+        written.push(text);
+        return true;
+      }) as typeof process.stderr.write;
+
+      // Act
+      const result = await createRunner()
+        .run([NODE, "-e", "process.stdout.write('eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.secret.sig')"], { echo: true })
+        .finally(() => {
+          process.stderr.write = real;
+        });
+
+      // Assert
+      expect(written.join("")).toBe("[redacted]");
+      expect(result.stdout).toContain("eyJ");
+    });
+
     it("should refuse an empty argv", async () => {
       // Arrange
       const runner = createRunner();

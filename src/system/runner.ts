@@ -1,14 +1,16 @@
 import { spawn } from "node:child_process";
+import { redact } from "../log/redact.js";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const SPAWN_FAILED_CODE = 127;
 const KILLED_CODE = 124;
 const SIGNALLED_CODE = 128;
 
-export function createRunner({ exit = defaultExit }: { exit?: (code: number) => never } = {}): Runner {
+export function createRunner({ exit = defaultExit, echo = defaultEcho }: { exit?: (code: number) => never; echo?: (text: string) => void } = {}): Runner {
   return {
     run(argv, opts = {}) {
       return new Promise((resolve) => {
+        const forward = opts.echo === true ? echo : null;
         const child = spawn(binary(argv), argv.slice(1), {
           cwd: opts.cwd,
           env: opts.env,
@@ -23,9 +25,11 @@ export function createRunner({ exit = defaultExit }: { exit?: (code: number) => 
         child.stderr?.setEncoding("utf8");
         child.stdout?.on("data", (chunk: string) => {
           stdout += chunk;
+          forward?.(chunk);
         });
         child.stderr?.on("data", (chunk: string) => {
           stderr += chunk;
+          forward?.(chunk);
         });
 
         // A failure to spawn reads as a non-zero exit rather than a rejection: every caller
@@ -101,11 +105,22 @@ function defaultExit(code: number): never {
   process.exit(code);
 }
 
+function defaultEcho(text: string): void {
+  process.stderr.write(redact(text));
+}
+
 export interface RunOptions {
   stdin?: string;
   cwd?: string;
   timeoutMs?: number;
   env?: Record<string, string>;
+  /**
+   * Also write the child's output onward as it arrives, while still capturing it for the
+   * result: a long command has to show that it is doing something, and callers that parse
+   * what it said still can. It goes to stderr, because stdout is hai's own parseable
+   * output and the terminal is about to be handed over.
+   */
+  echo?: boolean;
 }
 
 export interface RunResult {
