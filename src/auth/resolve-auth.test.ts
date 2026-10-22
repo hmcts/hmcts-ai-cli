@@ -99,16 +99,17 @@ describe("resolveAuth", () => {
     expect(seams.fs.store.has(CACHE_PATH)).toBe(false);
   });
 
-  it("should ask az nothing at all when offline", async () => {
-    // Arrange
-    const seams = createFakeSeams({ env: { HOME, HAI_OFFLINE: "1" } });
+  it("should ask az who we are when offline but never call Graph", async () => {
+    // Arrange — `az account show` is a local read of ~/.azure, so it is the one az call
+    // offline still makes: without it there is no cache key and no cached membership.
+    const seams = createFakeSeams({ env: { HOME, HAI_OFFLINE: "1" }, respond: respondAz });
 
     // Act
     const { resolution } = await resolveAuth({ seams, agentHub: hub() });
 
     // Assert — unknown membership with nothing personal to reach for still offers the prompt.
     expect(resolution).toMatchObject({ route: "bedrock", credentialSource: "prompt" });
-    expect(seams.runner.calls).toHaveLength(0);
+    expect(seams.runner.calls.map((call) => call.argv)).toEqual([["az", "account", "show", "-o", "json"]]);
     expect(seams.fs.store.has(CACHE_PATH)).toBe(false);
   });
 
@@ -313,9 +314,10 @@ describe("resolveAuth", () => {
     });
 
     it("should refuse offline by naming HAI_ROUTE=own-licence, not the az login HAI_OFFLINE opted out of", async () => {
-      // Arrange — offline there is no membership answer to be had, so the refusal stands;
-      // what it must not do is prescribe the lookups the flag asked it to skip.
-      const seams = createFakeSeams({ env: { HOME, HAI_OFFLINE: "1", CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-x" } });
+      // Arrange — the identity resolves and the cache holds nothing for it, so offline
+      // there is still no membership answer to be had and the refusal stands; what it must
+      // not do is prescribe the lookups the flag asked it to skip.
+      const seams = createFakeSeams({ env: { HOME, HAI_OFFLINE: "1", CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-x" }, respond: respondAz });
 
       // Act
       const err = await resolveAuth({ seams, agentHub: hub() }).catch((e: Error) => e);
@@ -323,7 +325,7 @@ describe("resolveAuth", () => {
       // Assert
       expect((err as Error).message).toContain("HAI_ROUTE=own-licence");
       expect((err as Error).message).not.toMatch(/az login|VPN/);
-      expect(seams.runner.calls).toHaveLength(0);
+      expect(askedGraph(seams.runner.calls)).toBe(false);
     });
 
     it("should leave a confirmed non-member on their own licence", async () => {
@@ -335,6 +337,93 @@ describe("resolveAuth", () => {
 
       // Assert
       expect(resolution).toMatchObject({ route: "own-licence", credentialSource: "host-oauth" });
+    });
+  });
+
+  describe("offline, where the cache is the whole membership answer", () => {
+    const cacheFor = (isMember: boolean) => JSON.stringify({ [IDENTITY]: { group: { at: FIXED_NOW - 1000, isMember } } });
+
+    it("should decide from the cached answer without asking Graph, and stamp nothing on the hit", async () => {
+      // Arrange — the hole this closes: offline the key was never derived, so a confirmed
+      // member read as unknown and an exported token decided the route.
+      const cached = cacheFor(true);
+      const env = { HOME, HAI_OFFLINE: "1", CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-x" };
+      const seams = createFakeSeams({ env, files: { [CACHE_PATH]: cached }, respond: respondWithGateway });
+
+      // Act
+      const { resolution } = await resolveAuth({ seams, agentHub: hub() });
+
+      // Assert — the member goes where HMCTS pays, and a hit has nothing to write.
+      expect(resolution).toMatchObject({ route: "gateway", credentialSource: "gateway-apim" });
+      expect(askedGraph(seams.runner.calls)).toBe(false);
+      expect(seams.fs.store.get(CACHE_PATH)).toBe(cached);
+    });
+
+    it("should refuse rather than spend an exported token when a cached member has no gateway to reach", async () => {
+      // Arrange — respondAz answers no Key Vault, and nothing to paste a Bedrock key into.
+      const seams = createFakeSeams({
+        env: { HOME, HAI_OFFLINE: "1", CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-x" },
+        files: { [CACHE_PATH]: cacheFor(true) },
+        respond: respondAz,
+        hiddenInput: createFakeHiddenInput([], false)
+      });
+
+      // Act
+      const act = resolveAuth({ seams, agentHub: hub() });
+
+      // Assert
+      await expect(act).rejects.toThrow("hai will not use a personal claude.ai subscription instead");
+    });
+
+    it("should refuse HAI_ROUTE=own-licence for a cached member, which is the bypass the flag used to open", async () => {
+      // Arrange — reproduced on a confirmed member's machine: HAI_OFFLINE=1 with
+      // HAI_ROUTE=own-licence billed their personal subscription.
+      const seams = createFakeSeams({
+        env: { HOME, HAI_OFFLINE: "1", HAI_ROUTE: "own-licence" },
+        files: { [CACHE_PATH]: cacheFor(true), [CREDENTIALS]: LIVE_LOGIN },
+        respond: respondAz
+      });
+
+      // Act
+      const act = resolveAuth({ seams, agentHub: hub() });
+
+      // Assert
+      await expect(act).rejects.toThrow("HMCTS funds your Claude usage");
+    });
+
+    it("should leave a cached non-member on their own licence with no refusal", async () => {
+      // Arrange — the other half of reading the cache offline: a confirmed non-member with
+      // a claude.ai login on this machine was refused for a membership already answered.
+      const seams = createFakeSeams({
+        env: { HOME, HAI_OFFLINE: "1" },
+        files: { [CACHE_PATH]: cacheFor(false), [CREDENTIALS]: LIVE_LOGIN },
+        respond: respondAz
+      });
+
+      // Act
+      const { resolution } = await resolveAuth({ seams, agentHub: hub() });
+
+      // Assert
+      expect(resolution).toMatchObject({ route: "own-licence", credentialSource: "host-oauth" });
+      expect(askedGraph(seams.runner.calls)).toBe(false);
+    });
+
+    it("should look the cache up under the same key it writes online, or the online write is never found", async () => {
+      // Arrange — deriving the key two ways is what made the old route cache dead, so one
+      // online run writes it and the offline run that follows has to find it.
+      const env: Record<string, string> = { HOME };
+      const seams = createFakeSeams({ env, respond: respondWithGateway });
+      await resolveAuth({ seams, agentHub: hub() });
+      const written = seams.fs.store.get(CACHE_PATH) ?? "{}";
+      env.HAI_OFFLINE = "1";
+
+      // Act
+      const { resolution } = await resolveAuth({ seams, agentHub: hub() });
+
+      // Assert — one Graph call for two runs is only possible if both keys are the same.
+      expect(Object.keys(JSON.parse(written) as Record<string, unknown>)).toEqual([IDENTITY]);
+      expect(seams.runner.calls.filter((call) => call.argv[1] === "rest")).toHaveLength(1);
+      expect(resolution).toMatchObject({ route: "gateway", credentialSource: "gateway-apim" });
     });
   });
 });

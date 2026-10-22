@@ -27,10 +27,12 @@ export async function resolveAuth(deps: { seams: Seams; agentHub: AgentHub; deci
   const requested = requestedRoute(seams.env);
 
   // The cache holds nothing but the group answer, so the identity call that keys it is
-  // only worth making when that answer is wanted. Offline skips it too: asking az who we
-  // are is itself a call out.
+  // only worth making when that answer is wanted. It is made offline too: `az account show`
+  // reads ~/.azure/azureProfile.json and nothing else, which is why it still answers after
+  // the refresh token has expired — so offline derives the same key and a membership
+  // confirmed earlier today still applies. Only the Graph call behind it is skipped.
   const wantsGroup = needsMembership(seams.env, requested);
-  const account = offline || !wantsGroup ? null : await readAzAccount(seams);
+  const account = wantsGroup ? await readAzAccount(seams) : null;
   const key = account === null ? null : accountCacheKey(account);
   const cached = key === null ? null : await readAuthCache(seams, key);
 

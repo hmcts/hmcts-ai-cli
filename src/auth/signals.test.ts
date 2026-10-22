@@ -274,6 +274,18 @@ describe("gatherSignals", () => {
       expect(seams.lines.join("")).toContain("HAI_OFFLINE=1");
     });
 
+    it("should still read a claude.ai login off this machine, which is a file and not a lookup", async () => {
+      // Arrange — a cached non-member needs this read to reach their own licence offline
+      // rather than the three remedies.
+      const seams = createFakeSeams({ env: { HOME }, files: { [CREDENTIALS]: LIVE_LOGIN } });
+
+      // Act
+      const { signals } = await gatherSignals({ seams, agentHub: fakeHub(), offline: true, cachedGroupMembership: false });
+
+      // Assert
+      expect(signals.hasHostClaudeCredential).toBe(true);
+    });
+
     it("should still use a cached group answer", async () => {
       // Act
       const { signals } = await gatherSignals({ seams: createFakeSeams({ env: { HOME } }), agentHub: fakeHub(), offline: true, cachedGroupMembership: true });

@@ -79,12 +79,14 @@ export async function gatherSignals(deps: {
     return { signals: base, askedGraph };
   }
 
+  // Offline stops the two probes that go out over the network. What is on this machine is
+  // still read: the group answer the cache already holds decides as much offline as it does
+  // online, and a claude.ai login is a file in ~/.claude.
   if (offline) {
     seams.logger.verbose("HAI_OFFLINE=1, so agent-hub and Graph are not consulted");
-    return { signals: base, askedGraph };
   }
 
-  if (probing) {
+  if (probing && !offline) {
     base.hasStoredBedrockKey = await storedBedrockKeyPresent(deps.agentHub, seams);
     if (base.hasStoredBedrockKey) {
       // A stored key settles the route on Bedrock whatever the group answer turns out to
@@ -93,7 +95,7 @@ export async function gatherSignals(deps: {
     }
   }
 
-  if (checkingGroup) {
+  if (checkingGroup && !offline) {
     base.isBedrockGroupMember = await checkBedrockGroupMembership(seams);
     askedGraph = true;
   }

@@ -176,13 +176,23 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
   credential and no route environment, sbx injecting its own. The refusals still apply, so
   the note can never name a route that would bill a member's own subscription. Container
   mode and the in-place path keep the full behaviour.
-- **`HAI_OFFLINE=1` is refused in its own words.** Offline neither `az account show` nor
-  Graph is called, so membership is always unknown and a personal credential is still
-  refused — but the remedy named first is `HAI_ROUTE=own-licence`
-  (`OFFLINE_MEMBERSHIP_REFUSAL`), never `az login` or the VPN, which is what the flag opted
-  out of. The cache cannot soften that: its key comes from `az account show`, so offline
-  there is no key to look under, and keying it on anything else reintroduces the
-  cross-identity bug that made the old route cache dead.
+- **`HAI_OFFLINE=1` skips what goes over the network, not what is on the machine.** Graph
+  and agent-hub are not consulted; `az account show`, the group cache and a claude.ai login
+  in `~/.claude` are all read, because none of them is a call out — `az account show` reads
+  `~/.azure/azureProfile.json`, which is why it still answers after the refresh token has
+  expired. So offline a membership confirmed earlier in the day still decides: a cached
+  member is refused the personal routes, `HAI_ROUTE=own-licence` included, and a cached
+  non-member reaches their own licence with no refusal at all. Skipping the identity call
+  was the last way to bill a confirmed member's own subscription —
+  `HAI_OFFLINE=1 HAI_ROUTE=own-licence` left `isBedrockGroupMember` null, and an unconfirmed
+  membership permits a route asked for by name. With nothing cached, membership is genuinely
+  unknown and the refusal stands, naming `HAI_ROUTE=own-licence`
+  (`OFFLINE_MEMBERSHIP_REFUSAL`) rather than the `az login` or VPN the flag opted out of.
+- **The offline cache lookup goes through `readAzAccount`, and that is the whole point.**
+  The key has to be byte-identical online and offline or an answer written online is never
+  found offline, which is the bug class that made the old route cache dead. Parsing
+  `azureProfile.json` here instead would be a second way of deriving it and a second thing
+  to keep in step; one function, one key.
 - **No credential is ever written to disk.** The caches in `src/auth/auth-cache.ts` and
   `src/container/acr.ts` hold decisions, not secrets.
 - **The update check is never cached.** It is one GET behind a 1.5s timeout that already
