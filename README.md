@@ -13,9 +13,6 @@ hai -p 'summarise this'  # claude -p 'summarise this'
 hai --help               # claude --help
 ```
 
-There is a second binary, `hair`, which does have arguments of its own — see
-[Picking your sessions back up after a reboot](#picking-your-sessions-back-up-after-a-reboot).
-
 ## Install
 
 ```bash

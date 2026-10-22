@@ -1,8 +1,8 @@
 # hmcts-ai-cli
 
 `hai`, a transparent wrapper around the `claude` CLI. Read `README.md` first — it covers
-the routes, the environment variables and the state directory. This file covers only the
-things an agent working in this repo needs that the README does not say.
+installing it and the environment variables. This file covers only the things an agent
+working in this repo needs that the README does not say.
 
 ## Commands
 
@@ -477,8 +477,7 @@ container cannot see, so it falls back to `hair` on PATH inside the image — an
 reaches `sessions.jsonl` at all today**. That is survivable (a failing hook changes nothing
 about the session) but it means the registry currently only fills up for sessions started
 with `hai` *inside* a container that already has hai on its PATH — the devcontainer case.
-Installing hai into that image is a cft-workspace change, not one for this repo; the README
-says so in a table rather than claiming every session is recorded.
+Installing hai into that image is a cft-workspace change, not one for this repo.
 
 Claude Code runs a hook command through `/bin/sh -c` — measured, the hook's parent process
 is `/bin/sh -c <command>` — so `hookCommand` shell-quotes what it emits. That is not a
