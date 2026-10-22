@@ -36,6 +36,42 @@ npm i -g @hmcts-cft/hai-cli --registry=https://pkgs.dev.azure.com/hmcts/Artifact
 
 Note: If you are using a HMCTS license via the AI Gateway you will need to connect your VPN.
 
+## `hair`
+
+A reboot ends every Claude Code session at once, and `claude --continue` keys only on the
+directory, so it cannot tell apart the several sessions you had open in one repo. `hair`
+("hai resume") handles that. Sessions record themselves in `~/.claude/sessions.jsonl` as
+you use them and remove themselves on exit, so anything still marked open was interrupted
+rather than finished.
+
+```bash
+hair          # claim one interrupted conversation and resume it
+hair --list   # show what is waiting, claiming nothing
+```
+
+Run it in each terminal you reopen and each gets a different conversation. It prefers one
+belonging to the directory you are in, otherwise the oldest waiting, and moves to that
+conversation's directory before resuming. Anything else you pass is forwarded to `hai`, and
+if the arguments already name a conversation — `hair -c`, `hair -r <id>` — nothing is
+claimed and `hair` is simply `hai`.
+
+A conversation is recorded on the first prompt you type, so `-p` runs and background jobs
+never appear. The registry is written by hooks inside the session, which means it needs
+`hai` on the `PATH` there: that holds for a devcontainer or sandbox, but not yet for a bare
+host, where the session runs in an image without `hai` installed. Passing your own
+`--settings` with a `hooks` key replaces those hooks, and `hai` says so when it happens.
+
+## `sbx-hai`
+
+Runs the session in a Docker Sandboxes microVM built from the cft-workspace sbx kit,
+instead of a container `hai` starts itself. Argument forwarding and self-update are the
+same as `hai`.
+
+It is host-only and needs `sbx` installed. Run `scripts/sbx-setup` in cft-workspace once
+first: `sbx` supplies the Anthropic credential from its own secret store, so `sbx-hai`
+reports which route would apply but injects nothing. It has not yet been exercised against
+a real `sbx`, so treat it as unproven.
+
 ## Environment variables
 
 | Variable | Effect |
