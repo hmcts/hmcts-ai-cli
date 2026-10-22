@@ -19,24 +19,37 @@ export function requestedRoute(env: Env): Route | null {
 
 /**
  * False when the environment alone already settles both the route and where its
- * credential comes from, in which case there is nothing to look up and nothing worth
- * caching. The one source of truth for that question, so `resolveAuth` and
- * `gatherSignals` cannot drift apart.
+ * credential comes from, in which case there is nothing to look up. The one source of
+ * truth for that question, so `resolveAuth` and `gatherSignals` cannot drift apart.
  */
 export function needsProbes(env: Env, requested: Route | null): boolean {
   if (requested === "gateway" || requested === "own-licence") {
     return false;
   }
-  if (hasValue(env.AWS_BEARER_TOKEN_BEDROCK)) {
+  return !hasValue(env.AWS_BEARER_TOKEN_BEDROCK);
+}
+
+/**
+ * Membership decides more than the wording of a failure now: it is what puts a member on
+ * the gateway and what stops anyone reaching their own subscription unawares, so it is
+ * resolved whenever it could change the answer. That includes HAI_ROUTE=own-licence, which
+ * a member is refused, and an exported CLAUDE_CODE_OAUTH_TOKEN, which no longer settles
+ * anything on its own.
+ */
+export function needsMembership(env: Env, requested: Route | null): boolean {
+  if (requested === "own-licence") {
+    return true;
+  }
+  if (requested !== null) {
     return false;
   }
-  return !(requested === null && hasValue(env.CLAUDE_CODE_OAUTH_TOKEN));
+  return !hasValue(env.AWS_BEARER_TOKEN_BEDROCK);
 }
 
 /**
  * The I/O half of route resolution, kept apart from `resolveRoute` so the precedence
- * table stays pure. Each probe is skipped as soon as a higher-precedence signal has
- * already settled both the route and where its credential comes from.
+ * table stays pure. Each probe is skipped only when a higher-precedence signal has already
+ * settled both the route and where its credential comes from.
  */
 export async function gatherSignals(deps: { seams: Seams; agentHub: AgentHub; offline: boolean; cachedGroupMembership: boolean | null }): Promise<Signals> {
   const { seams, offline } = deps;
@@ -49,7 +62,9 @@ export async function gatherSignals(deps: { seams: Seams; agentHub: AgentHub; of
     isBedrockGroupMember: deps.cachedGroupMembership
   };
 
-  if (!needsProbes(seams.env, base.requestedRoute)) {
+  const probing = needsProbes(seams.env, base.requestedRoute);
+  const checkingGroup = base.isBedrockGroupMember === null && needsMembership(seams.env, base.requestedRoute);
+  if (!(probing || checkingGroup)) {
     return base;
   }
 
@@ -58,20 +73,23 @@ export async function gatherSignals(deps: { seams: Seams; agentHub: AgentHub; of
     return base;
   }
 
-  base.hasStoredBedrockKey = await storedBedrockKeyPresent(deps.agentHub, seams);
-  if (base.hasStoredBedrockKey) {
-    return base;
-  }
-
-  if (base.requestedRoute === null) {
-    base.hasHostClaudeCredential = await hasHostClaudeCredential(seams);
-    if (base.hasHostClaudeCredential) {
+  if (probing) {
+    base.hasStoredBedrockKey = await storedBedrockKeyPresent(deps.agentHub, seams);
+    if (base.hasStoredBedrockKey) {
+      // A stored key settles the route on Bedrock whatever the group answer turns out to
+      // be, and it cannot lead anywhere personal, so there is nothing left to ask.
       return base;
     }
   }
 
-  if (base.isBedrockGroupMember === null) {
+  if (checkingGroup) {
     base.isBedrockGroupMember = await checkBedrockGroupMembership(seams);
+  }
+
+  // Only read when nobody has confirmed membership: a member is never routed to their own
+  // licence, so for them the answer could not change anything.
+  if (probing && base.requestedRoute === null && base.isBedrockGroupMember !== true) {
+    base.hasHostClaudeCredential = await hasHostClaudeCredential(seams);
   }
   return base;
 }

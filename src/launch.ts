@@ -1,9 +1,8 @@
 import { type AgentHub, createAgentHub } from "./auth/agent-hub.js";
 import { resolveBedrockKey } from "./auth/bedrock-key.js";
 import { buildClaudeEnv } from "./auth/claude-env.js";
-import { type Gateway, prepareGateway } from "./auth/gateway.js";
-import { resolveAuth } from "./auth/resolve-auth.js";
-import type { RouteResolution } from "./auth/route.js";
+import type { Gateway } from "./auth/gateway.js";
+import { type AuthResolution, resolveAuth } from "./auth/resolve-auth.js";
 import { buildClaudeArgs, forwardArgv } from "./claude/args.js";
 import { buildSettings, materialiseSettings } from "./claude/settings.js";
 import { extractUserSettings, mergeSettings, readUserSettings } from "./claude/user-settings.js";
@@ -38,11 +37,12 @@ export async function launch(deps: { seams: Seams; processArgv: string[] }): Pro
 
   // One client, so the az token behind it is fetched once however many times it is used.
   const agentHub = createAgentHub(seams);
-  const resolution = envReady ? null : await resolveAuth({ seams, agentHub });
-  const credentials = resolution === null ? {} : await collectCredentials({ seams, agentHub }, resolution);
-  const added = resolution === null ? {} : buildClaudeEnv({ env: seams.env, route: resolution.route, ...credentials });
-  if (resolution !== null) {
-    seams.logger.verbose(`route ${resolution.route} via ${resolution.credentialSource}: ${resolution.reasons.join("; ")}`);
+  const auth = envReady ? null : await resolveAuth({ seams, agentHub });
+  const credentials = auth === null ? {} : await collectCredentials({ seams, agentHub }, auth);
+  const added = auth === null ? {} : buildClaudeEnv({ env: seams.env, route: auth.resolution.route, ...credentials });
+  if (auth !== null) {
+    const { route, credentialSource, reasons } = auth.resolution;
+    seams.logger.verbose(`route ${route} via ${credentialSource}: ${reasons.join("; ")}`);
   }
 
   const root = await findWorkspaceRoot(seams);
@@ -91,15 +91,13 @@ function hostReason(probe: { forcedHost: boolean }): string {
   return probe.forcedHost ? "HAI_FORCE_HOST=1" : "no container signals";
 }
 
-async function collectCredentials(
-  deps: { seams: Seams; agentHub: AgentHub },
-  resolution: RouteResolution
-): Promise<{ bedrockKey?: string; gateway?: Gateway }> {
+/** The gateway's key is settled by `resolveAuth`, because whether it can be read at all is part of the route decision. */
+async function collectCredentials(deps: { seams: Seams; agentHub: AgentHub }, auth: AuthResolution): Promise<{ bedrockKey?: string; gateway?: Gateway }> {
   const { seams } = deps;
-  if (resolution.route === "gateway") {
-    return { gateway: await prepareGateway({ seams }) };
+  if (auth.resolution.route === "gateway") {
+    return { gateway: auth.gateway };
   }
-  if (resolution.route === "bedrock") {
+  if (auth.resolution.route === "bedrock") {
     return { bedrockKey: await resolveBedrockKey({ seams, agentHub: deps.agentHub, offline: isEnabled(seams.env, "HAI_OFFLINE") }) };
   }
   return {};

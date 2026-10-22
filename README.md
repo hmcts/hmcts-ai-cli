@@ -36,11 +36,46 @@ npm i -g @hmcts-cft/hai-cli --registry=https://pkgs.dev.azure.com/hmcts/Artifact
 
 Note: If you are using a HMCTS license via the AI Gateway you will need to connect your VPN.
 
+## Routes
+
+`hai` runs `claude` on one of three routes and builds the environment for it:
+
+| Route | Credential |
+|---|---|
+| `bedrock` | an Amazon Bedrock API key, from `AWS_BEARER_TOKEN_BEDROCK`, from agent-hub, or pasted at a hidden prompt |
+| `gateway` | the HMCTS AI Gateway, with an APIM subscription key read from Key Vault — needs `az login` and the F5 VPN |
+| `own-licence` | your own Claude licence, via `CLAUDE_CODE_OAUTH_TOKEN` or a claude.ai login on this machine |
+
+It works through the following order and takes the first match:
+
+1. `HAI_ROUTE` names a route — that route is used, with the one exception below.
+2. `AWS_BEARER_TOKEN_BEDROCK` is set — `bedrock`.
+3. agent-hub holds a Bedrock API key for you — `bedrock`.
+4. You are in the DTSSE AI Gateway Bedrock Developer group — `gateway`.
+5. You are in that group and the gateway's key cannot be read — `bedrock`, pasting a key.
+6. You are confirmed *not* in that group — `own-licence`, from `CLAUDE_CODE_OAUTH_TOKEN` or your claude.ai login.
+7. Otherwise `hai` stops and says what to do about it.
+
+### Your own subscription is never billed for HMCTS work
+
+If you are in the Bedrock developer group then HMCTS funds your Claude usage, so `hai` will
+not fall back to your personal claude.ai subscription: not through a claude.ai login on the
+machine, not through an exported `CLAUDE_CODE_OAUTH_TOKEN`, and not through
+`HAI_ROUTE=own-licence`, which is refused with an explanation. Where the gateway cannot be
+reached the fallback is a Bedrock key you paste, and with no terminal to paste into `hai`
+fails rather than spend your own allowance. Personal spend is the one kind nobody sees, so
+it is never chosen on your behalf.
+
+Where your membership cannot be confirmed at all — no `az` session, no VPN, or Graph
+refuses the call — `hai` does not guess. It stops and says membership could not be
+confirmed. `HAI_ROUTE=own-licence` is accepted in that case, because typing it is a
+deliberate choice rather than an accident.
+
 ## Environment variables
 
 | Variable | Effect |
 |---|---|
-| `HAI_ROUTE` | `gateway` \| `own-licence`; chooses the route instead of letting `hai` work it out |
+| `HAI_ROUTE` | `bedrock` \| `gateway` \| `own-licence`; chooses the route instead of letting `hai` work it out |
 | `HAI_DRY_RUN=1` | print the `claude` invocation that would run, then exit 0 |
 | `HAI_VERBOSE=1` | explain what was detected and why |
 | `HAI_OFFLINE=1` | environment only; no lookups and no registry |

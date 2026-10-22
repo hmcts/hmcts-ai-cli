@@ -1,26 +1,30 @@
 import { accountCacheKey, readAzAccount } from "../az/account.js";
+import { messageOf } from "../log/error-message.js";
 import { isEnabled } from "../system/env.js";
 import type { Seams } from "../system/seams.js";
 import type { AgentHub } from "./agent-hub.js";
 import { readAuthCache, writeAuthCache } from "./auth-cache.js";
+import { canPrompt } from "./bedrock-key.js";
+import { type Gateway, prepareGateway } from "./gateway.js";
 import { REMEDIES, type RouteResolution, resolveRoute } from "./route.js";
-import { gatherSignals, needsProbes, requestedRoute } from "./signals.js";
+import { gatherSignals, needsMembership, requestedRoute } from "./signals.js";
 
 /**
- * Resolves a route, consulting and refreshing the on-disk cache. The cache only ever
- * holds a group-membership answer, which saves one `az rest checkMemberGroups`;
- * credentials are never cached.
+ * Resolves a route, consulting and refreshing the on-disk cache, and settles the one
+ * question `resolveRoute` cannot answer on its own: whether the gateway is usable. The
+ * cache only ever holds a group-membership answer, which saves one
+ * `az rest checkMemberGroups`; credentials are never cached.
  */
-export async function resolveAuth(deps: { seams: Seams; agentHub: AgentHub }): Promise<RouteResolution> {
+export async function resolveAuth(deps: { seams: Seams; agentHub: AgentHub }): Promise<AuthResolution> {
   const { seams } = deps;
   const offline = isEnabled(seams.env, "HAI_OFFLINE");
   const requested = requestedRoute(seams.env);
 
-  // Nothing to look up means nothing to cache, so neither the identity call nor the cache
-  // read is worth making. Offline skips both: the cache is keyed by the signed-in
-  // identity, and asking az for that is itself a call out.
-  const probing = needsProbes(seams.env, requested);
-  const account = offline || !probing ? null : await readAzAccount(seams);
+  // The cache holds nothing but the group answer, so the identity call that keys it is
+  // only worth making when that answer is wanted. Offline skips it too: asking az who we
+  // are is itself a call out.
+  const wantsGroup = needsMembership(seams.env, requested);
+  const account = offline || !wantsGroup ? null : await readAzAccount(seams);
   const key = account === null ? null : accountCacheKey(account);
   const cached = key === null ? null : await readAuthCache(seams, key);
 
@@ -30,11 +34,44 @@ export async function resolveAuth(deps: { seams: Seams; agentHub: AgentHub }): P
   if (resolution.credentialSource === "unavailable") {
     throw new Error(`${resolution.reasons.join("; ")}. Pick one of:\n  - ${REMEDIES.join("\n  - ")}`);
   }
+  if (resolution.credentialSource === "refused") {
+    throw new Error(resolution.reasons.join("; "));
+  }
 
   if (key !== null && signals.isBedrockGroupMember !== null) {
     await persist(deps, key, signals.isBedrockGroupMember);
   }
-  return resolution;
+  if (resolution.route === "gateway") {
+    return await settleGateway(deps, resolution, requested === "gateway");
+  }
+  return { resolution };
+}
+
+/**
+ * The gateway's APIM key lives in a private Key Vault that needs az and the F5 VPN, so
+ * whether the route works at all is I/O rather than a decision. When hai chose the gateway
+ * itself and the key cannot be read, the fallback is a Bedrock key pasted by hand and
+ * never the engineer's own subscription — that silent fallback is what this order exists
+ * to prevent, so every step of it is said out loud. A route asked for by name still fails
+ * as it did, because the engineer named it.
+ */
+async function settleGateway(deps: { seams: Seams }, resolution: RouteResolution, byName: boolean): Promise<AuthResolution> {
+  const { seams } = deps;
+  try {
+    return { resolution, gateway: await prepareGateway({ seams }) };
+  } catch (err) {
+    if (byName) {
+      throw err;
+    }
+    const why = `the AI Gateway was chosen but its APIM key could not be read (${messageOf(err)})`;
+    if (!canPrompt(seams)) {
+      throw new Error(
+        `${why}, and stdin is not a terminal so there is nobody to paste an Amazon Bedrock API key. hai will not use a personal claude.ai subscription instead. Connect the F5 VPN and run az login, or export AWS_BEARER_TOKEN_BEDROCK.`
+      );
+    }
+    seams.logger.say(`${why}; falling back to an Amazon Bedrock API key — hai will not use your personal claude.ai subscription`);
+    return { resolution: { route: "bedrock", credentialSource: "prompt", reasons: [...resolution.reasons, why] } };
+  }
 }
 
 async function persist(deps: { seams: Seams }, key: string, isMember: boolean): Promise<void> {
@@ -44,4 +81,10 @@ async function persist(deps: { seams: Seams }, key: string, isMember: boolean): 
     // A read-only or missing state dir costs a round trip next time, nothing more.
     deps.seams.logger.verbose("could not write the group-membership cache");
   }
+}
+
+export interface AuthResolution {
+  resolution: RouteResolution;
+  /** Prepared here rather than by the caller, because whether it can be is part of the decision. */
+  gateway?: Gateway;
 }

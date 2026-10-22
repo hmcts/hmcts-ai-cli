@@ -11,6 +11,7 @@ const MANIFEST = "repos:\n  apps/pcs/pcs-api:\n    url: hmcts/pcs-api\n";
 const MARKETPLACE = JSON.stringify({ plugins: [{ name: "pcs", source: "./apps/pcs/.claude" }] });
 
 const IN_CONTAINER = { "/.dockerenv": "" };
+const LIVE_LOGIN = JSON.stringify({ claudeAiOauth: { accessToken: "sk-ant-oat01-x", expiresAt: Number.MAX_SAFE_INTEGER } });
 /** A published version, so the update check is not skipped as an unpublished local build. */
 const PUBLISHED = { [`${packageRoot()}package.json`]: JSON.stringify({ version: "0.1.0" }) };
 
@@ -29,6 +30,9 @@ function respond(argv: string[]) {
   }
   return { code: 0 };
 }
+
+/** Graph says no, which is the only way anyone reaches their own licence. */
+const notAMember = (argv: string[]) => (argv[1] === "rest" ? { stdout: JSON.stringify({ value: [] }) } : respond(argv));
 
 function seamsIn(env: Record<string, string> = {}, files: Record<string, string> = {}) {
   return createFakeSeams({
@@ -354,8 +358,12 @@ describe("launch", () => {
     });
 
     it("should add no Bedrock variables on the own-licence route", async () => {
-      // Arrange
-      const seams = seamsIn({ HAI_ROUTE: "own-licence", AWS_BEARER_TOKEN_BEDROCK: "", CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-x" });
+      // Arrange — a confirmed non-member, the only one who may be on their own licence.
+      const seams = createFakeSeams({
+        env: { HOME, HAI_NO_UPDATE: "1", HAI_ROUTE: "own-licence", CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-x" },
+        files: IN_CONTAINER,
+        respond: notAMember
+      });
 
       // Act
       await launch({ seams, processArgv: ["node", "hai"] });
@@ -365,13 +373,14 @@ describe("launch", () => {
       expect(execEnv(seams).CLAUDE_CODE_OAUTH_TOKEN).toBe("sk-ant-oat01-x");
     });
 
-    it("should prompt for a Bedrock key when nothing has one", async () => {
-      // Arrange
+    it("should prompt a group member for a Bedrock key rather than bill their own subscription when the gateway is unreachable", async () => {
+      // Arrange — the incident: a member with a live personal login and no Bedrock key,
+      // on a host where the private Key Vault cannot be reached.
       const typed = "ABSKVHlwZWQtYnktaGFuZC0wMDAwMDAwMDAwMDA";
       const seams = createFakeSeams({
         env: { HOME, HAI_NO_UPDATE: "1" },
-        files: IN_CONTAINER,
-        respond,
+        files: { ...IN_CONTAINER, [`${HOME}/.claude/.credentials.json`]: LIVE_LOGIN },
+        respond: (argv) => (argv[1] === "keyvault" ? { code: 1, stderr: "could not resolve the vault" } : respond(argv)),
         hiddenInput: createFakeHiddenInput([typed])
       });
 
@@ -380,6 +389,8 @@ describe("launch", () => {
 
       // Assert
       expect(execEnv(seams).AWS_BEARER_TOKEN_BEDROCK).toBe(typed);
+      expect(execEnv(seams).CLAUDE_CODE_USE_BEDROCK).toBe("1");
+      expect(seams.lines.join("")).toContain("hai will not use your personal claude.ai subscription");
     });
   });
 
@@ -555,7 +566,7 @@ describe("launch", () => {
       expect(order).toEqual(["exec"]);
     });
 
-    it("should ask az who we are, then check the group, before handing over", async () => {
+    it("should ask az who we are, then check the group, then settle the gateway, before handing over", async () => {
       // Arrange
       const order: string[] = [];
       const seams = createFakeSeams({
@@ -571,9 +582,10 @@ describe("launch", () => {
       // Act
       await launch({ seams, processArgv: ["node", "hai"] });
 
-      // Assert — one az for the identity, one for the agent-hub token, then the group check.
-      // The second hub call reuses the token the first one fetched.
-      expect(order).toEqual(["az account", "az account", "az rest"]);
+      // Assert — one az for the identity, one for the agent-hub token, then the group
+      // check, which puts a member on the gateway and sends it after the APIM key. The
+      // second hub call reuses the token the first one fetched.
+      expect(order).toEqual(["az account", "az account", "az rest", "getent hosts", "az keyvault"]);
     });
   });
 });

@@ -35,6 +35,32 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
   host's real `~/.claude.json`, so seeding it recorded an acceptance of risk in the
   engineer's own config for a prompt hai can no longer raise. Someone who types the flag on
   a host that has never accepted sees that screen once, which is the point.
+- **A member of the Bedrock developer group can never reach `own-licence`.** HMCTS funds
+  their capacity, so billing a personal claude.ai subscription is always the wrong outcome,
+  and it is invisible while it happens — one session put roughly 3.3M tokens across 20
+  subagents on an engineer's own account while everybody believed it was on Bedrock. The
+  group check therefore sits in `resolveRoute` **ahead of** every personal-credential
+  branch and is unconditional: `hasHostClaudeCredential` used to be tested first, and since
+  every Claude Code user has a live claude.ai login that made the membership branch
+  unreachable, so a missing Bedrock key quietly became "use their own subscription". An
+  explicit `HAI_ROUTE=own-licence` from a member is refused rather than ignored, so the
+  engineer is told why. Membership that could not be confirmed refuses the personal routes
+  too, naming `HAI_ROUTE=own-licence` as the way to say that is genuinely what you want.
+- **`needsMembership` is what keeps that signal resolved.** The block is only as good as
+  `isBedrockGroupMember`, so `src/auth/signals.ts` resolves it on the ordinary path and for
+  `HAI_ROUTE=own-licence`, and no longer lets an exported `CLAUDE_CODE_OAUTH_TOKEN` or a
+  host claude.ai login short-circuit past it. The only things that still skip it are a
+  Bedrock key in the environment, `HAI_ROUTE=bedrock`, `HAI_ROUTE=gateway` and a cached
+  answer — none of which can lead anywhere personal. The host credential is read *after*
+  the group check and only when membership is not confirmed, because for a member the
+  answer could not change anything.
+- **The gateway's fallback chain never ends at a personal subscription.** Whether the
+  gateway works is I/O, not a decision — the APIM key is in a private Key Vault behind the
+  F5 VPN — so `resolveRoute` returns `gateway` and `resolveAuth` settles it, downgrading to
+  a pasted Bedrock key when the key cannot be read and failing when there is no TTY to
+  paste into. Every step of that says out loud which fallback happened and why; silence is
+  what let the incident run. A `HAI_ROUTE=gateway` asked for by name still fails outright
+  rather than downgrade, because the engineer named it.
 - **No credential is ever written to disk.** The caches in `src/auth/auth-cache.ts` and
   `src/container/acr.ts` hold decisions, not secrets.
 - **The update check is never cached.** It is one GET behind a 1.5s timeout that already

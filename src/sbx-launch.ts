@@ -45,7 +45,7 @@ export async function launchSbx(deps: { seams: Seams; processArgv: string[] }): 
  */
 async function routeNote(deps: { seams: Seams }): Promise<string> {
   try {
-    const resolution = await resolveAuth({ seams: deps.seams, agentHub: createAgentHub(deps.seams) });
+    const { resolution } = await resolveAuth({ seams: deps.seams, agentHub: createAgentHub(deps.seams) });
     return `route ${resolution.route} via ${resolution.credentialSource} would apply on this host`;
   } catch (err) {
     return `no route resolves on this host, which does not stop the sandbox: ${messageOf(err)}`;
