@@ -61,6 +61,29 @@ describe("createFs", () => {
     expect(await fs.readText(path)).toBe("first\nsecond\n");
   });
 
+  it("should let exactly one caller create a file, which is what a restore claim is", async () => {
+    // Arrange
+    const path = join(root, "claim.json");
+    await fs.mkdirp(root);
+    await fs.remove(path);
+
+    // Act
+    const first = await fs.createExclusive(path, "mine", { mode: 0o600 });
+    const second = await fs.createExclusive(path, "yours");
+
+    // Assert
+    expect([first, second]).toEqual([true, false]);
+    expect(await fs.readText(path)).toBe("mine");
+  });
+
+  it("should report a failure that is not EEXIST rather than swallow it as a lost race", async () => {
+    // Arrange
+    const path = join(root, "no-such-dir", "claim.json");
+
+    // Act / Assert
+    await expect(fs.createExclusive(path, "mine")).rejects.toThrow();
+  });
+
   it("should create nested directories with a mode", async () => {
     // Arrange
     const dir = join(root, "a", "b");

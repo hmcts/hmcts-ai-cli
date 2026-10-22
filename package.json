@@ -1,6 +1,6 @@
 {
   "name": "@hmcts-cft/hai-cli",
-  "version": "0.0.11",
+  "version": "0.0.12",
   "description": "hai — an HMCTS wrapper around the Claude Code CLI that resolves which model route and credentials an engineer should use, then runs claude.",
   "license": "MIT",
   "type": "module",
@@ -13,6 +13,7 @@
   "packageManager": "yarn@4.14.1",
   "bin": {
     "hai": "dist/bin/hai.js",
+    "hair": "dist/bin/hair.js",
     "sbx-hai": "dist/bin/sbx-hai.js"
   },
   "files": [

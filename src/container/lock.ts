@@ -91,7 +91,12 @@ export async function releaseLock(deps: { fs: Fs }, lock: Lock): Promise<void> {
   }
 }
 
-async function containerRunning(deps: { runner: Runner }, name: string): Promise<boolean | null> {
+/**
+ * Shared with the session registry, which asks it about the container a conversation's
+ * pid lived in. A pid is only meaningful in its own namespace; whether the container is
+ * still there is an answer that crosses one.
+ */
+export async function containerRunning(deps: { runner: Runner }, name: string): Promise<boolean | null> {
   const result = await deps.runner.run(["docker", "inspect", "-f", "{{.State.Running}}", name]);
   if (result.code === 0) {
     return result.stdout.trim() === "true";
@@ -102,7 +107,15 @@ async function containerRunning(deps: { runner: Runner }, name: string): Promise
   return /no such object/i.test(result.stderr) ? false : null;
 }
 
-async function pidAlive(deps: { runner: Runner }, pid: number): Promise<boolean | null> {
+/**
+ * Shared with the session registry, which asks the same question of the pid that owned a
+ * conversation. It is only ever read as a liveness answer, never as an identity one:
+ * `ps -o comm=` reports `MainThread` for a plain node process — measured — so matching on
+ * the command name to defeat a pid the kernel reused would read a live holder as gone,
+ * and that is the one mistake with a cost. "Alive" can be wrong about a reused pid, which
+ * strands a conversation; "gone" being wrong resumes a live one, which forks it.
+ */
+export async function pidAlive(deps: { runner: Runner }, pid: number): Promise<boolean | null> {
   const result = await deps.runner.run(["ps", "-p", String(pid), "-o", "pid="]);
   if (result.code === 0) {
     return result.stdout.trim() !== "";

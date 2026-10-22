@@ -4,6 +4,7 @@ import { buildClaudeEnv } from "./auth/claude-env.js";
 import type { Gateway } from "./auth/gateway.js";
 import { type AuthResolution, resolveAuth } from "./auth/resolve-auth.js";
 import { buildClaudeArgs, forwardArgv } from "./claude/args.js";
+import { sessionRegistryHooks } from "./claude/hooks.js";
 import { buildSettings, materialiseSettings } from "./claude/settings.js";
 import { extractUserSettings, mergeSettings, readUserSettings } from "./claude/user-settings.js";
 import { runContainerMode } from "./container/run.js";
@@ -60,7 +61,11 @@ export async function launch(deps: { seams: Seams; processArgv: string[] }): Pro
   }
 
   const user = extractUserSettings(forwarded);
-  const ours = buildSettings({ inWorkspace: root !== null, apiKeyHelperPath: credentials.gateway?.helperPath });
+  const ours = buildSettings({
+    inWorkspace: root !== null,
+    apiKeyHelperPath: credentials.gateway?.helperPath,
+    hooks: sessionRegistryHooks(seams, { forwarded, forContainer: false })
+  });
   const merged = mergeSettings(ours, user.value === undefined ? {} : await readUserSettings(seams, user.value));
   for (const warning of merged.warnings) {
     seams.logger.say(warning);

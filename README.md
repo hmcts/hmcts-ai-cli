@@ -13,6 +13,9 @@ hai -p 'summarise this'  # claude -p 'summarise this'
 hai --help               # claude --help
 ```
 
+There is a second binary, `hair`, which does have arguments of its own — see
+[Picking your sessions back up after a reboot](#picking-your-sessions-back-up-after-a-reboot).
+
 ## Install
 
 ```bash
@@ -77,6 +80,83 @@ The group answer is cached for 12 hours against your signed-in `az` identity, in
 `auth.json` in the state directory (`$XDG_STATE_HOME/hai`, or `~/.local/state/hai`).
 Reading it back does not extend it, so the check really does happen again twice a day;
 delete the file if you have just been added to the group and want it sooner.
+
+## Picking your sessions back up after a reboot
+
+If you run several Claude Code sessions in several terminals, a reboot ends all of them at
+once, and the usual ways back are no help:
+
+- `claude --continue` keys only on the directory, so for the half-dozen sessions you had
+  open in the same repo it cannot tell which one you meant.
+- `claude -r <id>` on a session that is still running forks a *copy* of the conversation
+  rather than attaching to it, so guessing is worse than not trying.
+- `tmux` does not survive it either, because the reboot stops the devcontainer the
+  sessions were running in.
+
+`hair` ("hai resume") fixes that. A session records itself in a registry as you drive it,
+and removes itself when you exit. A reboot cannot remove anything, so anything still
+marked open is a conversation that was taken from you — and that is what `hair` hands
+back, one per terminal:
+
+```bash
+hair          # claim one of the interrupted conversations and resume it
+hair --list   # see what is waiting, without claiming any of it
+```
+
+Run `hair` in each terminal you reopen and each gets a different conversation. It prefers
+one that belongs to the directory you are in, falls back to the oldest waiting one
+whatever directory that is, and moves to that conversation's own directory before
+resuming — resume-by-id is not directory-scoped, so resuming from the wrong place would
+quietly rebind the session's project settings, hooks and `CLAUDE.md`. When nothing is
+waiting it just starts a fresh session.
+
+`hair` does not run `claude` itself — it works out which conversation is yours and then
+hands over to `hai`, so the route, the credentials, the container and the self-update are
+all the same as any other session.
+
+Everything after `hair` is forwarded, so `hair --model opus` works like `hai --model opus`.
+If the arguments already name a conversation — `hair -r <id>`, `hair -c` — nothing is
+claimed and `hair` is simply `hai` with the arguments as typed.
+
+### Where this works today
+
+The registry is written by hooks that run **inside the session**, so it needs `hai` to be
+installed where the session runs:
+
+| How you start sessions | Recorded? |
+|---|---|
+| `hai` inside a devcontainer or any other container (the in-place path) | yes |
+| `hai` on a bare host, which starts a container for the session | **no, not yet** |
+| `sbx-hai` | no |
+
+On the bare-host path `hai` runs the session inside
+`hmctsprod.azurecr.io/cft-workspace/devcontainer`, which does not install
+`@hmcts-cft/hai-cli`, so the hook has no `hair` to run and nothing reaches
+`sessions.jsonl`. Installing hai into that image is a change to cft-workspace rather than
+to this repo. Until then, `hair` is for engineers whose sessions run in a container that
+already has hai on its `PATH` — which is the devcontainer case, and the one the story
+above describes.
+
+A hook that cannot be run changes nothing else: Claude Code ignores the failure, and the
+session's output and exit status are untouched.
+
+### The registry
+
+`~/.claude/sessions.jsonl`, one JSON object per line: the session id, its directory, its
+`-n/--name` if it has one, whether it is open, when it was last seen, the process that
+owned it and where that process lived. `hai` installs the hooks that maintain it, so there
+is nothing to put in `.claude/settings.json` yourself.
+
+A conversation is recorded on the first prompt **you** type into it, not when it starts.
+That is deliberate: a registry that recorded every session start would fill up with
+subagent runs, `claude -p` scripts and background jobs, and after a reboot they would all
+look like conversations waiting for you. Only a session someone is sitting in front of is
+recorded, so `-p` runs and `--bg` jobs never appear.
+
+A conversation is never offered if it is still running, if its directory has since been
+deleted, or if `hair` cannot work out whether the process that owned it is alive — it
+would rather hand you nothing than a copy of a session you already have open. Run
+`hair --list` with `HAI_VERBOSE=1` and it says what it passed over and why.
 
 ## Environment variables
 

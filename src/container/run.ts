@@ -1,8 +1,10 @@
 import { join } from "node:path";
 import { HELPER_FILE } from "../auth/gateway.js";
 import { buildClaudeArgs } from "../claude/args.js";
+import { sessionRegistryHooks } from "../claude/hooks.js";
 import { buildSettings, materialiseSettings } from "../claude/settings.js";
 import { extractUserSettings, mergeSettings, readUserSettings } from "../claude/user-settings.js";
+import { CONTAINER_ENV } from "../hair/hook.js";
 import { describeEnv } from "../log/redact.js";
 import { isEnabled } from "../system/env.js";
 import type { RunResult } from "../system/runner.js";
@@ -153,6 +155,10 @@ async function gatherContext(input: { seams: Seams; added: Record<string, string
       ...(await gitIdentity(seams)),
       HAI_IN_CONTAINER: "1",
       HAI_ENV_READY: "1",
+      // So the session-registry hook inside can record which container its pid belongs
+      // to: no --pid=host is passed, so that pid means nothing to a `hair` on the host,
+      // but whether this container is still running does.
+      [CONTAINER_ENV]: session,
       HAI_SECRETS_DIR: SECRETS_DIR,
       HAI_NESTED_DNS: dns.servers.join(",")
     },
@@ -174,7 +180,10 @@ async function containerClaudeArgs(
   const user = extractUserSettings(input.forwarded);
   const ours = buildSettings({
     inWorkspace: input.workspaceRoot !== null,
-    apiKeyHelperPath: input.hasGateway ? join(ctx.containerHome, ".local", "state", "hai", HELPER_FILE) : undefined
+    apiKeyHelperPath: input.hasGateway ? join(ctx.containerHome, ".local", "state", "hai", HELPER_FILE) : undefined,
+    // `hair` on PATH inside the image: hai's own install is a host path this container
+    // cannot see. The registry it writes is under ~/.claude, which is mounted.
+    hooks: sessionRegistryHooks(seams, { forwarded: input.forwarded, forContainer: true })
   });
   const merged = mergeSettings(ours, user.value === undefined ? {} : await readUserSettings(seams, user.value));
   for (const warning of merged.warnings) {

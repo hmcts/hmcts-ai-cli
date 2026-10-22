@@ -149,6 +149,7 @@ __metadata:
     vitest: "npm:4.1.11"
   bin:
     hai: dist/bin/hai.js
+    hair: dist/bin/hair.js
     sbx-hai: dist/bin/sbx-hai.js
   languageName: unknown
   linkType: soft
