@@ -3,14 +3,11 @@ import { messageOf } from "../log/error-message.js";
 import { type Env, isEnabled } from "../system/env.js";
 import type { Fs } from "../system/fs.js";
 import type { Seams } from "../system/seams.js";
-import { STATE_DIR_MODE, STATE_FILE_MODE, stateDir, statePath, tryStatePath } from "../system/state-dir.js";
 import { FEED_URL, latestFromPackument, packumentUrl } from "./feed.js";
 import { detectPackageManager, PACKAGE_NAME } from "./package-manager.js";
 import { isNewer } from "./version.js";
 
 export const PACKUMENT_URL = packumentUrl(FEED_URL, PACKAGE_NAME);
-export const CACHE_FILE = "update.json";
-export const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 
 const FETCH_TIMEOUT_MS = 1500;
 const INSTALL_TIMEOUT_MS = 120_000;
@@ -110,13 +107,13 @@ export async function readCurrentVersion(deps: { fs: Fs }): Promise<string> {
   }
 }
 
-/** Reads the cache first, so most launches cost no request at all. The feed allows anonymous reads. */
+/**
+ * Never cached. One GET behind a short timeout is cheaper than the state file it would
+ * take, and a cached answer is how a published release stays invisible for hours. The
+ * feed allows anonymous reads.
+ */
 async function latestVersion(deps: { seams: Seams }): Promise<string | null> {
   const { seams } = deps;
-  const cached = await readCache(seams);
-  if (cached !== null) {
-    return cached;
-  }
   try {
     const res = await seams.net.fetch(PACKUMENT_URL, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
     if (!res.ok) {
@@ -126,38 +123,10 @@ async function latestVersion(deps: { seams: Seams }): Promise<string | null> {
     if (latest === null) {
       throw new Error("the feed named no published version");
     }
-    await writeCache(seams, latest);
     return latest;
   } catch (err) {
     seams.logger.verbose(`could not check for a newer ${PACKAGE_NAME}: ${messageOf(err)}`);
     return null;
-  }
-}
-
-async function readCache(seams: Seams): Promise<string | null> {
-  const path = tryStatePath(seams.env, CACHE_FILE);
-  const contents = path === null ? null : await seams.fs.readText(path);
-  if (contents === null) {
-    return null;
-  }
-  try {
-    const parsed = JSON.parse(contents) as { at?: unknown; latest?: unknown };
-    const at = Number(parsed.at);
-    if (!Number.isFinite(at) || seams.clock.now() - at >= CACHE_TTL_MS || typeof parsed.latest !== "string") {
-      return null;
-    }
-    return parsed.latest;
-  } catch {
-    return null;
-  }
-}
-
-async function writeCache(seams: Seams, latest: string): Promise<void> {
-  try {
-    await seams.fs.mkdirp(stateDir(seams.env), { mode: STATE_DIR_MODE });
-    await seams.fs.writeText(statePath(seams.env, CACHE_FILE), `${JSON.stringify({ at: seams.clock.now(), latest })}\n`, { mode: STATE_FILE_MODE });
-  } catch {
-    seams.logger.verbose("could not write the update cache");
   }
 }
 

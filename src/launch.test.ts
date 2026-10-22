@@ -323,7 +323,7 @@ describe("launch", () => {
   });
 
   describe("the environment handed to claude", () => {
-    it("should add the Bedrock variables and mark the environment ready", async () => {
+    it("should add the Bedrock variables", async () => {
       // Arrange
       const seams = seamsIn();
 
@@ -334,10 +334,21 @@ describe("launch", () => {
       expect(execEnv(seams)).toMatchObject({
         AWS_BEARER_TOKEN_BEDROCK: KEY,
         CLAUDE_CODE_USE_BEDROCK: "1",
-        AWS_REGION: "eu-west-2",
-        HAI_IN_CONTAINER: "1",
-        HAI_ENV_READY: "1"
+        AWS_REGION: "eu-west-2"
       });
+    });
+
+    it("should set no HAI_ENV_READY marker, which this exec would leave in the session for good", async () => {
+      // Arrange — the handover is in place, so anything set here is inherited by every
+      // shell in the session and short-circuits each nested hai past the update check.
+      const seams = seamsIn();
+
+      // Act
+      await launch({ seams, processArgv: ["node", "hai"] });
+
+      // Assert
+      expect(execEnv(seams).HAI_ENV_READY).toBeUndefined();
+      expect(execEnv(seams).HAI_IN_CONTAINER).toBeUndefined();
     });
 
     it("should point claude at a generated settings file on the gateway route", async () => {

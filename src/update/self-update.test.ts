@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { createFakeSeams, FIXED_NOW } from "../__fixtures__/fake-seams.js";
 import { PACKAGE_NAME, REGISTRY_ARG } from "./package-manager.js";
-import { CACHE_FILE, CACHE_TTL_MS, maybeSelfUpdate, PACKUMENT_URL, packageRoot, readCurrentVersion, skipUpdateCheck } from "./self-update.js";
+import { maybeSelfUpdate, PACKUMENT_URL, packageRoot, readCurrentVersion, skipUpdateCheck } from "./self-update.js";
 
 const HOME = "/home/dev";
-const CACHE_PATH = `${HOME}/.local/state/hai/${CACHE_FILE}`;
+/** The cache this used to keep. Still on people's machines, and never read again. */
+const STALE_CACHE_PATH = `${HOME}/.local/state/hai/update.json`;
 const CURRENT = "0.1.0";
 const LATEST = "0.2.0";
 
@@ -125,7 +126,7 @@ describe("maybeSelfUpdate", () => {
     ["HAI_OFFLINE=1", { HAI_OFFLINE: "1" }, CURRENT],
     ["HAI_DRY_RUN=1", { HAI_DRY_RUN: "1" }, CURRENT],
     ["an unpublished 0.0.0 build", {}, "0.0.0"]
-  ])("should be completely inert under %s: no fetch, no install, no cache write", async (_name, env, currentVersion) => {
+  ])("should be completely inert under %s: no fetch, no install, nothing written", async (_name, env, currentVersion) => {
     // Arrange
     const { requests, fetch } = feed(LATEST);
     const seams = createFakeSeams({ env: { HOME, ...env }, fetch, respond: installs });
@@ -137,7 +138,7 @@ describe("maybeSelfUpdate", () => {
     expect(outcome.reExec).toBe(false);
     expect(requests).toEqual([]);
     expect(seams.runner.calls).toEqual([]);
-    expect(seams.fs.store.has(CACHE_PATH)).toBe(false);
+    expect(seams.fs.store.has(STALE_CACHE_PATH)).toBe(false);
   });
 
   it("should say nothing at all under HAI_UPDATED=1, so a broken release cannot loop", async () => {
@@ -164,45 +165,33 @@ describe("maybeSelfUpdate", () => {
     expect(seams.lines).toEqual([]);
   });
 
-  it("should cache what the feed said for 6h", async () => {
-    // Arrange
-    const seams = createFakeSeams({ env: { HOME }, fetch: feed(CURRENT).fetch, respond: installs });
-
-    // Act
-    await maybeSelfUpdate({ seams, currentVersion: CURRENT });
-
-    // Assert
-    expect(JSON.parse(seams.fs.store.get(CACHE_PATH) ?? "{}")).toEqual({ at: FIXED_NOW, latest: CURRENT });
-  });
-
-  it("should use a fresh cache rather than ask the feed again", async () => {
-    // Arrange
-    const { requests, fetch } = feed(LATEST);
-    const cache = JSON.stringify({ at: FIXED_NOW - 1000, latest: CURRENT });
-    const seams = createFakeSeams({ env: { HOME }, fetch, respond: installs, files: { [CACHE_PATH]: cache } });
-
-    // Act
-    await maybeSelfUpdate({ seams, currentVersion: CURRENT });
-
-    // Assert
-    expect(requests).toEqual([]);
-  });
-
-  it.each([
-    ["a stale cache", JSON.stringify({ at: FIXED_NOW - CACHE_TTL_MS, latest: "0.0.1" })],
-    ["an unparseable cache", "not json"],
-    ["a cache with no timestamp", JSON.stringify({ latest: "0.0.1" })],
-    ["a cache with no version", JSON.stringify({ at: FIXED_NOW })]
-  ])("should ask the feed again given %s", async (_name, cache) => {
+  it("should ask the feed on every run, never caching what it said", async () => {
     // Arrange
     const { requests, fetch } = feed(CURRENT);
-    const seams = createFakeSeams({ env: { HOME }, fetch, respond: installs, files: { [CACHE_PATH]: cache } });
+    const seams = createFakeSeams({ env: { HOME }, fetch, respond: installs });
 
     // Act
     await maybeSelfUpdate({ seams, currentVersion: CURRENT });
+    await maybeSelfUpdate({ seams, currentVersion: CURRENT });
+
+    // Assert — a cached answer is how a published release stays invisible for hours.
+    expect(requests.map((request) => request.url)).toEqual([PACKUMENT_URL, PACKUMENT_URL]);
+    expect(seams.fs.store.has(STALE_CACHE_PATH)).toBe(false);
+  });
+
+  it("should ignore a leftover update.json from a version that cached", async () => {
+    // Arrange — the old cache said CURRENT was latest; the feed says otherwise.
+    const { requests, fetch } = feed(LATEST);
+    const cache = JSON.stringify({ at: FIXED_NOW, latest: CURRENT });
+    const seams = createFakeSeams({ env: { HOME }, fetch, respond: installs, files: { [STALE_CACHE_PATH]: cache } });
+
+    // Act
+    const outcome = await maybeSelfUpdate({ seams, currentVersion: CURRENT });
 
     // Assert
     expect(requests.map((request) => request.url)).toEqual([PACKUMENT_URL]);
+    expect(outcome.reExec).toBe(true);
+    expect(seams.fs.store.get(STALE_CACHE_PATH)).toBe(cache);
   });
 
   it.each([
@@ -303,17 +292,5 @@ describe("maybeSelfUpdate", () => {
 
     // Assert
     expect(seams.lines.join("")).toContain("running under npx");
-  });
-
-  it("should carry on when the update cache cannot be written", async () => {
-    // Arrange — no HOME, so there is no state directory to write into.
-    const seams = createFakeSeams({ env: { HAI_VERBOSE: "1" }, fetch: feed(CURRENT).fetch, respond: installs });
-
-    // Act
-    const outcome = await maybeSelfUpdate({ seams, currentVersion: CURRENT });
-
-    // Assert
-    expect(outcome.reExec).toBe(false);
-    expect(seams.lines.join("")).toContain("could not write the update cache");
   });
 });

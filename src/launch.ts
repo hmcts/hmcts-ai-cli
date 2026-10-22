@@ -72,7 +72,10 @@ export async function launch(deps: { seams: Seams; processArgv: string[] }): Pro
     userArgs: user.argv
   });
 
-  const env = { ...asProcessEnv(seams.env), ...added, HAI_IN_CONTAINER: "1", HAI_ENV_READY: "1" };
+  // No markers here: this exec replaces the process in place, so HAI_ENV_READY would be
+  // inherited by every shell in the session and short-circuit each nested hai past the
+  // update check for good. Only a container hai starts gets them (src/container/run.ts).
+  const env = { ...asProcessEnv(seams.env), ...added };
 
   if (isEnabled(seams.env, "HAI_DRY_RUN")) {
     seams.stdout(`${argv.join(" ")}\n`);

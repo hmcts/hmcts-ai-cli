@@ -29,7 +29,15 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
   user's keys winning, and emits exactly one. This is not a violation of the rule above
   to be reverted.
 - **No credential is ever written to disk.** The caches in `src/auth/auth-cache.ts` and
-  `src/update/self-update.ts` hold decisions, not secrets.
+  `src/container/acr.ts` hold decisions, not secrets.
+- **The update check is never cached.** It is one GET behind a 1.5s timeout that already
+  fails silently, so a cache saved about 100ms and bought an `update.json` whose TTL kept a
+  published release invisible for hours. A leftover `update.json` is simply never read.
+- **The in-place handover sets no `HAI_IN_CONTAINER` / `HAI_ENV_READY`.** It exec's
+  `claude` in place, so a marker set there is inherited by every shell and tool in the
+  session, and from then on every nested `hai` takes the short-circuit in `src/launch.ts`
+  and returns before the update check — permanently. Only the container `hai` starts gets
+  them, as `--env` in `src/container/run.ts`, where they are true of the whole container.
 - **Every log line and error goes through `redact()`.** `createLogger` applies it, and
   `main` routes every thrown error through the logger. Do not write to stderr directly.
 - **Only `src/system/runner.ts` imports `node:child_process`; only `src/system/fs.ts`
