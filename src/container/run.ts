@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { HELPER_FILE } from "../auth/gateway.js";
 import { buildClaudeArgs } from "../claude/args.js";
+import { sessionRegistryHooks } from "../claude/hooks.js";
 import { buildSettings, materialiseSettings } from "../claude/settings.js";
 import { extractUserSettings, mergeSettings, readUserSettings } from "../claude/user-settings.js";
 import { describeEnv } from "../log/redact.js";
@@ -174,7 +175,10 @@ async function containerClaudeArgs(
   const user = extractUserSettings(input.forwarded);
   const ours = buildSettings({
     inWorkspace: input.workspaceRoot !== null,
-    apiKeyHelperPath: input.hasGateway ? join(ctx.containerHome, ".local", "state", "hai", HELPER_FILE) : undefined
+    apiKeyHelperPath: input.hasGateway ? join(ctx.containerHome, ".local", "state", "hai", HELPER_FILE) : undefined,
+    // `hair` on PATH inside the image: hai's own install is a host path this container
+    // cannot see. The registry it writes is under ~/.claude, which is mounted.
+    hooks: sessionRegistryHooks(seams, { forwarded: input.forwarded, forContainer: true })
   });
   const merged = mergeSettings(ours, user.value === undefined ? {} : await readUserSettings(seams, user.value));
   for (const warning of merged.warnings) {

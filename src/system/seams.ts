@@ -22,11 +22,24 @@ export function createSeams(): Seams {
     scriptPath: process.argv[1]!,
     pid: process.pid,
     exit: (code) => process.exit(code),
+    chdir: (dir) => {
+      process.chdir(dir);
+    },
+    stdin: readAllStdin,
     stdout: (text) => {
       process.stdout.write(text);
     },
     logger: createLogger({ write: (text) => process.stderr.write(text), isVerbose: isEnabled(env, "HAI_VERBOSE") })
   };
+}
+
+async function readAllStdin(): Promise<string> {
+  process.stdin.setEncoding("utf8");
+  let text = "";
+  for await (const chunk of process.stdin) {
+    text += chunk;
+  }
+  return text;
 }
 
 export interface Seams {
@@ -43,6 +56,15 @@ export interface Seams {
   /** Recorded in the transcript lock, so a stale one can be told from a live one. */
   pid: number;
   exit(code: number): never;
+  /**
+   * `hair` resumes a conversation that belongs to a directory, and resume-by-id is not
+   * cwd-scoped: resuming from the wrong one rebinds project settings, hooks and CLAUDE.md
+   * discovery to wherever the terminal happened to be. The handover is an exec, so the
+   * process cwd is what the resumed session inherits.
+   */
+  chdir(dir: string): void;
+  /** A Claude Code hook is handed its payload on stdin and nothing else. */
+  stdin(): Promise<string>;
   stdout(text: string): void;
   logger: Logger;
 }

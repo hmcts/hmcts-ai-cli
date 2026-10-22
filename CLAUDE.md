@@ -21,6 +21,65 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
 - **`hai` has no arguments of its own.** Never add a flag, a subcommand or an argument
   parser. Every argument is forwarded to `claude` verbatim. All configuration is
   `HAI_*` environment variables. `src/claude/args.test.ts` guards this.
+- **`hair` may have its own arguments, and that is not a loophole in the rule above.**
+  The rule exists because `claude` owns the subcommand namespace: `hai doctor`,
+  `hai mcp list` and `hai --help` have to reach the real CLI untouched, and a parser in
+  front of them would eventually swallow one. A separate binary is not in that namespace,
+  so `hair --list` and `hair hook <Event>` cost nothing — but only in the leading
+  position, and never for the bare form. `hair -r x --list` forwards all three words.
+  Nothing `hair` parses may reach the forwarded argv.
+- **`hair` delegates to `launch()`; it never spawns `claude`.** Its job ends at claiming a
+  session id, after which it hands `["-r", id, ...rest]` to hai's own entrypoint.
+  Spawning `claude` from `hair` would bypass `resolveRoute` and `resolveAuth` — including
+  the unconditional Bedrock-developer-group check, which exists because one session
+  silently billed roughly 3.3M tokens to an engineer's personal claude.ai subscription.
+  Delegating also inherits container mode, the port publishing and the self-update for
+  free. The handover swaps `scriptPath` for hai's (`haiScriptPath`), because a self-update
+  inside `launch` re-execs `scriptPath` with the arguments it was given and re-entering
+  `hair` there would send the new release off to claim a second conversation.
+- **The session registry lives in `~/.claude/sessions.jsonl`, not in hai's state dir.**
+  The hook that writes it runs *inside* the container session while `hair` may run on the
+  host, and `~/.claude` is one of the few paths bind-mounted across that boundary — the
+  state dir would give the two halves two different files. It also has to survive the
+  container rebuild a reboot forces. `lockPath` in `src/container/lock.ts` keeps
+  host-visible state under `~/.claude` for the same reason.
+- **Registration is on the first `UserPromptSubmit` and only for an attended session.**
+  After a reboot every entry looks stale-open, so the registry is only useful if it holds
+  conversations a human actually drove. `SessionStart` fires for every subagent sweep,
+  `-p` script run and background job — cft-workspace starts one from a `SessionStart` hook
+  on *every* session — and measured on Claude Code 2.1.304 a `-p` run and a `--bg` session
+  fire `UserPromptSubmit` too, with payloads byte-identical to an interactive one. The
+  only discriminator is the hook's inherited `CLAUDE_CODE_SESSION_ATTENDED`, which was `1`
+  interactive and `0` for both; `CLAUDE_CODE_ENTRYPOINT` is not one, because `--bg` reports
+  `cli` just as an attended session does. Filter conservatively: missing a session is a
+  nuisance, a registry full of agent runs is useless.
+- **Deregistration is on `SessionEnd`, and the asymmetry is the whole mechanism.** A clean
+  exit removes its own entry; a reboot cannot. "Still marked open" *is* the crash signal.
+  Every reason deregisters, `clear` included — `/clear` ends that id and starts a new one,
+  so the old id is not a conversation to hand anyone.
+- **The claim is atomic and is committed before the handover.** Ten terminals can start at
+  once, and the resumed session's own hook re-registers it as open within seconds: a claim
+  taken after the exec would let the next terminal pick the same id, and `claude -r` on a
+  live session forks a copy rather than attaching, so the engineer would get duplicates of
+  one conversation instead of their ten. There is no shell for `flock`, so the primitive is
+  `Fs.createExclusive` — `O_EXCL` on `~/.claude/hair-claims/<id>.json`. Reclaiming a stale
+  claim goes through a `rename`, the other atomic operation available, so the loser of a
+  race finds the file already gone rather than both deciding it was theirs.
+- **The claim is not the transcript lock widened.** The lock keys on the project slug and
+  asks "may this session write these transcripts at all", answering refuse or reclaim for
+  the whole run. A claim keys on one session id and asks "is this conversation mine to
+  resume", where the right answer to a no is to try the next conversation. `claimDecision`
+  deliberately mirrors `lockDecision`'s shape, and both go through the same `pidAlive`.
+- **`pidAlive` is read as liveness, never as identity.** `ps -o comm=` reports
+  `MainThread` for a plain node process — measured — so matching the command name to
+  defeat a pid the kernel reused would read a live holder as gone. "Alive" being wrong
+  about a reused pid strands one conversation; "gone" being wrong resumes a live session
+  and forks it. Only one of those is worth risking.
+- **A hook never breaks a session.** `runHook` swallows everything and returns, so
+  `hair hook` exits 0 whatever happened. A lost registration costs one `claude -r` typed
+  by hand. Measured: a hook command that does not exist at all leaves the session's output
+  and exit status untouched, which is what makes the container-mode `hair`-on-PATH
+  fallback safe to degrade.
 - **`--settings` is the one deliberate exception, and it stays.** `claude`'s `--settings`
   is last-wins rather than merged, so passing it twice discards hai's own settings
   silently — on the gateway route that drops the `apiKeyHelper` and the session starts
@@ -115,19 +174,22 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
 ## Shape
 
 ```
-src/system/     the seams: Runner, Fs, Clock, Net, Env, HiddenInput, plus createSeams()
+src/system/     the seams: Runner, Fs, Clock, Net, Env, HiddenInput, chdir, stdin,
+                plus createSeams()
 src/log/        redact() and the logger everything speaks through
 src/az/         az CLI calls: token, account, checkMemberGroups, Key Vault
 src/auth/       route resolution, the agent-hub client, credentials, the env to inject
 src/net/        the VPN probe (informational only, never blocks)
-src/claude/     the claude argv and settings
+src/claude/     the claude argv, the settings and the session-registry hooks hai injects
+src/hair/       `hair`: the session registry, the restore candidates, the claim, the hook
 src/workspace/  cft-workspace detection and plugin-dir resolution
 src/update/     the Azure Artifacts feed and the self-update
 src/container/  container mode: the docker argv, mounts, DNS, ports, the port watch, lock, ACR, staging
 src/sbx/        Docker Sandboxes mode: the sbx argv, the kit and the host settings it needs
-src/launch.ts   `hai`'s orchestration; src/sbx-launch.ts is `sbx-hai`'s
-src/main.ts     wraps either of them in error handling: main() and sbxMain()
-src/bin/        two-line shims, excluded from coverage
+src/launch.ts   `hai`'s orchestration; src/sbx-launch.ts is `sbx-hai`'s,
+                src/hair-launch.ts is `hair`'s and ends by calling launch()
+src/main.ts     wraps any of them in error handling: main(), sbxMain() and hairMain()
+src/bin/        three two-line shims, excluded from coverage
 runtime/        the shell the container runs, shipped in the package and staged at launch
 ```
 
@@ -142,6 +204,12 @@ table-testable:
 | `detectPackageManager(input)` | `maybeSelfUpdate` |
 | `packumentUrl(feed, name)`, `latestFromPackument(body)` | `maybeSelfUpdate` |
 | `extractUserSettings(argv)`, `mergeSettings(ours, theirs)` | `readUserSettings` |
+| `shouldRegisterSession`, `sessionDisplayName`, `hookCommand`, `hairCommand`, `haiScriptPath` | `sessionRegistryHooks` |
+| `parseHairArgs(processArgv)` | — |
+| `parseRegistry`, `parseRecord`, `compacted`, `registryPath`, `claimPath` | `readRegistry`, `appendRecord`, `compactRegistry` |
+| `restoreDecision`, `restoreCandidates`, `describeCandidate` | `probeLiveness` |
+| `claimDecision`, `parseClaim` | `claimFirst` |
+| `hookDecision`, `parsePayload` | `runHook` |
 | `resolvePluginDirs` is the exception — it reads the marketplace itself | — |
 | `buildDockerArgs(ctx)` | `gatherContext` in `src/container/run.ts` |
 | `selectDnsServers`, `parseResolvectl`, `parseNetif`, `parseNmcli` | `discoverDns` |
@@ -279,6 +347,79 @@ Other things that are the way they are for a reason:
 `HAI_FORCE_HOST=1` forces container mode — it overrides both the probe and
 `HAI_FORCE_CONTAINER`, and it is the only way to exercise container mode from inside a
 devcontainer, which otherwise detects itself and takes the in-place path.
+
+## Session restore (`hair`)
+
+The third bin. A reboot ends every Claude Code session at once, `claude --continue` keys
+only on cwd so it cannot tell apart the sessions an engineer runs in one repo, and
+`claude -r` on a live session forks a copy of it. `hair` keeps a registry of the
+conversations that were open and hands one back per terminal.
+
+The shape, all in `src/hair-launch.ts`:
+
+1. `parseHairArgs` splits the three surfaces: `hair hook <Event>`, `hair --list` and the
+   bare form.
+2. `readRegistry` folds `~/.claude/sessions.jsonl` to one record per session id, later
+   lines winning. It is append-only: a registration is one `O_APPEND` write of one short
+   line, which is how ten sessions record themselves with no lock, and a deregistration is
+   a tombstone appended after it. `compactRegistry` rewrites it once it is long — the one
+   operation that can lose a concurrent append, which is why it waits for 500 lines.
+3. `probeLiveness` asks `pidAlive` about each record's pid; `restoreCandidates` turns that
+   into the ordered list. An open record whose process is **gone** is a candidate; one
+   still running is not, and one that cannot be asked about is left alone, the same rule
+   the transcript lock follows.
+4. Exact-cwd records come first and then FIFO. Most of the engineer's terminals share a
+   directory, so cwd is a preference rather than a filter: a restored terminal takes the
+   oldest waiting conversation whatever directory it belongs to, rather than starting
+   fresh and leaving one stranded.
+5. `claimFirst` walks the candidates and takes the first it wins with `O_EXCL`, then
+   `seams.chdir` moves to the record's own directory, then `launch()` runs with
+   `["-r", id, ...rest]`.
+
+The other half is the hook. `sessionRegistryHooks` puts `UserPromptSubmit` and
+`SessionEnd` entries into the settings hai already passes as its single `--settings`, so
+nobody hand-wires `.claude/settings.json`. Two things that had to be dealt with for that:
+
+- `buildSettings` returned `Record<string, string>` and now returns `Settings`, the hooks
+  being a nested object.
+- `mergeSettings` was a shallow spread, so a user-supplied `--settings` carrying any
+  `hooks` key of its own would have silently discarded the registration hooks — and the
+  only symptom would have been `hair` finding nothing to restore weeks later. `hooks` now
+  merges per event with ours first, and a shape that cannot be merged warns the way
+  `API_KEY_HELPER_OVERRIDE_WARNING` does.
+
+`hair` is resolved differently per path, and this is the one place the feature is not
+watertight. In-place, the command is this interpreter and this release's own
+`dist/bin/hair.js` — absolute, no PATH lookup, no execute bit. In container mode hai's
+install is a host path the container cannot see, so it falls back to `hair` on PATH inside
+the image; where that is not installed the hook fails and the conversation goes
+unregistered, which is survivable because a failing hook changes nothing about the session.
+
+Claude Code runs a hook command through `/bin/sh -c` — measured, the hook's parent process
+is `/bin/sh -c <command>` — so `hookCommand` shell-quotes what it emits. That is not a
+breach of "never a shell": hai runs no shell, it hands a string to one it does not control,
+and the quoting is what stops a session name with a space in it being read as more argv.
+
+### Measured on Claude Code 2.1.304
+
+| Session | `CLAUDE_CODE_SESSION_ATTENDED` | `CLAUDE_CODE_ENTRYPOINT` | fires `UserPromptSubmit` |
+|---|---|---|---|
+| interactive | `1` | `cli` | yes |
+| `claude -p` | `0` | `sdk-cli` | yes |
+| `claude --bg` | `0` | `cli` | yes |
+
+`UserPromptSubmit` carries `session_id`, `transcript_path`, `cwd`, `prompt_id`,
+`permission_mode`, `hook_event_name` and `prompt`. `SessionEnd` carries the same less
+`permission_mode` and `prompt`, plus `reason`: `prompt_input_exit` for `/exit`, `clear`
+for `/clear`, `other` for a finished `-p` run and for `claude stop` on a background one.
+Neither carries the session's `-n/--name`, which is why hai reads it off the argv and puts
+it on the hook's command line. `CLAUDE_PID` in the hook environment is the owning `claude`
+process, not the hook's own, and is what the registry records.
+
+Subagents do not register anything of their own: a subagent's work shows up as a
+`UserPromptSubmit` on the **parent** session's id, with the prompt opening
+`<agent-message from="...">`. Keying the upsert on the session id makes that a no-op, and
+the same is true of `SessionStart` firing again on `clear` and `compact`.
 
 ## Docker Sandboxes mode (`sbx-hai`)
 

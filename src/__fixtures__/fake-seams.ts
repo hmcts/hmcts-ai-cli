@@ -64,6 +64,17 @@ export function createFakeFs(files: Record<string, string> = {}): FakeFs {
         modes.set(path, opts.mode);
       }
     },
+
+    async createExclusive(path, content, opts = {}) {
+      if (store.has(path)) {
+        return false;
+      }
+      store.set(path, content);
+      if (opts.mode !== undefined) {
+        modes.set(path, opts.mode);
+      }
+      return true;
+    },
     async mkdirp(path, opts = {}) {
       dirs.add(path);
       if (opts.mode !== undefined) {
@@ -129,11 +140,19 @@ export function createFakeHiddenInput(answers: string[] = [], isTty = true): Hid
 }
 
 export function createFakeSeams(
-  overrides: Partial<Seams> & { files?: Record<string, string>; respond?: RunResponder; fetch?: Seams["net"]["fetch"]; portsInUse?: number[] } = {}
+  overrides: Partial<Seams> & {
+    files?: Record<string, string>;
+    respond?: RunResponder;
+    fetch?: Seams["net"]["fetch"];
+    portsInUse?: number[];
+    /** What a `hair hook` run reads its payload from. */
+    stdinText?: string;
+  } = {}
 ): FakeSeams {
-  const { files, respond, fetch, portsInUse, ...rest } = overrides;
+  const { files, respond, fetch, portsInUse, stdinText, ...rest } = overrides;
   const lines: string[] = [];
   const out: string[] = [];
+  const chdirs: string[] = [];
   const env = rest.env ?? {};
   const logger: Logger = rest.logger ?? createLogger({ write: (text) => lines.push(text), isVerbose: env.HAI_VERBOSE === "1" });
   const seams: Seams = {
@@ -156,10 +175,16 @@ export function createFakeSeams(
       ((code) => {
         throw exitSignal(code);
       }),
+    chdir:
+      rest.chdir ??
+      ((dir) => {
+        chdirs.push(dir);
+      }),
+    stdin: rest.stdin ?? (async () => stdinText ?? ""),
     stdout: rest.stdout ?? ((text) => out.push(text)),
     logger
   };
-  return { ...seams, runner: seams.runner as FakeRunner, fs: seams.fs as FakeFs, lines, out };
+  return { ...seams, runner: seams.runner as FakeRunner, fs: seams.fs as FakeFs, lines, out, chdirs };
 }
 
 /** The runtime scripts as the package ships them, for any test that reaches container mode. */
@@ -201,6 +226,8 @@ export interface FakeSeams extends Omit<Seams, "runner" | "fs"> {
   /** Every line the logger wrote, prefix and newline included. */
   lines: string[];
   out: string[];
+  /** Every directory the process was moved to, which is what a resumed session inherits. */
+  chdirs: string[];
 }
 
 export type ExitSignal = Error & { exitCode: number };

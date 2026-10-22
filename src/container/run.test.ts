@@ -10,6 +10,13 @@ const SESSION = "hai-hmcts-7293fcec";
 const LOCK = `${HOME}/.claude/projects/-home-linus-Work-solirius-hmcts/.hai.lock`;
 const BEDROCK_KEY = "ABSKQmVkcm9jay1mYWtlLWtleS0wMDAwMDAwMDAw";
 const ACR_TOKEN = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.fake-acr-token.sig";
+/**
+ * Container mode's session-registry hooks. `hair` on PATH rather than an absolute path:
+ * hai's own install is a host path this container cannot see.
+ */
+const HOOKS =
+  `"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"'hair' hook UserPromptSubmit"}]}],` +
+  `"SessionEnd":[{"hooks":[{"type":"command","command":"'hair' hook SessionEnd"}]}]}`;
 
 /** Every docker and git call container mode makes, answered the way a working host would. */
 const respond: RunResponder = (argv) => {
@@ -68,7 +75,7 @@ describe("runContainerMode", () => {
     expect(exitCodeOf(err)).toBe(0);
     expect(argvOf(seams, ["docker", "run"])).toContain(DEFAULT_IMAGE);
     expect(argvOf(seams, ["docker", "exec", "-i", "--user", "hmcts", SESSION, "bash", "/opt/hai/receive-secret.sh"])).toContain("AWS_BEARER_TOKEN_BEDROCK");
-    expect(seams.runner.interactiveCalls[0]?.argv.slice(-2)).toEqual(["/opt/hai/entrypoint.sh", "claude"]);
+    expect(seams.runner.interactiveCalls[0]?.argv.slice(-4)).toEqual(["/opt/hai/entrypoint.sh", "claude", "--settings", `{${HOOKS}}`]);
   });
 
   it("should default to the published image with no HAI_IMAGE set", async () => {
@@ -486,7 +493,7 @@ describe("runContainerMode", () => {
       await runContainerMode(input(seams, { hasGateway: true })).catch(() => undefined);
 
       // Assert
-      expect(seams.runner.interactiveCalls[0]?.argv).toContain('{"apiKeyHelper":"/home/hmcts/.local/state/hai/gateway-token.sh"}');
+      expect(seams.runner.interactiveCalls[0]?.argv).toContain(`{"apiKeyHelper":"/home/hmcts/.local/state/hai/gateway-token.sh",${HOOKS}}`);
     });
 
     it("should add the workspace flags when the repo is a cft-workspace", async () => {
@@ -500,7 +507,7 @@ describe("runContainerMode", () => {
       expect(seams.runner.interactiveCalls[0]?.argv.slice(-5)).toEqual([
         "claude",
         "--settings",
-        '{"crossSessionInbound":"accept"}',
+        `{"crossSessionInbound":"accept",${HOOKS}}`,
         "--plugin-dir",
         `${REPO}/apps/pcs/.claude`
       ]);
@@ -514,7 +521,7 @@ describe("runContainerMode", () => {
       await runContainerMode(input(seams, { forwarded: ["--settings", '{"cleanupPeriodDays":42}', "-c"] })).catch(() => undefined);
 
       // Assert
-      expect(seams.runner.interactiveCalls[0]?.argv.slice(-4)).toEqual(["claude", "--settings", '{"cleanupPeriodDays":42}', "-c"]);
+      expect(seams.runner.interactiveCalls[0]?.argv.slice(-4)).toEqual(["claude", "--settings", `{${HOOKS},"cleanupPeriodDays":42}`, "-c"]);
     });
 
     it("should warn when the user's settings replace the gateway's apiKeyHelper", async () => {

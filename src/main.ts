@@ -1,3 +1,4 @@
+import { launchHair } from "./hair-launch.js";
 import { launch } from "./launch.js";
 import { messageOf } from "./log/error-message.js";
 import { launchSbx } from "./sbx-launch.js";
@@ -10,6 +11,14 @@ export async function main(processArgv: string[], seams: Seams = createSeams()):
 /** The `sbx-hai` entrypoint: the same contract, in a Docker Sandboxes microVM. */
 export async function sbxMain(processArgv: string[], seams: Seams = createSeams()): Promise<void> {
   await reported(seams, () => launchSbx({ seams, processArgv }));
+}
+
+/**
+ * The `hair` entrypoint: claims a conversation out of the session registry and hands it
+ * to `main`'s `launch`, which is what resolves the route and the credentials.
+ */
+export async function hairMain(processArgv: string[], seams: Seams = createSeams()): Promise<void> {
+  await reported(seams, () => launchHair({ seams, processArgv }));
 }
 
 async function reported(seams: Seams, run: () => Promise<void>): Promise<void> {

@@ -1,11 +1,16 @@
 import type { Env } from "../system/env.js";
 import type { Fs } from "../system/fs.js";
 import { STATE_DIR_MODE, STATE_FILE_MODE, stateDir, statePath } from "../system/state-dir.js";
+import type { HookSettings } from "./hooks.js";
 
 export const SETTINGS_FILE = "settings.json";
 
-export function buildSettings(input: { inWorkspace: boolean; apiKeyHelperPath?: string }): Record<string, string> {
-  const settings: Record<string, string> = {};
+/**
+ * `Settings` rather than `Record<string, string>`: the session-registry hooks are a
+ * nested object, and claude's settings schema was never flat anyway.
+ */
+export function buildSettings(input: { inWorkspace: boolean; apiKeyHelperPath?: string; hooks?: HookSettings }): Settings {
+  const settings: Settings = {};
   if (input.inWorkspace) {
     // Claude Code ignores crossSessionInbound in project settings, so it has to come in
     // through --settings.
@@ -13,6 +18,9 @@ export function buildSettings(input: { inWorkspace: boolean; apiKeyHelperPath?: 
   }
   if (input.apiKeyHelperPath !== undefined) {
     settings.apiKeyHelper = input.apiKeyHelperPath;
+  }
+  if (input.hooks !== undefined) {
+    settings.hooks = input.hooks;
   }
   return settings;
 }

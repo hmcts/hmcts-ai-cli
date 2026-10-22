@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 import type { Fs } from "../system/fs.js";
+import { REGISTRATION_HOOK_OVERRIDE_WARNING } from "./hooks.js";
 import type { Settings } from "./settings.js";
 
 export const SETTINGS_FLAG = "--settings";
@@ -44,11 +45,70 @@ export function extractUserSettings(argv: string[]): { argv: string[]; value?: s
   return { argv: kept, value };
 }
 
-/** The user's keys win: an explicit `--settings` is their override, and explicit beats implicit. */
+/**
+ * The user's keys win: an explicit `--settings` is their override, and explicit beats
+ * implicit. `hooks` is the exception, and has to be: a shallow spread would let a user
+ * who registers any hook of their own silently discard hai's session-registry hooks, and
+ * the only symptom would be `hair` finding nothing to restore weeks later. Per event the
+ * two lists are concatenated, hai's first, so both run.
+ */
 export function mergeSettings(ours: Settings, theirs: Settings): { settings: Settings; warnings: string[] } {
   const settings = { ...ours, ...theirs };
-  const replacesHelper = ours.apiKeyHelper !== undefined && settings.apiKeyHelper !== ours.apiKeyHelper;
-  return { settings, warnings: replacesHelper ? [API_KEY_HELPER_OVERRIDE_WARNING] : [] };
+  const hooks = mergeHooks(ours.hooks, theirs.hooks);
+  if (hooks !== undefined) {
+    settings.hooks = hooks;
+  }
+  const warnings: string[] = [];
+  if (ours.apiKeyHelper !== undefined && settings.apiKeyHelper !== ours.apiKeyHelper) {
+    warnings.push(API_KEY_HELPER_OVERRIDE_WARNING);
+  }
+  if (isHookMap(ours.hooks) && !keepsOurHooks(ours.hooks, hooks)) {
+    warnings.push(REGISTRATION_HOOK_OVERRIDE_WARNING);
+  }
+  return { settings, warnings };
+}
+
+/** Undefined when neither side has any, so no empty `hooks` key reaches claude. */
+function mergeHooks(ours: unknown, theirs: unknown): unknown {
+  if (!isHookMap(ours) || !isHookMap(theirs)) {
+    // One of them is a shape this cannot reason about — a list, a string, a schema that
+    // changed under us. The user's wins, as every other key does, and the warning says so.
+    return theirs ?? ours;
+  }
+  const merged: Record<string, unknown> = { ...ours, ...theirs };
+  for (const [event, mine] of Object.entries(ours)) {
+    const yours = theirs[event];
+    if (Array.isArray(mine) && Array.isArray(yours)) {
+      merged[event] = [...mine, ...yours];
+    }
+  }
+  return merged;
+}
+
+/** Every command hai registered has to still be in the merged settings, or it was replaced. */
+function keepsOurHooks(ours: Record<string, unknown>, merged: unknown): boolean {
+  // Wrapped in an array so this is a string whatever `merged` turned out to be.
+  const commands = JSON.stringify([merged]);
+  return hookCommands(ours).every((command) => commands.includes(JSON.stringify(command)));
+}
+
+function hookCommands(hooks: Record<string, unknown>): string[] {
+  const out: string[] = [];
+  for (const groups of Object.values(hooks)) {
+    for (const group of Array.isArray(groups) ? groups : []) {
+      for (const entry of Array.isArray((group as { hooks?: unknown }).hooks) ? (group as { hooks: unknown[] }).hooks : []) {
+        const command = (entry as { command?: unknown }).command;
+        if (typeof command === "string") {
+          out.push(command);
+        }
+      }
+    }
+  }
+  return out;
+}
+
+function isHookMap(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /** Resolved as claude resolves it: a value starting with `{` is inline JSON, anything else is a path. */

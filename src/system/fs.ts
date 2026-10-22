@@ -24,6 +24,18 @@ export function createFs(): Fs {
       await appendFile(path, content, { encoding: "utf8", mode: opts.mode });
     },
 
+    async createExclusive(path, content, opts = {}) {
+      try {
+        await writeFile(path, content, { encoding: "utf8", flag: "wx", mode: opts.mode });
+        return true;
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "EEXIST") {
+          return false;
+        }
+        throw err;
+      }
+    },
+
     async mkdirp(path, opts = {}) {
       await mkdir(path, { recursive: true, mode: opts.mode });
       if (opts.mode !== undefined) {
@@ -77,8 +89,19 @@ export interface Fs {
   /** Null rather than a throw when the path is absent or unreadable: every caller treats both as "no signal". */
   readText(path: string): Promise<string | null>;
   writeText(path: string, content: string, opts?: { mode?: number }): Promise<void>;
-  /** The port watcher's log, which is a running record rather than a state file. */
+  /**
+   * The port watcher's log, which is a running record rather than a state file — and the
+   * session registry, where an O_APPEND write of one short line is what lets ten sessions
+   * record themselves without a lock.
+   */
   appendText(path: string, content: string, opts?: { mode?: number }): Promise<void>;
+  /**
+   * `O_EXCL`: creates the file or reports that someone else already had. The only atomic
+   * "exactly one of us wins" primitive available without a shell to run `flock`, and what
+   * the restore claim is built on — ten terminals starting at once must not resume the
+   * same conversation, because `claude -r` on a live session forks a copy of it.
+   */
+  createExclusive(path: string, content: string, opts?: { mode?: number }): Promise<boolean>;
   mkdirp(path: string, opts?: { mode?: number }): Promise<void>;
   /** Atomic within a filesystem, so a config seeded by writing a temp file next to it is never half-written. */
   rename(from: string, to: string): Promise<void>;

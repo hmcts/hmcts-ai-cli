@@ -11,6 +11,15 @@ const MANIFEST = "repos:\n  apps/pcs/pcs-api:\n    url: hmcts/pcs-api\n";
 const MARKETPLACE = JSON.stringify({ plugins: [{ name: "pcs", source: "./apps/pcs/.claude" }] });
 
 const IN_CONTAINER = { "/.dockerenv": "" };
+/**
+ * The session-registry hooks hai now adds to every conversation, written out rather than
+ * rebuilt from `registrationHooks`: these strings are what `sh -c` inside the session
+ * actually runs, so a change to the quoting or the command has to be seen here.
+ */
+const HOOK_BIN = "'/usr/local/bin/node' '/usr/local/lib/node_modules/@hmcts-cft/hai-cli/dist/bin/hair.js'";
+const HOOKS =
+  `"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"${HOOK_BIN} hook UserPromptSubmit"}]}],` +
+  `"SessionEnd":[{"hooks":[{"type":"command","command":"${HOOK_BIN} hook SessionEnd"}]}]}`;
 const LIVE_LOGIN = JSON.stringify({ claudeAiOauth: { accessToken: "sk-ant-oat01-x", expiresAt: Number.MAX_SAFE_INTEGER } });
 /** A published version, so the update check is not skipped as an unpublished local build. */
 const PUBLISHED = { [`${packageRoot()}package.json`]: JSON.stringify({ version: "0.1.0" }) };
@@ -66,7 +75,7 @@ describe("launch", () => {
       // Assert
       expect(exitCodeOf(err)).toBe(0);
       expect(seams.runner.calls.find((call) => call.argv[1] === "run")?.argv).toContain("hmctsprod.azurecr.io/cft-workspace/devcontainer:latest");
-      expect(seams.runner.interactiveCalls[0]?.argv.slice(-2)).toEqual(["claude", "-c"]);
+      expect(seams.runner.interactiveCalls[0]?.argv.slice(-1)).toEqual(["-c"]);
       expect(seams.runner.execCalls).toEqual([]);
     });
 
@@ -163,7 +172,8 @@ describe("launch", () => {
       await launch({ seams, processArgv: ["node", "hai", ...userArgs] });
 
       // Assert
-      expect(execArgv(seams)).toEqual(["claude", ...userArgs]);
+      expect(execArgv(seams)[0]).toBe("claude");
+      expect(execArgv(seams).slice(execArgv(seams).length - userArgs.length)).toEqual(userArgs);
     });
 
     it("should never put a secret on the command line", async () => {
@@ -205,10 +215,10 @@ describe("launch", () => {
       await launch({ seams, processArgv: ["node", "hai", "-c"] });
 
       // Assert
-      expect(execArgv(seams)).toEqual(["claude", "--settings", '{"crossSessionInbound":"accept"}', "--plugin-dir", "/work/apps/pcs/.claude", "-c"]);
+      expect(execArgv(seams)).toEqual(["claude", "--settings", `{"crossSessionInbound":"accept",${HOOKS}}`, "--plugin-dir", "/work/apps/pcs/.claude", "-c"]);
     });
 
-    it("should add none of its own flags outside a workspace", async () => {
+    it("should add nothing but the session-registry settings outside a workspace", async () => {
       // Arrange
       const seams = seamsIn();
 
@@ -216,7 +226,18 @@ describe("launch", () => {
       await launch({ seams, processArgv: ["node", "hai"] });
 
       // Assert
-      expect(execArgv(seams)).toEqual(["claude"]);
+      expect(execArgv(seams)).toEqual(["claude", "--settings", `{${HOOKS}}`]);
+    });
+
+    it("should register no hooks for a -p run, which is a script rather than a conversation", async () => {
+      // Arrange
+      const seams = seamsIn();
+
+      // Act
+      await launch({ seams, processArgv: ["node", "hai", "-p", "summarise this"] });
+
+      // Assert
+      expect(execArgv(seams)).toEqual(["claude", "-p", "summarise this"]);
     });
 
     it("should never skip permissions by itself, and forward the flag when the user types it", async () => {
@@ -243,7 +264,7 @@ describe("launch", () => {
       await launch({ seams, processArgv: ["node", "hai", "--settings", '{"cleanupPeriodDays":42}', "-c"] });
 
       // Assert
-      expect(execArgv(seams)).toEqual(["claude", "--settings", '{"crossSessionInbound":"accept","cleanupPeriodDays":42}', "-c"]);
+      expect(execArgv(seams)).toEqual(["claude", "--settings", `{"crossSessionInbound":"accept",${HOOKS},"cleanupPeriodDays":42}`, "-c"]);
     });
 
     it("should read a path through the Fs seam, relative to the cwd", async () => {
@@ -254,7 +275,7 @@ describe("launch", () => {
       await launch({ seams, processArgv: ["node", "hai", "--settings=mine.json"] });
 
       // Assert
-      expect(execArgv(seams)).toEqual(["claude", "--settings", '{"cleanupPeriodDays":42}']);
+      expect(execArgv(seams)).toEqual(["claude", "--settings", `{${HOOKS},"cleanupPeriodDays":42}`]);
     });
 
     it.each<[string, string[]]>([
@@ -283,7 +304,7 @@ describe("launch", () => {
       // Assert
       const settingsPath = `${HOME}/.local/state/hai/settings.json`;
       expect(execArgv(seams)).toEqual(["claude", "--settings", settingsPath]);
-      expect(seams.fs.store.get(settingsPath)).toBe('{"apiKeyHelper":"/tmp/mine.sh"}\n');
+      expect(seams.fs.store.get(settingsPath)).toBe(`{"apiKeyHelper":"/tmp/mine.sh",${HOOKS}}\n`);
       expect(seams.lines.join("")).toContain("will stop being refreshed");
     });
 
@@ -407,7 +428,7 @@ describe("launch", () => {
 
       // Assert
       expect(seams.runner.calls).toHaveLength(0);
-      expect(execArgv(seams)).toEqual(["claude", "-c"]);
+      expect(execArgv(seams)).toEqual(["claude", "--settings", `{${HOOKS}}`, "-c"]);
       expect(seams.lines.join("")).toContain("the route is already resolved");
     });
 
@@ -449,7 +470,7 @@ describe("launch", () => {
 
       // Assert
       expect(exitCodeOf(err)).toBe(0);
-      expect(seams.out[0]).toBe("claude -c\n");
+      expect(seams.out[0]).toBe(`claude --settings {${HOOKS}} -c\n`);
       expect(seams.runner.execCalls).toHaveLength(0);
     });
 

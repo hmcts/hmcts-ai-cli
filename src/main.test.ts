@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createFakeSeams, exitCodeOf } from "./__fixtures__/fake-seams.js";
-import { main, sbxMain } from "./main.js";
+import { hairMain, main, sbxMain } from "./main.js";
 
 const HOME = "/home/dev";
 const KEY = "ABSKQmVkcm9jay1mYWtlLWtleS0wMDAwMDAwMDAw";
@@ -18,7 +18,8 @@ describe("main", () => {
     await main(["node", "hai", "-c"], seams);
 
     // Assert
-    expect(seams.runner.execCalls[0]?.argv).toEqual(["claude", "-c"]);
+    expect(seams.runner.execCalls[0]?.argv.at(-1)).toBe("-c");
+    expect(seams.runner.execCalls[0]?.argv[0]).toBe("claude");
     expect(seams.lines).toEqual([]);
   });
 
@@ -85,6 +86,26 @@ describe("main", () => {
     // Assert
     expect(exitCodeOf(err)).toBe(1);
     expect(seams.lines.join("")).toContain("sbx-hai runs on the host, not inside a container");
+  });
+
+  it("should report a hair failure on stderr and exit 1", async () => {
+    // Arrange
+    const seams = createFakeSeams({ env: { HOME, HAI_NO_UPDATE: "1", HAI_MOUNTS: "nonsense" }, respond: () => ({ code: 0 }) });
+
+    // Act
+    const err = await hairMain(["node", "hair"], seams).catch((e) => e);
+
+    // Assert
+    expect(exitCodeOf(err)).toBe(1);
+    expect(seams.lines.join("")).not.toEqual("");
+  });
+
+  it("should exit 0 from a hook whatever the payload was, a hook never breaking a session", async () => {
+    // Arrange
+    const seams = createFakeSeams({ env: { HOME }, stdinText: "not json at all" });
+
+    // Act / Assert
+    await expect(hairMain(["node", "hair", "hook", "UserPromptSubmit"], seams)).resolves.toBeUndefined();
   });
 
   it("should report a thrown non-Error too", async () => {

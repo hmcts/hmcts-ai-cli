@@ -13,6 +13,9 @@ hai -p 'summarise this'  # claude -p 'summarise this'
 hai --help               # claude --help
 ```
 
+There is a second binary, `hair`, which does have arguments of its own — see
+[Picking your sessions back up after a reboot](#picking-your-sessions-back-up-after-a-reboot).
+
 ## Install
 
 ```bash
@@ -70,6 +73,56 @@ Where your membership cannot be confirmed at all — no `az` session, no VPN, or
 refuses the call — `hai` does not guess. It stops and says membership could not be
 confirmed. `HAI_ROUTE=own-licence` is accepted in that case, because typing it is a
 deliberate choice rather than an accident.
+
+## Picking your sessions back up after a reboot
+
+If you run several Claude Code sessions in several terminals, a reboot ends all of them at
+once, and the usual ways back are no help:
+
+- `claude --continue` keys only on the directory, so for the half-dozen sessions you had
+  open in the same repo it cannot tell which one you meant.
+- `claude -r <id>` on a session that is still running forks a *copy* of the conversation
+  rather than attaching to it, so guessing is worse than not trying.
+- `tmux` does not survive it either, because the reboot stops the devcontainer the
+  sessions were running in.
+
+`hair` ("hai resume") fixes that. Every session `hai` starts records itself in a registry
+as you drive it, and removes itself when you exit. A reboot cannot remove anything, so
+anything still marked open is a conversation that was taken from you — and that is what
+`hair` hands back, one per terminal:
+
+```bash
+hair          # claim one of the interrupted conversations and resume it
+hair --list   # see what is waiting, without claiming any of it
+```
+
+Run `hair` in each terminal you reopen and each gets a different conversation. It prefers
+one that belongs to the directory you are in, falls back to the oldest waiting one
+whatever directory that is, and moves to that conversation's own directory before
+resuming — resume-by-id is not directory-scoped, so resuming from the wrong place would
+quietly rebind the session's project settings, hooks and `CLAUDE.md`. When nothing is
+waiting it just starts a fresh session.
+
+Everything after `hair` is forwarded, so `hair --model opus` works like `hai --model opus`.
+`hair` does not run `claude` itself — it works out which conversation is yours and then
+hands over to `hai`, so the route, the credentials, the container and the self-update are
+all the same as any other session.
+
+### The registry
+
+`~/.claude/sessions.jsonl`, one JSON object per line: the session id, its directory, its
+`-n/--name` if it has one, whether it is open, when it was last seen and the process that
+owned it. `hai` installs the hooks that maintain it, so there is nothing to put in
+`.claude/settings.json` yourself.
+
+A conversation is recorded on the first prompt **you** type into it, not when it starts.
+That is deliberate: a registry that recorded every session start would fill up with
+subagent runs, `claude -p` scripts and background jobs, and after a reboot they would all
+look like conversations waiting for you. Only a session someone is sitting in front of is
+recorded, so `-p` runs and `--bg` jobs never appear.
+
+A session whose process is still running is never offered, and `hair --list` with
+`HAI_VERBOSE=1` says what it passed over and why.
 
 ## Environment variables
 
