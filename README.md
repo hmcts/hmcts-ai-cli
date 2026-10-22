@@ -56,10 +56,12 @@ if the arguments already name a conversation — `hair -c`, `hair -r <id>` — n
 claimed and `hair` is simply `hai`.
 
 A conversation is recorded on the first prompt you type, so `-p` runs and background jobs
-never appear. The registry is written by hooks inside the session, which means it needs
-`hai` on the `PATH` there: that holds for a devcontainer or sandbox, but not yet for a bare
-host, where the session runs in an image without `hai` installed. Passing your own
-`--settings` with a `hooks` key replaces those hooks, and `hai` says so when it happens.
+never appear. The registry is written by hooks that run inside the session, so `hai` has to
+be on the `PATH` wherever that is. Start `hai` from inside a devcontainer and it runs
+`claude` in place, so it is. Start it on your own machine and it runs the session inside a
+container built from the cft-workspace image, which installs `claude` but not `hai` — so
+nothing is recorded there yet, and `hair` has nothing to offer you afterwards. Passing your
+own `--settings` with a `hooks` key replaces those hooks, and `hai` says so when it happens.
 
 ## `sbx-hai`
 
