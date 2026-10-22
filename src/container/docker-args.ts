@@ -1,5 +1,4 @@
 import { type Mount, renderMount } from "./mounts.js";
-import { publishArg } from "./ports.js";
 
 export const DOCKER_BIN = "docker";
 export const DEFAULT_IMAGE = "hmctsprod.azurecr.io/cft-workspace/devcontainer:latest";
@@ -24,8 +23,9 @@ export const ADD_HOST = "idam-simulator:127.0.0.1";
 
 /**
  * The whole `docker run` argv, as one pure function over gathered facts, so every
- * decision in it is snapshot-testable per platform, route and port profile — and so the
- * "no secret ever reaches the container config" guarantee is a test rather than a habit.
+ * decision in it is snapshot-testable per platform and route — and so the "no secret ever
+ * reaches the container config" guarantee is a test rather than a habit. No `-p`: ports
+ * are published by the watcher's sidecars, as the session turns out to listen on them.
  *
  * No secret can reach it: the context holds none. They go in on a `docker exec` stdin,
  * because anything in --env or --env-file is readable afterwards with `docker inspect`
@@ -73,9 +73,6 @@ export function buildDockerArgs(ctx: ContainerContext): string[] {
     argv.push("--mount", renderMount(mount));
   }
   argv.push("--mount", renderMount({ kind: "bind", source: ctx.runtimeDir, target: RUNTIME_MOUNT_POINT, readonly: true }), "-w", ctx.workdir);
-  for (const port of ctx.ports) {
-    argv.push("-p", publishArg(port, ctx.publicPorts));
-  }
   for (const [name, value] of Object.entries(ctx.env).sort(([a], [b]) => a.localeCompare(b))) {
     argv.push("--env", `${name}=${value}`);
   }
@@ -115,9 +112,7 @@ export interface ContainerContext {
   /** The host directory holding the staged runtime scripts. */
   runtimeDir: string;
   dns: string[];
-  /** Only the ports found free on the host: one clash must not abort the whole `docker run`. */
-  ports: number[];
-  /** 0.0.0.0 rather than loopback for every mapping, which HAI_PORTS_PUBLIC=1 asks for. */
+  /** 0.0.0.0 rather than loopback for each sidecar's mapping, which HAI_PORTS_PUBLIC=1 asks for. */
   publicPorts: boolean;
   mounts: Mount[];
   tty: boolean;

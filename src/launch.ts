@@ -67,7 +67,6 @@ export async function launch(deps: { seams: Seams; processArgv: string[] }): Pro
   }
   const argv = buildClaudeArgs({
     settings: await materialiseSettings(seams, merged.settings, credentials.gateway !== undefined),
-    skipPermissions: root !== null && seams.env.HAI_PERMISSIONS !== "ask",
     pluginDirs,
     userArgs: user.argv
   });

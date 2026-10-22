@@ -25,7 +25,6 @@ import { hostPrepPaths } from "./host-prep.js";
 import { lockPath, releaseLock, takeLock } from "./lock.js";
 import { type DevcontainerSpec, defaultSpec, parseDevcontainer, resolveMounts, type SubstitutionVars } from "./mounts.js";
 import { type PortWatch, startPortWatch, sweepSidecars } from "./port-watch.js";
-import { choosePorts, portClashMessage } from "./ports.js";
 import { stagedRuntimeDir, stageRuntime } from "./runtime-staging.js";
 import { dockerVolumeName, NETWORK_NAME, sessionName } from "./session.js";
 
@@ -68,8 +67,7 @@ export async function runContainerMode(input: {
     path: lockPath({ home: ctx.home, workdir: ctx.workdir }),
     sessionName: ctx.sessionName,
     pid: seams.pid,
-    allowConcurrent: isEnabled(seams.env, "HAI_ALLOW_CONCURRENT"),
-    ownHistory: isEnabled(seams.env, "HAI_OWN_HISTORY")
+    allowConcurrent: isEnabled(seams.env, "HAI_ALLOW_CONCURRENT")
   });
 
   let started = false;
@@ -84,7 +82,7 @@ export async function runContainerMode(input: {
     // Only the session that started the container watches it: a reattaching one would be a
     // second watcher racing the first for the same host ports.
     if (started) {
-      watch = await startPortWatch(seams, ctx, { published: ctx.ports });
+      watch = await startPortWatch(seams, ctx);
     }
     code = await seams.runner.interactive(sessionArgv);
   } finally {
@@ -114,16 +112,11 @@ async function gatherContext(input: { seams: Seams; added: Record<string, string
   const session = sessionName({ repoPath, requested: seams.env.HAI_SESSION });
   seams.logger.verbose(`container session ${session} for ${repoPath}`);
 
-  // Before the probe, not after: a sidecar a SIGKILLed session left behind is holding one of
-  // the very ports about to be probed, and probing first reports it as a clash with its own
-  // corpse. A session that is up owns its sidecars, so that one is reattached to untouched.
+  // A sidecar a SIGKILLed session left behind still holds its host port, with nothing
+  // behind it. A session that is up owns its sidecars, so that one is reattached to untouched.
   if (!(await sessionRunning(seams, session))) {
     await sweepSidecars(seams, session);
   }
-  // Up front, so a mistyped HAI_PORTS fails before anything has been prepared, and so one
-  // port another process already holds costs its own mapping rather than the whole launch:
-  // `docker run` publishes all or nothing.
-  const ports = await choosePorts(seams, seams.env.HAI_PORTS);
 
   const spec = await readSpec(seams, { repoPath, home });
   const containerHome = `/home/${spec.containerUser}`;
@@ -133,15 +126,7 @@ async function gatherContext(input: { seams: Seams; added: Record<string, string
     seams.logger.say(dns.reason);
   }
 
-  const ownHistory = isEnabled(seams.env, "HAI_OWN_HISTORY");
-  const mounts = resolveMounts({
-    spec,
-    shareCaches: isEnabled(seams.env, "HAI_SHARE_CACHES"),
-    ownHistory,
-    sessionName: session,
-    containerHome,
-    extra: seams.env.HAI_MOUNTS
-  });
+  const mounts = resolveMounts({ spec, extra: seams.env.HAI_MOUNTS });
   const { open, secret } = splitEnv(input.added);
   const runtimeDir = isEnabled(seams.env, "HAI_DRY_RUN") ? stagedRuntimeDir(seams.env) : await stageRuntime(seams);
   const image = seams.env.HAI_IMAGE === undefined || seams.env.HAI_IMAGE === "" ? DEFAULT_IMAGE : seams.env.HAI_IMAGE;
@@ -159,7 +144,6 @@ async function gatherContext(input: { seams: Seams; added: Record<string, string
     secretsDir: SECRETS_DIR,
     runtimeDir,
     dns: dns.servers,
-    ports,
     publicPorts: isEnabled(seams.env, "HAI_PORTS_PUBLIC"),
     mounts,
     tty: seams.hiddenInput.isTty,
@@ -198,7 +182,6 @@ async function containerClaudeArgs(
   }
   return buildClaudeArgs({
     settings: await materialiseSettings(seams, merged.settings, false),
-    skipPermissions: input.workspaceRoot !== null && seams.env.HAI_PERMISSIONS !== "ask",
     pluginDirs: input.pluginDirs,
     userArgs: user.argv
   });
@@ -250,8 +233,7 @@ async function ensureContainer(seams: Seams, ctx: ContainerContext, dockerArgv: 
   }
   const created = await seams.runner.run(dockerArgv, { timeoutMs: START_TIMEOUT_MS });
   if (created.code !== 0) {
-    const clash = portClashMessage({ stderr: created.stderr, published: ctx.ports });
-    throw new Error(clash ?? `could not start the hai container: ${created.stderr.trim()}`);
+    throw new Error(`could not start the hai container: ${created.stderr.trim()}`);
   }
   await waitForNestedDocker(seams, ctx);
   return true;

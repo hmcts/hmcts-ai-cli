@@ -13,7 +13,6 @@ const base = {
   existing: null as LockFile | null,
   sessionName: SESSION,
   allowConcurrent: false,
-  ownHistory: false,
   containerRunning: null as boolean | null,
   pidAlive: null as boolean | null
 };
@@ -34,21 +33,19 @@ describe("lockDecision", () => {
     ["both are gone", { existing: HELD, containerRunning: false, pidAlive: false }, "reclaim"],
     ["the holder is alive", { existing: HELD, containerRunning: true, pidAlive: true }, "refuse"],
     ["neither question could be answered", { existing: HELD, containerRunning: null, pidAlive: null }, "refuse"],
-    ["HAI_ALLOW_CONCURRENT is set", { existing: HELD, containerRunning: true, pidAlive: true, allowConcurrent: true }, "skip"],
-    ["HAI_OWN_HISTORY is set", { existing: HELD, containerRunning: true, pidAlive: true, ownHistory: true }, "skip"]
+    ["HAI_ALLOW_CONCURRENT is set", { existing: HELD, containerRunning: true, pidAlive: true, allowConcurrent: true }, "skip"]
   ])("should decide when %s", (_name, overrides, action) => {
     // Act / Assert
     expect(lockDecision({ ...base, ...overrides }).action).toBe(action);
   });
 
-  it("should name both ways out when it refuses", () => {
+  it("should name the one way out when it refuses", () => {
     // Act
     const outcome = lockDecision({ ...base, existing: HELD, containerRunning: true, pidAlive: true });
 
     // Assert
     expect(outcome.reason).toBe(CONCURRENT_REFUSAL);
     expect(outcome.reason).toContain("HAI_ALLOW_CONCURRENT=1");
-    expect(outcome.reason).toContain("HAI_OWN_HISTORY=1");
   });
 
   it("should say which container or process it reclaimed from", () => {
@@ -80,7 +77,7 @@ describe("parseLock", () => {
 describe("takeLock", () => {
   const seamsWith = (files: Record<string, string> = {}, respond?: RunResponder) => createFakeSeams({ env: { HOME, HAI_VERBOSE: "1" }, files, respond });
 
-  const input = { path: PATH, sessionName: SESSION, pid: 4242, allowConcurrent: false, ownHistory: false };
+  const input = { path: PATH, sessionName: SESSION, pid: 4242, allowConcurrent: false };
 
   it("should write the lock when nothing holds it", async () => {
     // Arrange

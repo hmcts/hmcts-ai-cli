@@ -437,20 +437,6 @@ describe("runSbxMode", () => {
       expect(seams.fs.dirs).toContain(HISTORY);
     });
 
-    it("should keep the history inside the sandbox with HAI_OWN_HISTORY=1", async () => {
-      // Arrange
-      const seams = seamsIn({ HAI_OWN_HISTORY: "1" });
-
-      // Act
-      await runSbxMode(input(seams)).catch(() => undefined);
-
-      // Assert
-      const argv = seams.runner.interactiveCalls[0]?.argv ?? [];
-      expect(argv.join(" ")).not.toContain("CFT_HOST_CLAUDE_PROJECTS");
-      expect(argv.slice(-1)).toEqual([WORKSPACE]);
-      expect(seams.fs.dirs.size).toBe(0);
-    });
-
     it("should mount the git toplevel when this is not a cft-workspace checkout", async () => {
       // Arrange
       const seams = seamsIn();

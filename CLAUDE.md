@@ -28,6 +28,13 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
   user-supplied `--settings` out of the forwarded argv, merges it over hai's with the
   user's keys winning, and emits exactly one. This is not a violation of the rule above
   to be reverted.
+- **`hai` never adds `--dangerously-skip-permissions`.** Whether to skip permission prompts
+  is the engineer's call, made by typing the flag, which the argv forwarding passes straight
+  through. `seedClaudeJson` therefore no longer writes `bypassPermissionsModeAccepted`: the
+  sbx kit seeds it because `~/.claude` there is an empty volume, but hai bind-mounts the
+  host's real `~/.claude.json`, so seeding it recorded an acceptance of risk in the
+  engineer's own config for a prompt hai can no longer raise. Someone who types the flag on
+  a host that has never accepted sees that screen once, which is the point.
 - **No credential is ever written to disk.** The caches in `src/auth/auth-cache.ts` and
   `src/container/acr.ts` hold decisions, not secrets.
 - **The update check is never cached.** It is one GET behind a 1.5s timeout that already
@@ -113,7 +120,7 @@ table-testable:
 | `buildDockerArgs(ctx)` | `gatherContext` in `src/container/run.ts` |
 | `selectDnsServers`, `parseResolvectl`, `parseNetif`, `parseNmcli` | `discoverDns` |
 | `parseDevcontainer`, `defaultSpec`, `resolveMounts`, `hostPrepPaths` | `readSpec`, `prepareHost` |
-| `resolvePorts`, `expandPorts`, `selectPorts`, `portClashMessage`, `publishArg`, `parseEphemeralLow`, `splitEphemeral` | `choosePorts`, `chooseFreePorts`, `readEphemeralLow` |
+| `selectPorts`, `publishArg`, `parseEphemeralLow` | `chooseFreePorts`, `readEphemeralLow` |
 | `parseProcNet`, `addressKind`, `listeners`, `createDebounce` | the tick in `createPortPublisher` |
 | `pendingPorts`, `buildSidecarArgs`, `sweepIds`, `describePortEntry` | `startPortWatch`, `sweepSidecars` |
 | `sessionName`, `projectSlug` | — |
@@ -166,8 +173,10 @@ Other things that are the way they are for a reason:
   why the transcript lock in `src/container/lock.ts` exists at all, since a host session and
   a container session would otherwise write the same transcript. A stale lock is reclaimed
   silently; an unanswerable question about the holder is *not* grounds to take it.
-- **`hai-*` cache volumes, not the devcontainer's `cft-*` ones**, so a hai session and a
-  devcontainer cannot fight over the same Gradle lock. `HAI_SHARE_CACHES=1` opts back in.
+- **The devcontainer's own `cft-*` cache volumes.** A session therefore starts with the
+  Gradle, Maven, npm, yarn and codex caches the engineer already has, at the cost of
+  contending for the same Gradle lock when a hai session and a devcontainer build at once.
+  The nested engine's `/var/lib/docker` volume is named per session and is not one of these.
 - **The nested daemon needs its own `daemon.json` DNS.** On a user-defined bridge this
   container's `/etc/resolv.conf` is Docker's `127.0.0.11`, a loopback address the nested
   `dockerd` discards — so without `HAI_NESTED_DNS` its containers fall back to a public
@@ -185,8 +194,8 @@ Other things that are the way they are for a reason:
   session the launch carries on with the cached copy. Keep that degradation.
 - **Ports are published dynamically, as the session turns out to listen on them.** A
   hand-maintained list of 20 CFT ports was wrong for every repo that is not CCD or PCS and
-  clashed with whatever else the engineer was running, so `HAI_PORTS` now publishes nothing
-  by default. Instead `src/container/port-watch.ts` polls
+  clashed with whatever else the engineer was running, so `docker run` publishes nothing at
+  all. Instead `src/container/port-watch.ts` polls
   `docker exec <session> cat /proc/net/tcp /proc/net/tcp6` every two seconds and publishes
   each new listener it finds. That is also what catches the case that matters: when cftlib
   runs `docker compose` on the **nested** daemon, each inner container's `-p` becomes a
@@ -203,10 +212,10 @@ Other things that are the way they are for a reason:
   is unreachable from the Mac. Every sidecar carries `hai.session=<name>`, and that label is
   swept with `docker rm -f` both before a container is created and after its session ends,
   because a sidecar outliving its session holds a host port whose server is already gone.
-  **The pre-create sweep runs before `choosePorts` probes the host**, not after: a SIGKILLed
-  session's sidecar is holding one of the numbers about to be probed, so probing first reports
-  a create-time clash against hai's own corpse and drops a mapping the engineer asked for. A
-  session that is still up owns its sidecars, so a reattach sweeps nothing.
+  **The pre-create sweep stays** now that nothing is probed before the container starts: a
+  SIGKILLed session's sidecar still holds its host port with nothing behind it, and the
+  watcher would read its own corpse as a clash and skip the port for the session. A session
+  that is still up owns its sidecars, so a reattach sweeps nothing.
 - **Published ports bind `127.0.0.1`, not `0.0.0.0`.** Docker's iptables chain bypasses the
   host firewall, so a published port answers anyone on the network whatever ufw says — and
   `describePortEntry` reports `http://localhost:<port>`, which says loopback. Publishing is
@@ -231,22 +240,15 @@ Other things that are the way they are for a reason:
   stopped the watch from starting at all, which is said before the handover.
 - **A port is decided once, and a clash is skipped, never remapped.** cftlib's IDAM
   simulator issues and validates tokens on a fixed port, so a port moved to another number
-  breaks XUI's sign-in redirect. Both the create-time list and the watcher go through
-  `chooseFreePorts`, which is a bind probe on the host and nothing more: it does not know
-  whether a candidate came from `HAI_PORTS` or from a listener that has just appeared. A
-  port skipped stays skipped for the session rather than being retried every tick, and a
-  listener bound to `127.0.0.1` inside is reported once as loopback-only with the "bind it
-  to 0.0.0.0" hint, no sidecar being able to reach it.
-- **`HAI_PORTS` and the watcher are additive.** `HAI_PORTS` is `docker run -p`, so it is the
-  only thing that can have a port answering from the session's first instant — no poll
-  delay, no sidecar — and `cft` still means the same 20. The watcher seeds its decided set
-  with whatever was published at create time, so it never puts a sidecar in front of a
-  mapping Docker already has (which could not bind that host port anyway). `HAI_PORTS=none`
-  is the explicit form of the default; `HAI_NO_PORT_WATCH=1` turns the watcher off.
-  `docker run` publishes all or nothing, so a create-time clash is still probed up front by
-  `choosePorts` rather than failing the whole start — and the race between the probe and
-  `docker run` cannot be closed, only reported, which is what `portClashMessage` does when
-  the daemon refuses the bind anyway.
+  breaks XUI's sign-in redirect. The watcher goes through `chooseFreePorts`, which is a bind
+  probe on the host and nothing more. A port skipped stays skipped for the session rather
+  than being retried every tick, and a listener bound to `127.0.0.1` inside is reported once
+  as loopback-only with the "bind it to 0.0.0.0" hint, no sidecar being able to reach it.
+  The race between that probe and the sidecar's own `docker run -p` cannot be closed, only
+  reported, which is why `describePortEntry` reads "port is already allocated" out of the
+  daemon's refusal and says the port was free moments earlier rather than printing an error
+  that looks like a hai bug. `HAI_NO_PORT_WATCH=1` turns the watcher off, and with it all
+  publishing.
 
 `HAI_FORCE_HOST=1` forces container mode — it overrides both the probe and
 `HAI_FORCE_CONTAINER`, and it is the only way to exercise container mode from inside a

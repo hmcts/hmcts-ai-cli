@@ -29,6 +29,8 @@ npm i -g @hmcts-cft/hai-cli --registry=https://pkgs.dev.azure.com/hmcts/Artifact
   - az cli
   - gh cli
   - many others
+- Shares the CFT devcontainer's build caches, so a session starts with the Gradle, Maven, npm and yarn dependencies you already have. Avoid building the same repo in both at once: they share one Gradle lock.
+- Adds no permission flags of its own. If you want permission prompts skipped, pass `--dangerously-skip-permissions` yourself and it reaches `claude` like any other argument.
 - Auto-updates the CLI and the docker image
 - Keeps credentials out of files and out of your terminal. Nothing secret is written to disk, and every log line and error message passes through a redactor first.
 
@@ -57,6 +59,6 @@ yarn install
 yarn lint
 yarn typecheck
 yarn test
-yarn test:coverage   # 100% thresholds on src/**, excluding src/bin/**
+yarn test:coverage   # 90% over src/**, 100% on the pure decision modules
 yarn build           # tsc to dist/
 ```

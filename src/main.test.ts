@@ -25,7 +25,7 @@ describe("main", () => {
   it("should report a failure on stderr and exit 1", async () => {
     // Arrange
     const seams = createFakeSeams({
-      env: { HOME, HAI_NO_UPDATE: "1", AWS_BEARER_TOKEN_BEDROCK: KEY, HAI_PORTS: "nonsense" },
+      env: { HOME, HAI_NO_UPDATE: "1", AWS_BEARER_TOKEN_BEDROCK: KEY, HAI_MOUNTS: "nonsense" },
       respond: () => ({ code: 0 })
     });
 
@@ -34,7 +34,7 @@ describe("main", () => {
 
     // Assert
     expect(exitCodeOf(err)).toBe(1);
-    expect(seams.lines.join("")).toContain("HAI_PORTS=nonsense is not cft, none");
+    expect(seams.lines.join("")).toContain('HAI_MOUNTS entry "nonsense" is not source:target');
   });
 
   it("should redact a secret that reached an error message", async () => {

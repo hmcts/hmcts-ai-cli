@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { dockerVolumeName, historyVolumeName, projectSlug, sessionName } from "./session.js";
+import { dockerVolumeName, projectSlug, sessionName } from "./session.js";
 
 describe("projectSlug", () => {
   it.each<[string, string]>([
@@ -53,10 +53,9 @@ describe("sessionName", () => {
   });
 });
 
-describe("the session's volumes", () => {
-  it("should derive both names from the session, so two repos never share a nested engine", () => {
+describe("dockerVolumeName", () => {
+  it("should derive the name from the session, so two repos never share a nested engine", () => {
     // Act / Assert
     expect(dockerVolumeName("hai-hmcts-abcd1234")).toBe("hai-hmcts-abcd1234-docker");
-    expect(historyVolumeName("hai-hmcts-abcd1234")).toBe("hai-hmcts-abcd1234-projects");
   });
 });

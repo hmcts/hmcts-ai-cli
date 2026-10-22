@@ -31,11 +31,10 @@ describe("forwardArgv", () => {
 });
 
 describe("buildClaudeArgs", () => {
-  it("should build the argv run.sh builds inside a workspace", () => {
+  it("should build the argv a workspace session gets", () => {
     // Act
     const argv = buildClaudeArgs({
       settings: '{"crossSessionInbound":"accept"}',
-      skipPermissions: true,
       pluginDirs: ["/w/apps/pcs/.claude", "/w/apps/dtsse/.claude"],
       userArgs: ["-c"]
     });
@@ -45,7 +44,6 @@ describe("buildClaudeArgs", () => {
       CLAUDE_BIN,
       "--settings",
       '{"crossSessionInbound":"accept"}',
-      "--dangerously-skip-permissions",
       "--plugin-dir",
       "/w/apps/pcs/.claude",
       "--plugin-dir",
@@ -56,15 +54,25 @@ describe("buildClaudeArgs", () => {
 
   it("should add nothing of its own outside a workspace", () => {
     // Act
-    const argv = buildClaudeArgs({ skipPermissions: false, pluginDirs: [], userArgs: ["mcp", "list"] });
+    const argv = buildClaudeArgs({ pluginDirs: [], userArgs: ["mcp", "list"] });
 
     // Assert
     expect(argv).toEqual([CLAUDE_BIN, "mcp", "list"]);
   });
 
+  it("should never skip permissions by itself, and pass the flag on when the user types it", () => {
+    // Act
+    const ours = buildClaudeArgs({ settings: "{}", pluginDirs: [], userArgs: [] });
+    const theirs = buildClaudeArgs({ settings: "{}", pluginDirs: [], userArgs: ["--dangerously-skip-permissions"] });
+
+    // Assert
+    expect(ours).not.toContain("--dangerously-skip-permissions");
+    expect(theirs).toEqual([CLAUDE_BIN, "--settings", "{}", "--dangerously-skip-permissions"]);
+  });
+
   it("should keep the user arguments last so they can override our flags", () => {
     // Act
-    const argv = buildClaudeArgs({ settings: "{}", skipPermissions: true, pluginDirs: [], userArgs: ["--model", "haiku"] });
+    const argv = buildClaudeArgs({ settings: "{}", pluginDirs: [], userArgs: ["--model", "haiku"] });
 
     // Assert
     expect(argv.slice(-2)).toEqual(["--model", "haiku"]);

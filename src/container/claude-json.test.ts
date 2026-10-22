@@ -22,6 +22,14 @@ describe("mergeClaudeJson", () => {
     }
   });
 
+  it("should not record an acceptance of bypass mode, this being the host's own file", () => {
+    // Act
+    const merged = parse(mergeClaudeJson(null, WORKSPACE));
+
+    // Assert
+    expect(merged.bypassPermissionsModeAccepted).toBeUndefined();
+  });
+
   it("should keep every other project and every other key", () => {
     // Arrange
     const existing = JSON.stringify({

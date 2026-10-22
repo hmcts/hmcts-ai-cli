@@ -1,5 +1,4 @@
 import type { Env } from "../system/env.js";
-import { historyVolumeName } from "./session.js";
 
 /**
  * The host's Docker socket, which the devcontainer shares and container mode must not:
@@ -33,7 +32,7 @@ export const DEFAULT_HOME_BINDS: { path: string; readonly?: boolean }[] = [
   { path: ".ssh", readonly: true }
 ];
 
-/** Named with the devcontainer's `cft-` prefix, so the rename to `hai-` is the one rule below. */
+/** The devcontainer's own volumes: a hai session and a devcontainer share one Gradle cache. */
 export const DEFAULT_CACHE_VOLUMES: { source: string; path: string }[] = [
   { source: "cft-gradle", path: ".gradle" },
   { source: "cft-m2", path: ".m2" },
@@ -91,26 +90,9 @@ export function parseDevcontainer(json: string, vars: SubstitutionVars): Devcont
   };
 }
 
-/**
- * The caches get `hai-*` volumes rather than the devcontainer's `cft-*` ones, so a hai
- * session and a devcontainer cannot fight over the same Gradle lock. HAI_SHARE_CACHES=1
- * opts back into sharing them.
- */
-export function resolveMounts(input: {
-  spec: DevcontainerSpec;
-  shareCaches: boolean;
-  ownHistory: boolean;
-  sessionName: string;
-  containerHome: string;
-  extra?: string;
-}): Mount[] {
-  const mounts = input.spec.mounts.map((mount) => (input.shareCaches ? mount : renameCacheVolume(mount)));
-  if (input.ownHistory) {
-    // Nested over the ~/.claude bind, so the licence and settings still come from the
-    // host while the transcripts stay in the session's own volume.
-    mounts.push({ kind: "volume", source: historyVolumeName(input.sessionName), target: `${input.containerHome}/.claude/projects` });
-  }
-  return [...mounts, ...parseExtraMounts(input.extra)];
+/** The spec's mounts as written, plus whatever `HAI_MOUNTS` adds. */
+export function resolveMounts(input: { spec: DevcontainerSpec; extra?: string }): Mount[] {
+  return [...input.spec.mounts, ...parseExtraMounts(input.extra)];
 }
 
 /** `HAI_MOUNTS=/host/path:/container/path[:ro],…` */
@@ -173,13 +155,6 @@ function parseMountSpecs(specs: string[], vars: SubstitutionVars): Mount[] {
     mounts.push({ kind, source, target, readonly: readonly || fields.get("readonly") === "true" });
   }
   return mounts;
-}
-
-function renameCacheVolume(mount: Mount): Mount {
-  if (mount.kind !== "volume" || !mount.source.startsWith("cft-")) {
-    return mount;
-  }
-  return { ...mount, source: `hai-${mount.source.slice("cft-".length)}` };
 }
 
 /** devcontainer.json is JSONC. Only line comments appear in the ones in these repos. */

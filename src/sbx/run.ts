@@ -88,7 +88,7 @@ export async function runSbxMode(input: { seams: Seams; forwarded: string[]; wor
   seams.exit(await seams.runner.interactive(buildCreateArgs(ctx)));
 }
 
-async function gatherContext(input: { seams: Seams; forwarded: string[]; workspaceRoot: string | null }): Promise<SbxContext & { historyDir: string | null }> {
+async function gatherContext(input: { seams: Seams; forwarded: string[]; workspaceRoot: string | null }): Promise<SbxContext & { historyDir: string }> {
   const { seams } = input;
   const home = seams.env.HOME;
   if (home === undefined || home === "") {
@@ -98,16 +98,12 @@ async function gatherContext(input: { seams: Seams; forwarded: string[]; workspa
   const name = sessionName({ repoPath: workspace, requested: seams.env.HAI_SESSION });
   // Shared with the host, so conversations outlive the sandbox and are the same history a
   // host session reads. Do not run Claude on the host in this checkout at the same time.
-  const historyDir = isEnabled(seams.env, "HAI_OWN_HISTORY") ? null : join(home, ".claude", "projects");
-  const env: Record<string, string> = { ...(await gitIdentity(seams, workspace)) };
-  if (historyDir !== null) {
-    env.CFT_HOST_CLAUDE_PROJECTS = historyDir;
-  }
+  const historyDir = join(home, ".claude", "projects");
   return {
     name,
     kit: KIT_IMAGE,
-    workspaces: historyDir === null ? [workspace] : [workspace, historyDir],
-    env,
+    workspaces: [workspace, historyDir],
+    env: { ...(await gitIdentity(seams, workspace)), CFT_HOST_CLAUDE_PROJECTS: historyDir },
     claudeArgs: input.forwarded,
     historyDir
   };
@@ -218,10 +214,8 @@ async function refreshRegistrySecret(seams: Seams): Promise<void> {
 }
 
 /** sbx mounts the history directory as a workspace, which needs it to exist on the host. */
-async function prepareHost(seams: Seams, ctx: SbxContext & { historyDir: string | null }): Promise<void> {
-  if (ctx.historyDir !== null) {
-    await seams.fs.mkdirp(ctx.historyDir);
-  }
+async function prepareHost(seams: Seams, ctx: SbxContext & { historyDir: string }): Promise<void> {
+  await seams.fs.mkdirp(ctx.historyDir);
 }
 
 async function settingsGet(seams: Seams, key: string): Promise<string | null> {

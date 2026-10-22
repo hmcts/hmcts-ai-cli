@@ -201,15 +201,7 @@ describe("launch", () => {
       await launch({ seams, processArgv: ["node", "hai", "-c"] });
 
       // Assert
-      expect(execArgv(seams)).toEqual([
-        "claude",
-        "--settings",
-        '{"crossSessionInbound":"accept"}',
-        "--dangerously-skip-permissions",
-        "--plugin-dir",
-        "/work/apps/pcs/.claude",
-        "-c"
-      ]);
+      expect(execArgv(seams)).toEqual(["claude", "--settings", '{"crossSessionInbound":"accept"}', "--plugin-dir", "/work/apps/pcs/.claude", "-c"]);
     });
 
     it("should add none of its own flags outside a workspace", async () => {
@@ -223,16 +215,18 @@ describe("launch", () => {
       expect(execArgv(seams)).toEqual(["claude"]);
     });
 
-    it("should drop --dangerously-skip-permissions under HAI_PERMISSIONS=ask", async () => {
+    it("should never skip permissions by itself, and forward the flag when the user types it", async () => {
       // Arrange
-      const seams = seamsIn({ HAI_PERMISSIONS: "ask" }, { "/work/workspace.yaml": MANIFEST });
+      const seams = seamsIn({}, { "/work/workspace.yaml": MANIFEST });
+      const asked = seamsIn({}, { "/work/workspace.yaml": MANIFEST });
 
       // Act
       await launch({ seams, processArgv: ["node", "hai"] });
+      await launch({ seams: asked, processArgv: ["node", "hai", "--dangerously-skip-permissions"] });
 
       // Assert
       expect(execArgv(seams)).not.toContain("--dangerously-skip-permissions");
-      expect(execArgv(seams)).toContain("--settings");
+      expect(execArgv(asked).at(-1)).toBe("--dangerously-skip-permissions");
     });
   });
 
@@ -245,13 +239,7 @@ describe("launch", () => {
       await launch({ seams, processArgv: ["node", "hai", "--settings", '{"cleanupPeriodDays":42}', "-c"] });
 
       // Assert
-      expect(execArgv(seams)).toEqual([
-        "claude",
-        "--settings",
-        '{"crossSessionInbound":"accept","cleanupPeriodDays":42}',
-        "--dangerously-skip-permissions",
-        "-c"
-      ]);
+      expect(execArgv(seams)).toEqual(["claude", "--settings", '{"crossSessionInbound":"accept","cleanupPeriodDays":42}', "-c"]);
     });
 
     it("should read a path through the Fs seam, relative to the cwd", async () => {
@@ -436,7 +424,7 @@ describe("launch", () => {
       await launch({ seams, processArgv: ["node", "hai"] });
 
       // Assert
-      expect(execArgv(seams)).toContain("--dangerously-skip-permissions");
+      expect(execArgv(seams)).toContain("--settings");
     });
   });
 

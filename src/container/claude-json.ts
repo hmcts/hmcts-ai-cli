@@ -4,8 +4,14 @@ import type { Fs } from "../system/fs.js";
 export const CLAUDE_JSON = ".claude.json";
 export const CLAUDE_JSON_MODE = 0o600;
 
-/** The same keys the cft-workspace sandbox seeds, so a container session starts without three prompts. */
-export const SEEDED_KEYS = ["hasCompletedOnboarding", "bypassPermissionsModeAccepted"] as const;
+/**
+ * What a host that has never run Claude Code is missing, so a container session does not
+ * open on onboarding and the folder-trust dialog. Deliberately not
+ * `bypassPermissionsModeAccepted`: this file is the host's own, and hai no longer passes
+ * `--dangerously-skip-permissions`, so seeding it would record an acceptance of risk the
+ * user never gave for a prompt nothing here can raise.
+ */
+export const SEEDED_KEYS = ["hasCompletedOnboarding"] as const;
 export const SEEDED_PROJECT_KEYS = ["hasTrustDialogAccepted", "hasClaudeMdExternalIncludesApproved", "hasClaudeMdExternalIncludesWarningShown"] as const;
 
 /**

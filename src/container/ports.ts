@@ -2,14 +2,6 @@ import type { Logger } from "../log/logger.js";
 import type { Fs } from "../system/fs.js";
 import type { Net } from "../system/net.js";
 
-/** The ports a CFT stack actually listens on: cftlib, XUI, CCD, IDAM, Postgres, Redis, Elasticsearch. */
-export const CFT_PORTS = ["3000", "3001", "3100", "3206", "3209", "3453", "3460", "4096", "4451-4456", "5062", "5555", "6432", "8087", "8489", "9200"];
-
-export const PORT_PROFILES: Record<string, string[]> = { cft: CFT_PORTS, none: [] };
-
-const PORT_SPEC = /^\d{1,5}(-\d{1,5})?$/;
-const MAX_PORT = 65535;
-
 /** Where the kernel publishes the range it hands out as source ports. Linux only. */
 export const LOCAL_PORT_RANGE_PATH = "/proc/sys/net/ipv4/ip_local_port_range";
 
@@ -18,49 +10,6 @@ export const EPHEMERAL_LOW_FALLBACK = 32768;
 
 /** Loopback, which is what `describePortEntry` reports and so what a mapping should bind. */
 const LOOPBACK_ADDRESS = "127.0.0.1";
-
-const ALLOCATED = /port is already allocated/i;
-const BIND_FAILURE = /Bind for \S*?:(\d{1,5}) failed/i;
-
-/**
- * The create-time profile asked for, as written. Which of these are actually published is
- * `choosePorts`. Nothing by default: a hand-maintained list of 20 is wrong for every repo
- * that is not CCD or PCS, and clashes with whatever else the engineer is running, so the
- * port watcher publishes what the session turns out to listen on instead. `HAI_PORTS` is
- * for the ports that have to answer from the session's first instant.
- */
-export function resolvePorts(spec: string | undefined): string[] {
-  if (spec === undefined || spec === "") {
-    return [];
-  }
-  const profile = PORT_PROFILES[spec];
-  if (profile !== undefined) {
-    return profile;
-  }
-  const entries = spec
-    .split(",")
-    .map((entry) => entry.trim())
-    .filter((entry) => entry !== "");
-  const bad = entries.filter((entry) => !PORT_SPEC.test(entry) || !inRange(entry));
-  if (entries.length === 0 || bad.length > 0) {
-    throw new Error(`HAI_PORTS=${spec} is not cft, none or a comma-separated list of ports and port ranges (${bad.join(", ")})`);
-  }
-  return entries;
-}
-
-/** Ranges become their members, so each port is probed and published on its own. */
-export function expandPorts(specs: string[]): number[] {
-  const ports = new Set<number>();
-  for (const spec of specs) {
-    const [start, end] = spec.split("-");
-    const from = Number(start);
-    const to = end === undefined ? from : Number(end);
-    for (let port = from; port <= to; port += 1) {
-      ports.add(port);
-    }
-  }
-  return [...ports];
-}
 
 /**
  * The whole rule, over whatever candidates it is given: a clashing port is left
@@ -98,21 +47,11 @@ export function parseEphemeralLow(text: string | null): number {
   return Number.isInteger(low) && low > 0 ? low : EPHEMERAL_LOW_FALLBACK;
 }
 
-/**
- * A candidate at or above the ephemeral low bound is the kernel's to hand out, and
- * Testcontainers publishes every container to one — so holding it would mean a sidecar per
- * inner container for the rest of the session, each answering and failing against a dead
- * target. Every port a CFT stack listens on is well below it.
- */
-export function splitEphemeral(candidates: number[], low: number): { keep: number[]; ephemeral: number[] } {
-  return { keep: candidates.filter((port) => port < low), ephemeral: candidates.filter((port) => port >= low) };
-}
-
 export function ephemeralPortsMessage(ephemeral: number[], low: number): string {
   return `not publishing ${ephemeral.join(", ")}: at or above ${low}, where the host hands out ephemeral source ports, so holding the number would break whatever wanted it next.`;
 }
 
-/** Read once per launch and once per watch; a platform without the file gets the fallback. */
+/** Read once per watch; a platform without the file gets the fallback. */
 export async function readEphemeralLow(deps: { fs: Fs }): Promise<number> {
   return parseEphemeralLow(await deps.fs.readText(LOCAL_PORT_RANGE_PATH));
 }
@@ -122,23 +61,8 @@ export function skippedPortsMessage(skipped: number[]): string {
 }
 
 /**
- * The probe cannot close the race with whatever else is starting on this host, so when the
- * daemon refuses the bind anyway the message says which port it was and that hai had just
- * found it free — the raw daemon error reads like a hai bug instead.
- */
-export function portClashMessage(input: { stderr: string; published: number[] }): string | null {
-  if (!ALLOCATED.test(input.stderr)) {
-    return null;
-  }
-  const named = BIND_FAILURE.exec(input.stderr)?.[1];
-  const which = named === undefined ? `one of the ports hai published (${input.published.join(", ")})` : `port ${named}`;
-  return `${which} was free moments earlier, when hai checked, and something else took it before the container could bind it. Try again, or set HAI_PORTS=none to publish nothing.`;
-}
-
-/**
  * Probes a list of candidate ports on the host and reports what it will not publish, at
- * normal verbosity. Nothing here knows where the candidates came from: a create-time
- * profile and a port a listener in the session has just claimed get the same decision.
+ * normal verbosity. Nothing here knows where the candidates came from.
  */
 export async function chooseFreePorts(deps: { net: Net; logger: Logger }, candidates: number[]): Promise<number[]> {
   const probed: PortProbe[] = [];
@@ -151,24 +75,6 @@ export async function chooseFreePorts(deps: { net: Net; logger: Logger }, candid
   }
   deps.logger.verbose(`publishing ${publish.length} of ${candidates.length} port(s)`);
   return publish;
-}
-
-/** The create-time list: the profile `HAI_PORTS` asks for, minus the ephemeral range, probed once. */
-export async function choosePorts(deps: { net: Net; logger: Logger; fs: Fs }, spec: string | undefined): Promise<number[]> {
-  const candidates = expandPorts(resolvePorts(spec));
-  const low = await readEphemeralLow(deps);
-  const { keep, ephemeral } = splitEphemeral(candidates, low);
-  if (ephemeral.length > 0) {
-    deps.logger.say(ephemeralPortsMessage(ephemeral, low));
-  }
-  return await chooseFreePorts(deps, keep);
-}
-
-function inRange(entry: string): boolean {
-  const [start, end] = entry.split("-");
-  const from = Number(start);
-  const to = end === undefined ? from : Number(end);
-  return from >= 1 && to <= MAX_PORT && from <= to;
 }
 
 export interface PortProbe {

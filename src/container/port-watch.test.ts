@@ -53,9 +53,9 @@ const respondWith =
 
 const seamsIn = (over: Partial<Parameters<typeof createFakeSeams>[0]> = {}) => createFakeSeams({ env: { HOME }, ...over });
 
-const publisherIn = (seams: FakeSeams, published: number[] = [], ctx = CTX) => {
+const publisherIn = (seams: FakeSeams, ctx = CTX) => {
   const record = createPortRecord(seams, ctx);
-  return createPortPublisher(seams, ctx, { record, published, ephemeralLow: EPHEMERAL_LOW });
+  return createPortPublisher(seams, ctx, { record, ephemeralLow: EPHEMERAL_LOW });
 };
 
 const stateOf = (seams: FakeSeams): { ports: PortEntry[] } => JSON.parse(seams.fs.store.get(STATE_FILE) ?? '{"ports":[]}');
@@ -194,6 +194,11 @@ describe("describePortEntry", () => {
       "could not publish 8111: no such image"
     ],
     ["a sidecar whose docker run timed out, which says nothing at all", { port: 8111, state: "sidecar-failed" }, "could not publish 8111: no reason given"],
+    [
+      "a host port taken between the probe and the sidecar's bind, which the raw error makes look like a hai bug",
+      { port: 8111, state: "sidecar-failed", detail: "docker: Bind for 127.0.0.1:8111 failed: port is already allocated" },
+      "could not publish 8111: it was free moments earlier"
+    ],
     [
       "a sidecar failure the daemon wrote several lines about",
       { port: 8111, state: "sidecar-failed", detail: "docker: no such image\nSee 'docker run --help'\n" },
@@ -412,20 +417,6 @@ describe("createPortPublisher", () => {
     expect(seams.runner.calls.filter((call) => call.argv.includes("alpine/socat"))).toHaveLength(1);
   });
 
-  it("should leave a port the create-time profile already published alone", async () => {
-    // Arrange
-    const seams = seamsIn({ respond: respondWith(OPEN_8111) });
-    const tick = publisherIn(seams, [8111]);
-
-    // Act
-    await tick();
-    await tick();
-
-    // Assert
-    expect(seams.runner.calls.some((call) => call.argv.includes("alpine/socat"))).toBe(false);
-    expect(stateOf(seams).ports).toEqual([]);
-  });
-
   it("should skip a port whose host number is taken rather than move it", async () => {
     // Arrange
     const seams = seamsIn({ respond: respondWith(OPEN_8111), portsInUse: [8111] });
@@ -484,7 +475,7 @@ describe("createPortPublisher", () => {
     const open = seamsIn({ respond: respondWith(OPEN_8111) });
 
     // Act
-    for (const tick of [publisherIn(loopback), publisherIn(open, [], { ...CTX, publicPorts: true })]) {
+    for (const tick of [publisherIn(loopback), publisherIn(open, { ...CTX, publicPorts: true })]) {
       await tick();
       await tick();
     }
@@ -540,7 +531,7 @@ describe("startPortWatch", () => {
     const seams = seamsIn({ respond: respondWith(OPEN_8111), clock: fastClock });
 
     // Act
-    const watch = await startPortWatch(seams, CTX, { published: [] });
+    const watch = await startPortWatch(seams, CTX);
     await until(() => sidecarUp(seams));
     await watch.stop();
 
@@ -559,7 +550,7 @@ describe("startPortWatch", () => {
     });
 
     // Act
-    const watch = await startPortWatch(seams, CTX, { published: [] });
+    const watch = await startPortWatch(seams, CTX);
     await watch.stop();
 
     // Assert
@@ -572,7 +563,7 @@ describe("startPortWatch", () => {
     const seams = seamsIn({ respond: respondWith(OPEN_8111), clock: fastClock });
 
     // Act
-    const watch = await startPortWatch(seams, CTX, { published: [] });
+    const watch = await startPortWatch(seams, CTX);
     await until(() => sidecarUp(seams));
     await watch.stop();
     const settled = reads(seams);
@@ -601,7 +592,7 @@ describe("startPortWatch", () => {
     });
 
     // Act
-    holder.watch = await startPortWatch(seams, CTX, { published: [] });
+    holder.watch = await startPortWatch(seams, CTX);
     await until(() => sidecarUp(seams));
     await holder.watch.stop();
 
@@ -616,7 +607,7 @@ describe("startPortWatch", () => {
     const seams = seamsIn({ fs, respond: respondWith(OPEN_8111), clock: fastClock });
 
     // Act
-    const watch = await startPortWatch(seams, CTX, { published: [] });
+    const watch = await startPortWatch(seams, CTX);
     await until(() => sidecarUp(seams));
     await watch.stop();
 
@@ -630,7 +621,7 @@ describe("startPortWatch", () => {
     const seams = seamsIn({ env: { HOME, HAI_NO_PORT_WATCH: "1", HAI_VERBOSE: "1" }, respond: respondWith(OPEN_8111) });
 
     // Act
-    const watch = await startPortWatch(seams, CTX, { published: [] });
+    const watch = await startPortWatch(seams, CTX);
     await watch.stop();
 
     // Assert
@@ -643,7 +634,7 @@ describe("startPortWatch", () => {
     const seams = seamsIn({ respond: (argv) => (argv[1] === "image" || argv[1] === "pull" ? { code: 1, stderr: "unauthorized" } : { code: 0 }) });
 
     // Act
-    const watch = await startPortWatch(seams, CTX, { published: [] });
+    const watch = await startPortWatch(seams, CTX);
     await watch.stop();
 
     // Assert
@@ -657,7 +648,7 @@ describe("startPortWatch", () => {
     const seams = seamsIn({ fs, respond: respondWith(OPEN_8111) });
 
     // Act
-    const watch = await startPortWatch(seams, CTX, { published: [] });
+    const watch = await startPortWatch(seams, CTX);
     await watch.stop();
 
     // Assert
@@ -670,7 +661,7 @@ describe("startPortWatch", () => {
     const seams = seamsIn({ env: { HOME, HAI_VERBOSE: "1" }, respond: respondWith(OPEN_8111), clock: fastClock });
 
     // Act
-    const watch = await startPortWatch(seams, CTX, { published: [] });
+    const watch = await startPortWatch(seams, CTX);
     await watch.stop();
 
     // Assert
@@ -692,7 +683,7 @@ describe("startPortWatch", () => {
     });
 
     // Act
-    const watch = await startPortWatch(seams, CTX, { published: [] });
+    const watch = await startPortWatch(seams, CTX);
     await until(() => sidecarUp(seams));
     await watch.stop();
 

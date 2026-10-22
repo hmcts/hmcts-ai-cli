@@ -29,6 +29,9 @@ export const IN_SESSION_PORTS_FILE = "/tmp/hai-ports.json";
 
 const PROC_NET_TABLES = ["/proc/net/tcp", "/proc/net/tcp6"];
 
+/** How the daemon refuses a `-p` whose host port went between the probe and the sidecar's run. */
+const ALLOCATED = /port is already allocated/i;
+
 export function sidecarName(session: string, port: number): string {
   return `${session}-port-${port}`;
 }
@@ -92,9 +95,9 @@ export function portsStatePath(env: Env, sessionName: string): string {
 
 /**
  * Which of the ports now listening still need a decision. A port is decided once and never
- * revisited: a host number another process holds is reported once rather than every tick,
- * and a port already published at create time was decided by `choosePorts`. One in the
- * host's ephemeral range is nothing to hold, which is what bounds the sidecars.
+ * revisited, so a host number another process holds is reported once rather than every
+ * tick. One in the host's ephemeral range is nothing to hold, which is what bounds the
+ * sidecars.
  */
 export function pendingPorts(input: { open: number[]; local: number[]; decided: number[]; noted: number[]; ephemeralLow: number }): PendingPorts {
   const decided = new Set(input.decided);
@@ -117,15 +120,18 @@ export function describePortEntry(entry: PortEntry): string {
     case "loopback-only":
       return `skipped ${entry.port}: it listens on 127.0.0.1 inside the session, which nothing outside can reach. Bind it to 0.0.0.0 to have it published.`;
     default:
-      // The sidecar's `docker run` hitting the runner's timeout says nothing at all.
-      return `could not publish ${entry.port}: ${firstLine(entry.detail ?? "")}`;
+      // The probe cannot close the race with whatever else is starting on this host, and the
+      // raw daemon error reads like a hai bug. A timed-out `docker run` says nothing at all.
+      return ALLOCATED.test(entry.detail ?? "")
+        ? `could not publish ${entry.port}: it was free moments earlier, when hai checked, and something else took it before the sidecar could bind it.`
+        : `could not publish ${entry.port}: ${firstLine(entry.detail ?? "")}`;
   }
 }
 
 export function socatMissingMessage(stderr: string): string {
   return (
     `${SOCAT_IMAGE} is not available (${firstLine(stderr)}), so a port a server in the session starts will not be published on the host. ` +
-    `Everything else in the session works; pull it once with docker pull ${SOCAT_IMAGE}, or set HAI_PORTS to publish the ports you need at create time.`
+    `Everything else in the session works; pull it once with docker pull ${SOCAT_IMAGE}.`
   );
 }
 
@@ -204,17 +210,16 @@ export function createPortRecord(deps: { fs: Fs; runner: Runner; clock: Clock; e
 
 /**
  * One round, over the session's own /proc/net tables. Which candidates get published is
- * `chooseFreePorts`, the same bind probe and the same never-remap rule as the create-time
- * profile; nothing in it knows a port came from a listener rather than from HAI_PORTS.
+ * `chooseFreePorts`: a bind probe on the host, and a clash skipped rather than remapped.
  */
 export function createPortPublisher(
   deps: { runner: Runner; net: Net; logger: Logger },
   ctx: PublishRef,
-  input: { record: PortRecord; published: number[]; ephemeralLow: number }
+  input: { record: PortRecord; ephemeralLow: number }
 ): () => Promise<TickResult> {
   const settleOpen = createDebounce();
   const settleLocal = createDebounce();
-  const decided = new Set(input.published);
+  const decided = new Set<number>();
   const noted = new Set<number>();
 
   return async function tick() {
@@ -268,11 +273,7 @@ export function createPortPublisher(
  * state directory and to the two copies of the state. The last thing the session's own
  * logger says is anything that stopped the watch from starting at all.
  */
-export async function startPortWatch(
-  deps: { runner: Runner; fs: Fs; net: Net; clock: Clock; env: Env; logger: Logger },
-  ctx: PublishRef,
-  input: { published: number[] }
-): Promise<PortWatch> {
+export async function startPortWatch(deps: { runner: Runner; fs: Fs; net: Net; clock: Clock; env: Env; logger: Logger }, ctx: PublishRef): Promise<PortWatch> {
   const idle: PortWatch = { stop: async () => undefined };
   if (isEnabled(deps.env, "HAI_NO_PORT_WATCH")) {
     deps.logger.verbose("HAI_NO_PORT_WATCH=1, so a port the session starts listening on will not be published");
@@ -284,7 +285,7 @@ export async function startPortWatch(
 
   let watch: PortWatch;
   try {
-    watch = await beginWatch(deps, ctx, input);
+    watch = await beginWatch(deps, ctx);
   } catch (err) {
     deps.logger.say(`not watching for ports the session starts listening on: ${(err as Error).message}`);
     return idle;
@@ -293,17 +294,12 @@ export async function startPortWatch(
   return watch;
 }
 
-async function beginWatch(
-  deps: { runner: Runner; fs: Fs; net: Net; clock: Clock; env: Env; logger: Logger },
-  ctx: PublishRef,
-  input: { published: number[] }
-): Promise<PortWatch> {
+async function beginWatch(deps: { runner: Runner; fs: Fs; net: Net; clock: Clock; env: Env; logger: Logger }, ctx: PublishRef): Promise<PortWatch> {
   const log = await createWatchLog(deps, ctx.sessionName);
   const record = createPortRecord({ ...deps, logger: log.logger }, ctx);
   await record.reset();
   const tick = createPortPublisher({ runner: deps.runner, net: deps.net, logger: log.logger }, ctx, {
     record,
-    published: input.published,
     ephemeralLow: await readEphemeralLow(deps)
   });
 

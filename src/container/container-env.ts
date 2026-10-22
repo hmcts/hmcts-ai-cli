@@ -6,7 +6,7 @@ import type { Env } from "../system/env.js";
  * set rather than a copy, because `docker run --env` is recorded in the container config:
  * forwarding the lot would put whatever else the shell is holding on disk.
  */
-export const PASSTHROUGH = ["HAI_VERBOSE", "HAI_PERMISSIONS", "HAI_ROUTE", "HAI_OFFLINE", "HAI_NO_UPDATE", "AGENT_HUB_PLUGINS", "TERM", "COLORTERM", "LANG"];
+export const PASSTHROUGH = ["HAI_VERBOSE", "HAI_ROUTE", "HAI_OFFLINE", "HAI_NO_UPDATE", "AGENT_HUB_PLUGINS", "TERM", "COLORTERM", "LANG"];
 
 /**
  * Splits the route's environment on which names hold a credential. The open half goes on

@@ -255,25 +255,10 @@ describe("defaultSpec", () => {
 
 describe("resolveMounts", () => {
   const spec = () => parseDevcontainer(DEVCONTAINER, VARS)!;
-  const base = { shareCaches: false, ownHistory: false, sessionName: "hai-hmcts-abcd1234", containerHome: "/home/hmcts" };
 
-  it("should rename the cache volumes so a session cannot fight a devcontainer over the Gradle lock", () => {
+  it("should keep the devcontainer's own cache volumes, which a hai session now shares", () => {
     // Act
-    const mounts = resolveMounts({ ...base, spec: spec() });
-
-    // Assert
-    expect(mounts.filter((mount) => mount.kind === "volume").map((mount) => mount.source)).toEqual([
-      "hai-gradle",
-      "hai-m2",
-      "hai-npm",
-      "hai-yarn",
-      "hai-codex"
-    ]);
-  });
-
-  it("should keep the devcontainer's own volumes under HAI_SHARE_CACHES", () => {
-    // Act
-    const mounts = resolveMounts({ ...base, spec: spec(), shareCaches: true });
+    const mounts = resolveMounts({ spec: spec() });
 
     // Assert
     expect(mounts.filter((mount) => mount.kind === "volume").map((mount) => mount.source)).toEqual([
@@ -285,25 +270,17 @@ describe("resolveMounts", () => {
     ]);
   });
 
-  it("should leave the binds alone either way", () => {
+  it("should leave the binds alone", () => {
     // Act
-    const mounts = resolveMounts({ ...base, spec: spec() });
+    const mounts = resolveMounts({ spec: spec() });
 
     // Assert
     expect(mounts.find((mount) => mount.target === "/home/hmcts/.claude")?.source).toBe(`${HOME}/.claude`);
   });
 
-  it("should give the session its own transcripts under HAI_OWN_HISTORY", () => {
-    // Act
-    const mounts = resolveMounts({ ...base, spec: spec(), ownHistory: true });
-
-    // Assert
-    expect(mounts.at(-1)).toEqual({ kind: "volume", source: "hai-hmcts-abcd1234-projects", target: "/home/hmcts/.claude/projects" });
-  });
-
   it("should append HAI_MOUNTS last, so it can override a target", () => {
     // Act
-    const mounts = resolveMounts({ ...base, spec: spec(), extra: "/tmp/data:/data,/etc/hosts:/etc/hosts:ro" });
+    const mounts = resolveMounts({ spec: spec(), extra: "/tmp/data:/data,/etc/hosts:/etc/hosts:ro" });
 
     // Assert
     expect(mounts.slice(-2)).toEqual([

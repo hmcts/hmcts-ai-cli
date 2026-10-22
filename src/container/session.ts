@@ -28,10 +28,6 @@ export function dockerVolumeName(sessionName: string): string {
   return `${sessionName}-docker`;
 }
 
-export function historyVolumeName(sessionName: string): string {
-  return `${sessionName}-projects`;
-}
-
 /** Docker names allow [a-zA-Z0-9][a-zA-Z0-9_.-]*, which a repo directory need not be. */
 function label(repoPath: string): string {
   const name = basename(repoPath)
