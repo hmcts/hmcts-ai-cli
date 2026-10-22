@@ -46,9 +46,9 @@ Note: If you are using a HMCTS license via the AI Gateway you will need to conne
 | `HAI_FORCE_CONTAINER=1` | treat this as a container even if nothing was detected |
 | `HAI_GATEWAY_APIM_SECRET` | override the Key Vault secret name for the APIM key |
 
-`HAI_IN_CONTAINER`, `HAI_ENV_READY` and `HAI_UPDATED` are set by `hai` itself: the first
-two let a nested `hai` skip route resolution it has already paid for, and the last stops a
-broken release looping after an update.
+`HAI_IN_CONTAINER`, `HAI_ENV_READY` and `HAI_UPDATED` are set by `hai` itself. The first
+two go only to the container `hai` starts, so a nested `hai` there need not resolve the
+route again; the last stops a broken release looping after an update.
 
 ## Developing
 
