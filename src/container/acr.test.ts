@@ -9,7 +9,6 @@ import {
   isAcrImage,
   LOGIN_TTL_MS,
   needsAcrLogin,
-  PULL_INTERVAL_MS,
   pullImage,
   REGISTRY_HOST,
   shouldPull,
@@ -41,13 +40,15 @@ describe("needsAcrLogin", () => {
 });
 
 describe("shouldPull", () => {
-  it.each<[string, { policy: string | undefined; present: boolean; lastPullAt: number | null; now: number }, boolean]>([
-    ["HAI_PULL=never with no image", { policy: "never", present: false, lastPullAt: null, now: FIXED_NOW }, false],
-    ["HAI_PULL=always with a fresh image", { policy: "always", present: true, lastPullAt: FIXED_NOW, now: FIXED_NOW }, true],
-    ["the default and no image yet", { policy: undefined, present: false, lastPullAt: null, now: FIXED_NOW }, true],
-    ["the default and an image pulled a minute ago", { policy: undefined, present: true, lastPullAt: FIXED_NOW - 60_000, now: FIXED_NOW }, false],
-    ["the default and an image pulled over a day ago", { policy: "missing", present: true, lastPullAt: FIXED_NOW - PULL_INTERVAL_MS, now: FIXED_NOW }, true],
-    ["the default and an image of unknown age", { policy: "missing", present: true, lastPullAt: null, now: FIXED_NOW }, true]
+  it.each<[string, { policy: string | undefined; present: boolean }, boolean]>([
+    ["the default and no image yet", { policy: undefined, present: false }, true],
+    ["the default and the image already here", { policy: undefined, present: true }, true],
+    ["HAI_PULL=always with no image", { policy: "always", present: false }, true],
+    ["HAI_PULL=always with the image already here", { policy: "always", present: true }, true],
+    ["HAI_PULL=missing with no image", { policy: "missing", present: false }, true],
+    ["HAI_PULL=missing with the image already here", { policy: "missing", present: true }, false],
+    ["HAI_PULL=never with no image", { policy: "never", present: false }, false],
+    ["HAI_PULL=never with the image already here", { policy: "never", present: true }, false]
   ])("should decide with %s", (_name, input, expected) => {
     // Act / Assert
     expect(shouldPull(input).yes).toBe(expected);
@@ -55,7 +56,7 @@ describe("shouldPull", () => {
 
   it("should refuse a policy that is not one of the three", () => {
     // Act / Assert
-    expect(() => shouldPull({ policy: "sometimes", present: true, lastPullAt: null, now: FIXED_NOW })).toThrow("HAI_PULL=sometimes");
+    expect(() => shouldPull({ policy: "sometimes", present: true })).toThrow("HAI_PULL=sometimes");
   });
 });
 
@@ -129,7 +130,7 @@ describe("acrLogin", () => {
     expect(ok).toBe(true);
     expect(seams.runner.calls[0]?.argv).toEqual(["docker", "login", REGISTRY_HOST, "-u", TOKEN_USER, "--password-stdin"]);
     expect(seams.runner.calls[0]?.opts.stdin).toBe(TOKEN);
-    expect(JSON.parse(seams.fs.store.get(STATE)!)).toEqual({ loginAt: FIXED_NOW, pullAt: null });
+    expect(JSON.parse(seams.fs.store.get(STATE)!)).toEqual({ loginAt: FIXED_NOW });
   });
 
   it("should never put the token in argv", async () => {
@@ -188,7 +189,7 @@ describe("pullImage", () => {
       "docker login",
       "docker pull"
     ]);
-    expect(JSON.parse(seams.fs.store.get(STATE)!).pullAt).toBe(FIXED_NOW);
+    expect(JSON.parse(seams.fs.store.get(STATE)!).loginAt).toBe(FIXED_NOW);
   });
 
   it("should reuse a login that is still good", async () => {
@@ -254,6 +255,31 @@ describe("pullImage", () => {
 
     // Assert — the image is already here, so a failed pull is only worth a verbose line.
     expect(pulls).toBe(2);
+  });
+
+  it("should treat an unreachable state directory as nothing on record", async () => {
+    // Arrange
+    const seams = createFakeSeams({ respond: (argv) => ({ code: argv[1] === "image" ? 1 : 0, stdout: argv[1] === "acr" ? TOKEN : "" }) });
+
+    // Act
+    await pullImage(seams, { image, policy: undefined });
+
+    // Assert
+    expect(seams.runner.calls.map((call) => call.argv[1])).toContain("login");
+  });
+
+  it("should carry on with the cached image when an always-pull fails", async () => {
+    // Arrange — offline, VPN down or an expired az session, with the image already here.
+    const seams = createFakeSeams({
+      env: { HOME, HAI_VERBOSE: "1" },
+      respond: (argv) => (argv[1] === "image" ? { code: 0 } : { code: 1, stderr: "dial tcp: lookup hmctsprod.azurecr.io: no such host" })
+    });
+
+    // Act
+    await expect(pullImage(seams, { image, policy: "always" })).resolves.toBeUndefined();
+
+    // Assert
+    expect(seams.lines.join("")).toContain(`could not pull ${image}`);
   });
 
   it("should fail when the pull fails and the image is not here either", async () => {

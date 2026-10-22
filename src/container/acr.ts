@@ -12,8 +12,6 @@ export const CACHE_FILE = "acr.json";
 
 /** The token lasts about three hours, so anything that pulls refreshes it inside that. */
 export const LOGIN_TTL_MS = 150 * 60 * 1000;
-/** "Auto-updates the docker image" without paying a registry round trip on every launch. */
-export const PULL_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 const UNAUTHORIZED = /unauthorized|authentication required|denied/i;
 const AZ_TIMEOUT_MS = 60_000;
@@ -34,24 +32,22 @@ export function needsAcrLogin(input: { lastAt: number | null; now: number; retry
   return { yes: false, reason: `the ${REGISTRY_HOST} login is ${Math.round(age / 60000)} minutes old, so it is still good` };
 }
 
-export function shouldPull(input: { policy: string | undefined; present: boolean; lastPullAt: number | null; now: number }): Decision {
-  const policy = input.policy ?? "missing";
+/** The three policies mean exactly what `docker run --pull always|missing|never` means. */
+export function shouldPull(input: { policy: string | undefined; present: boolean }): Decision {
+  const policy = input.policy ?? "always";
   if (policy === "never") {
     return { yes: false, reason: "HAI_PULL=never" };
   }
   if (policy === "always") {
-    return { yes: true, reason: "HAI_PULL=always" };
+    return { yes: true, reason: input.policy === undefined ? "no HAI_PULL set, so the default is always" : "HAI_PULL=always" };
   }
   if (policy !== "missing") {
     throw new Error(`HAI_PULL=${policy} is not always, missing or never`);
   }
   if (!input.present) {
-    return { yes: true, reason: "the image is not on this machine yet" };
+    return { yes: true, reason: "HAI_PULL=missing and the image is not on this machine yet" };
   }
-  if (input.lastPullAt === null || input.now - input.lastPullAt >= PULL_INTERVAL_MS) {
-    return { yes: true, reason: "the image has not been refreshed for a day" };
-  }
-  return { yes: false, reason: "the image is present and was refreshed within the day" };
+  return { yes: false, reason: "HAI_PULL=missing and the image is already on this machine" };
 }
 
 /** Only the registry entry the nested daemon needs, so nothing else of the host's docker config travels. */
@@ -110,7 +106,7 @@ export async function pullImage(
 ): Promise<void> {
   const stamp = await readStamp(deps);
   const present = (await deps.runner.run(["docker", "image", "inspect", input.image])).code === 0;
-  const decision = shouldPull({ policy: input.policy, present, lastPullAt: stamp.pullAt, now: deps.clock.now() });
+  const decision = shouldPull({ policy: input.policy, present });
   deps.logger.verbose(`${decision.yes ? "pulling" : "not pulling"} ${input.image}: ${decision.reason}`);
   if (!decision.yes) {
     return;
@@ -138,7 +134,6 @@ async function pullOnce(
   }
   const result = await deps.runner.run(["docker", "pull", image], { timeoutMs: PULL_TIMEOUT_MS });
   if (result.code === 0) {
-    await writeStamp(deps, { pullAt: deps.clock.now() });
     return true;
   }
   if (!retry && isAcrImage(image) && UNAUTHORIZED.test(result.stderr)) {
@@ -152,21 +147,20 @@ async function readStamp(deps: { fs: Fs; env: Env }): Promise<Stamp> {
   const path = tryStatePath(deps.env, CACHE_FILE);
   const contents = path === null ? null : await deps.fs.readText(path);
   if (contents === null) {
-    return { loginAt: null, pullAt: null };
+    return { loginAt: null };
   }
   try {
     const parsed = JSON.parse(contents) as Partial<Record<keyof Stamp, unknown>>;
-    return { loginAt: finite(parsed.loginAt), pullAt: finite(parsed.pullAt) };
+    return { loginAt: finite(parsed.loginAt) };
   } catch {
-    return { loginAt: null, pullAt: null };
+    return { loginAt: null };
   }
 }
 
-async function writeStamp(deps: { fs: Fs; env: Env; logger: Logger }, patch: Partial<Stamp>): Promise<void> {
+async function writeStamp(deps: { fs: Fs; env: Env; logger: Logger }, stamp: Stamp): Promise<void> {
   try {
-    const merged = { ...(await readStamp(deps)), ...patch };
     await deps.fs.mkdirp(stateDir(deps.env), { mode: STATE_DIR_MODE });
-    await deps.fs.writeText(statePath(deps.env, CACHE_FILE), `${JSON.stringify(merged)}\n`, { mode: STATE_FILE_MODE });
+    await deps.fs.writeText(statePath(deps.env, CACHE_FILE), `${JSON.stringify(stamp)}\n`, { mode: STATE_FILE_MODE });
   } catch {
     deps.logger.verbose(`could not record the ${REGISTRY_HOST} login time`);
   }
@@ -179,7 +173,6 @@ function finite(value: unknown): number | null {
 
 interface Stamp {
   loginAt: number | null;
-  pullAt: number | null;
 }
 
 export interface Decision {

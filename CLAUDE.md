@@ -169,6 +169,12 @@ Other things that are the way they are for a reason:
   `~/.docker/config.json` symlinked at it, so it is where every tool looks without being
   written to a disk. `az account get-access-token` is the session probe, not
   `az account show`, which still answers after the refresh token has expired.
+- **The image is pulled on every launch.** `HAI_PULL` defaults to `always`, so a session never
+  starts on a silently stale image, and the three policies mean what the same words mean to
+  `docker run --pull`: `missing` pulls only when the image is absent, `never` never. An
+  always-pull default is only safe because `pullImage` throws **only** when the pull failed
+  *and* the image is not on the machine — offline, with the VPN down or with an expired `az`
+  session the launch carries on with the cached copy. Keep that degradation.
 - **Ports are published dynamically, as the session turns out to listen on them.** A
   hand-maintained list of 20 CFT ports was wrong for every repo that is not CCD or PCS and
   clashed with whatever else the engineer was running, so `HAI_PORTS` now publishes nothing
