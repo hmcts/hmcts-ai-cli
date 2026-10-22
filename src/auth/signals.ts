@@ -50,8 +50,17 @@ export function needsMembership(env: Env, requested: Route | null): boolean {
  * The I/O half of route resolution, kept apart from `resolveRoute` so the precedence
  * table stays pure. Each probe is skipped only when a higher-precedence signal has already
  * settled both the route and where its credential comes from.
+ *
+ * `askedGraph` reports provenance rather than leaving the caller to infer it from the
+ * answer: a membership that came out of the cache must not be written back with a fresh
+ * timestamp, or the TTL slides forward on every run and the check happens once, ever.
  */
-export async function gatherSignals(deps: { seams: Seams; agentHub: AgentHub; offline: boolean; cachedGroupMembership: boolean | null }): Promise<Signals> {
+export async function gatherSignals(deps: {
+  seams: Seams;
+  agentHub: AgentHub;
+  offline: boolean;
+  cachedGroupMembership: boolean | null;
+}): Promise<GatheredSignals> {
   const { seams, offline } = deps;
   const base: Signals = {
     requestedRoute: requestedRoute(seams.env),
@@ -59,18 +68,20 @@ export async function gatherSignals(deps: { seams: Seams; agentHub: AgentHub; of
     hasOauthEnvToken: hasValue(seams.env.CLAUDE_CODE_OAUTH_TOKEN),
     hasStoredBedrockKey: false,
     hasHostClaudeCredential: false,
-    isBedrockGroupMember: deps.cachedGroupMembership
+    isBedrockGroupMember: deps.cachedGroupMembership,
+    offline
   };
+  let askedGraph = false;
 
   const probing = needsProbes(seams.env, base.requestedRoute);
   const checkingGroup = base.isBedrockGroupMember === null && needsMembership(seams.env, base.requestedRoute);
   if (!(probing || checkingGroup)) {
-    return base;
+    return { signals: base, askedGraph };
   }
 
   if (offline) {
     seams.logger.verbose("HAI_OFFLINE=1, so agent-hub and Graph are not consulted");
-    return base;
+    return { signals: base, askedGraph };
   }
 
   if (probing) {
@@ -78,12 +89,13 @@ export async function gatherSignals(deps: { seams: Seams; agentHub: AgentHub; of
     if (base.hasStoredBedrockKey) {
       // A stored key settles the route on Bedrock whatever the group answer turns out to
       // be, and it cannot lead anywhere personal, so there is nothing left to ask.
-      return base;
+      return { signals: base, askedGraph };
     }
   }
 
   if (checkingGroup) {
     base.isBedrockGroupMember = await checkBedrockGroupMembership(seams);
+    askedGraph = true;
   }
 
   // Only read when nobody has confirmed membership: a member is never routed to their own
@@ -91,7 +103,7 @@ export async function gatherSignals(deps: { seams: Seams; agentHub: AgentHub; of
   if (probing && base.requestedRoute === null && base.isBedrockGroupMember !== true) {
     base.hasHostClaudeCredential = await hasHostClaudeCredential(seams);
   }
-  return base;
+  return { signals: base, askedGraph };
 }
 
 /** A hub that cannot be reached is not evidence of "no key": the key fetch retries and can still prompt. */
@@ -106,4 +118,10 @@ async function storedBedrockKeyPresent(agentHub: AgentHub, seams: Seams): Promis
 
 function hasValue(value: string | undefined): boolean {
   return value !== undefined && value !== "";
+}
+
+export interface GatheredSignals {
+  signals: Signals;
+  /** True only when this run made the `az rest checkMemberGroups` call itself. */
+  askedGraph: boolean;
 }

@@ -1,5 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { type CredentialSource, isRoute, MEMBER_REFUSAL, REMEDIES, type Route, resolveRoute, type Signals, UNKNOWN_MEMBERSHIP_REFUSAL } from "./route.js";
+import {
+  type CredentialSource,
+  isRoute,
+  MEMBER_REFUSAL,
+  OFFLINE_MEMBERSHIP_REFUSAL,
+  REMEDIES,
+  type Route,
+  resolveRoute,
+  type Signals,
+  UNKNOWN_MEMBERSHIP_REFUSAL
+} from "./route.js";
 
 const NOTHING: Signals = {
   requestedRoute: null,
@@ -7,7 +17,8 @@ const NOTHING: Signals = {
   hasOauthEnvToken: false,
   hasStoredBedrockKey: false,
   hasHostClaudeCredential: false,
-  isBedrockGroupMember: false
+  isBedrockGroupMember: false,
+  offline: false
 };
 
 const MEMBER: Partial<Signals> = { isBedrockGroupMember: true };
@@ -100,6 +111,19 @@ describe("resolveRoute", () => {
       // Assert
       expect(result.reasons.join(" ")).toContain("HAI_ROUTE=own-licence");
       expect(result.reasons.join(" ")).toBe(UNKNOWN_MEMBERSHIP_REFUSAL);
+    });
+
+    it.each<[string, Partial<Signals>]>([
+      ["an exported CLAUDE_CODE_OAUTH_TOKEN", { hasOauthEnvToken: true }],
+      ["a live host claude.ai login", { hasHostClaudeCredential: true }]
+    ])("should refuse offline with %s without advising az login, which HAI_OFFLINE opted out of", (_name, personal) => {
+      // Act
+      const result = resolveRoute(signals({ ...UNKNOWN, ...personal, offline: true }));
+
+      // Assert
+      expect(result).toMatchObject({ route: "own-licence", credentialSource: "refused", reasons: [OFFLINE_MEMBERSHIP_REFUSAL] });
+      expect(OFFLINE_MEMBERSHIP_REFUSAL).toContain("HAI_ROUTE=own-licence");
+      expect(OFFLINE_MEMBERSHIP_REFUSAL).not.toMatch(/az login|VPN/);
     });
   });
 

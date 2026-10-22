@@ -4,6 +4,14 @@ import type { Fs } from "../system/fs.js";
 import { STATE_DIR_MODE, STATE_FILE_MODE, stateDir, statePath, tryStatePath } from "../system/state-dir.js";
 
 export const CACHE_FILE = "auth.json";
+
+/**
+ * Twelve hours, and it means it now that a cache hit no longer re-stamps `at`: a change of
+ * group is picked up within a working day, for at most two `az rest` calls a day per
+ * identity. Shortening it would mostly cost the people the block protects — each expiry is
+ * a fresh Graph call, and a call az cannot make answers "unknown", which refuses the
+ * personal routes outright. Delete this file to force a re-check sooner.
+ */
 export const CACHE_TTL_MS = 12 * 60 * 60 * 1000;
 
 /** Group membership only, keyed by the signed-in identity. A credential is never written here, or anywhere else on disk. */

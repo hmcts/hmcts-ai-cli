@@ -14,8 +14,14 @@ import { gatherSignals, needsMembership, requestedRoute } from "./signals.js";
  * question `resolveRoute` cannot answer on its own: whether the gateway is usable. The
  * cache only ever holds a group-membership answer, which saves one
  * `az rest checkMemberGroups`; credentials are never cached.
+ *
+ * `decideOnly` stops at the decision: no VPN probe, no Key Vault read, no `apiKeyHelper`
+ * written and nothing said on the terminal. That is what `sbx-hai` wants, where the route
+ * is a verbose note and the sandbox binds its own credential — a best-effort note has no
+ * business doing the gateway's I/O or warning about a fallback that cannot apply to it.
+ * The refusals still stand, so a confirmed member is never reported a personal route.
  */
-export async function resolveAuth(deps: { seams: Seams; agentHub: AgentHub }): Promise<AuthResolution> {
+export async function resolveAuth(deps: { seams: Seams; agentHub: AgentHub; decideOnly?: boolean }): Promise<AuthResolution> {
   const { seams } = deps;
   const offline = isEnabled(seams.env, "HAI_OFFLINE");
   const requested = requestedRoute(seams.env);
@@ -28,7 +34,7 @@ export async function resolveAuth(deps: { seams: Seams; agentHub: AgentHub }): P
   const key = account === null ? null : accountCacheKey(account);
   const cached = key === null ? null : await readAuthCache(seams, key);
 
-  const signals = await gatherSignals({ seams, agentHub: deps.agentHub, offline, cachedGroupMembership: cached?.group?.isMember ?? null });
+  const { signals, askedGraph } = await gatherSignals({ seams, agentHub: deps.agentHub, offline, cachedGroupMembership: cached?.group?.isMember ?? null });
   const resolution = resolveRoute(signals);
 
   if (resolution.credentialSource === "unavailable") {
@@ -38,10 +44,13 @@ export async function resolveAuth(deps: { seams: Seams; agentHub: AgentHub }): P
     throw new Error(resolution.reasons.join("; "));
   }
 
-  if (key !== null && signals.isBedrockGroupMember !== null) {
+  // Only a freshly fetched answer is stamped. Writing a cache hit back would slide the TTL
+  // forward on every run, so anyone who runs hai at least daily would be checked against
+  // Graph once and never again — and a cached "not a member" would keep billing them.
+  if (key !== null && askedGraph && signals.isBedrockGroupMember !== null) {
     await persist(deps, key, signals.isBedrockGroupMember);
   }
-  if (resolution.route === "gateway") {
+  if (resolution.route === "gateway" && deps.decideOnly !== true) {
     return await settleGateway(deps, resolution, requested === "gateway");
   }
   return { resolution };

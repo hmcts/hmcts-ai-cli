@@ -41,11 +41,13 @@ export async function launchSbx(deps: { seams: Seams; processArgv: string[] }): 
 /**
  * Informational only. The route decides nothing here — the sandbox has its own credential
  * — and a host with no usable one must still be able to start a sandbox, so a resolution
- * that fails is reported rather than fatal.
+ * that fails is reported rather than fatal. `decideOnly` keeps it to a decision: settling
+ * the gateway would put a VPN probe and a private Key Vault read behind a verbose line, and
+ * off the VPN it would announce a Bedrock fallback that `sbx-hai` forwards nothing of.
  */
 async function routeNote(deps: { seams: Seams }): Promise<string> {
   try {
-    const { resolution } = await resolveAuth({ seams: deps.seams, agentHub: createAgentHub(deps.seams) });
+    const { resolution } = await resolveAuth({ seams: deps.seams, agentHub: createAgentHub(deps.seams), decideOnly: true });
     return `route ${resolution.route} via ${resolution.credentialSource} would apply on this host`;
   } catch (err) {
     return `no route resolves on this host, which does not stop the sandbox: ${messageOf(err)}`;

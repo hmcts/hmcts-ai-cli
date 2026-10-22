@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createFakeSeams } from "../__fixtures__/fake-seams.js";
+import { createFakeSeams, type RunResponder } from "../__fixtures__/fake-seams.js";
 import { DEFAULT_BEDROCK_GROUP_ID } from "../az/group-membership.js";
 import type { AgentHub } from "./agent-hub.js";
 import type { Route } from "./route.js";
@@ -85,7 +85,7 @@ describe("gatherSignals", () => {
     const agentHub = fakeHub();
 
     // Act
-    const signals = await gatherSignals({ seams, agentHub, offline: false, cachedGroupMembership: null });
+    const { signals } = await gatherSignals({ seams, agentHub, offline: false, cachedGroupMembership: null });
 
     // Assert
     expect(signals.requestedRoute).toBe("gateway");
@@ -99,7 +99,7 @@ describe("gatherSignals", () => {
     const agentHub = fakeHub();
 
     // Act
-    const signals = await gatherSignals({ seams, agentHub, offline: false, cachedGroupMembership: null });
+    const { signals } = await gatherSignals({ seams, agentHub, offline: false, cachedGroupMembership: null });
 
     // Assert
     expect(signals.isBedrockGroupMember).toBe(true);
@@ -111,7 +111,7 @@ describe("gatherSignals", () => {
     const seams = createFakeSeams({ env: { HAI_ROUTE: "own-licence" }, respond: memberResponse });
 
     // Act
-    const signals = await gatherSignals({ seams, agentHub: fakeHub(), offline: false, cachedGroupMembership: true });
+    const { signals } = await gatherSignals({ seams, agentHub: fakeHub(), offline: false, cachedGroupMembership: true });
 
     // Assert
     expect(signals.isBedrockGroupMember).toBe(true);
@@ -124,7 +124,7 @@ describe("gatherSignals", () => {
     const agentHub = fakeHub(async () => KEY);
 
     // Act
-    const signals = await gatherSignals({ seams, agentHub, offline: false, cachedGroupMembership: null });
+    const { signals } = await gatherSignals({ seams, agentHub, offline: false, cachedGroupMembership: null });
 
     // Assert
     expect(signals.hasBedrockEnvKey).toBe(true);
@@ -138,7 +138,7 @@ describe("gatherSignals", () => {
     const agentHub = fakeHub();
 
     // Act
-    const signals = await gatherSignals({ seams, agentHub, offline: false, cachedGroupMembership: null });
+    const { signals } = await gatherSignals({ seams, agentHub, offline: false, cachedGroupMembership: null });
 
     // Assert
     expect(signals).toMatchObject({ hasOauthEnvToken: true, isBedrockGroupMember: true });
@@ -151,7 +151,7 @@ describe("gatherSignals", () => {
     const seams = createFakeSeams({ env: { HAI_ROUTE: "bedrock", CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-x" } });
 
     // Act
-    const signals = await gatherSignals({ seams, agentHub, offline: false, cachedGroupMembership: null });
+    const { signals } = await gatherSignals({ seams, agentHub, offline: false, cachedGroupMembership: null });
 
     // Assert
     expect(agentHub.gets).toBe(1);
@@ -164,7 +164,7 @@ describe("gatherSignals", () => {
     const agentHub = fakeHub(async () => KEY);
 
     // Act
-    const signals = await gatherSignals({ seams, agentHub, offline: false, cachedGroupMembership: null });
+    const { signals } = await gatherSignals({ seams, agentHub, offline: false, cachedGroupMembership: null });
 
     // Assert
     expect(signals).toMatchObject({ hasStoredBedrockKey: true, hasHostClaudeCredential: false, isBedrockGroupMember: null });
@@ -176,7 +176,7 @@ describe("gatherSignals", () => {
     const seams = createFakeSeams({ env: { HOME }, files: { [CREDENTIALS]: LIVE_LOGIN }, respond: nonMemberResponse });
 
     // Act
-    const signals = await gatherSignals({ seams, agentHub: fakeHub(), offline: false, cachedGroupMembership: null });
+    const { signals } = await gatherSignals({ seams, agentHub: fakeHub(), offline: false, cachedGroupMembership: null });
 
     // Assert
     expect(signals).toMatchObject({ isBedrockGroupMember: false, hasHostClaudeCredential: true });
@@ -187,7 +187,7 @@ describe("gatherSignals", () => {
     const seams = createFakeSeams({ env: { HOME }, files: { [CREDENTIALS]: LIVE_LOGIN }, respond: memberResponse });
 
     // Act
-    const signals = await gatherSignals({ seams, agentHub: fakeHub(), offline: false, cachedGroupMembership: null });
+    const { signals } = await gatherSignals({ seams, agentHub: fakeHub(), offline: false, cachedGroupMembership: null });
 
     // Assert
     expect(signals).toMatchObject({ isBedrockGroupMember: true, hasHostClaudeCredential: false });
@@ -198,7 +198,7 @@ describe("gatherSignals", () => {
     const seams = createFakeSeams({ env: { HOME }, files: { [CREDENTIALS]: LIVE_LOGIN }, respond: graphRefused });
 
     // Act
-    const signals = await gatherSignals({ seams, agentHub: fakeHub(), offline: false, cachedGroupMembership: null });
+    const { signals } = await gatherSignals({ seams, agentHub: fakeHub(), offline: false, cachedGroupMembership: null });
 
     // Assert
     expect(signals).toMatchObject({ isBedrockGroupMember: null, hasHostClaudeCredential: true });
@@ -209,11 +209,27 @@ describe("gatherSignals", () => {
     const seams = createFakeSeams({ env: { HOME } });
 
     // Act
-    const signals = await gatherSignals({ seams, agentHub: fakeHub(), offline: false, cachedGroupMembership: false });
+    const { signals } = await gatherSignals({ seams, agentHub: fakeHub(), offline: false, cachedGroupMembership: false });
 
     // Assert
     expect(signals.isBedrockGroupMember).toBe(false);
     expect(askedGraph(seams.runner.calls)).toBe(false);
+  });
+
+  it.each<[string, Record<string, string>, boolean | null, RunResponder, boolean]>([
+    ["a call it made itself", {}, null, memberResponse, true],
+    ["a call Graph refused, which is still a call", {}, null, graphRefused, true],
+    ["a cached answer, which the caller must not restamp", {}, true, memberResponse, false],
+    ["HAI_ROUTE=gateway, where the group is never asked", { HAI_ROUTE: "gateway" }, null, memberResponse, false]
+  ])("should report the group answer as coming from %s", async (_name, env, cachedGroupMembership, respond, expected) => {
+    // Arrange
+    const seams = createFakeSeams({ env: { HOME, ...env }, respond });
+
+    // Act
+    const { askedGraph } = await gatherSignals({ seams, agentHub: fakeHub(), offline: false, cachedGroupMembership });
+
+    // Assert
+    expect(askedGraph).toBe(expected);
   });
 
   it("should not look for a host claude.ai login when bedrock was asked for by name", async () => {
@@ -221,7 +237,7 @@ describe("gatherSignals", () => {
     const seams = createFakeSeams({ env: { HOME, HAI_ROUTE: "bedrock" }, files: { [CREDENTIALS]: LIVE_LOGIN }, respond: memberResponse });
 
     // Act
-    const signals = await gatherSignals({ seams, agentHub: fakeHub(), offline: false, cachedGroupMembership: null });
+    const { signals } = await gatherSignals({ seams, agentHub: fakeHub(), offline: false, cachedGroupMembership: null });
 
     // Assert
     expect(signals.hasHostClaudeCredential).toBe(false);
@@ -235,7 +251,7 @@ describe("gatherSignals", () => {
     });
 
     // Act
-    const signals = await gatherSignals({ seams, agentHub, offline: false, cachedGroupMembership: null });
+    const { signals } = await gatherSignals({ seams, agentHub, offline: false, cachedGroupMembership: null });
 
     // Assert
     expect(signals.hasStoredBedrockKey).toBe(false);
@@ -249,7 +265,7 @@ describe("gatherSignals", () => {
       const agentHub = fakeHub(async () => KEY);
 
       // Act
-      const signals = await gatherSignals({ seams, agentHub, offline: true, cachedGroupMembership: null });
+      const { signals } = await gatherSignals({ seams, agentHub, offline: true, cachedGroupMembership: null });
 
       // Assert
       expect(agentHub.gets).toBe(0);
@@ -260,7 +276,7 @@ describe("gatherSignals", () => {
 
     it("should still use a cached group answer", async () => {
       // Act
-      const signals = await gatherSignals({ seams: createFakeSeams({ env: { HOME } }), agentHub: fakeHub(), offline: true, cachedGroupMembership: true });
+      const { signals } = await gatherSignals({ seams: createFakeSeams({ env: { HOME } }), agentHub: fakeHub(), offline: true, cachedGroupMembership: true });
 
       // Assert
       expect(signals.isBedrockGroupMember).toBe(true);

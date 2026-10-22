@@ -61,6 +61,31 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
   paste into. Every step of that says out loud which fallback happened and why; silence is
   what let the incident run. A `HAI_ROUTE=gateway` asked for by name still fails outright
   rather than downgrade, because the engineer named it.
+- **Only a group answer that was freshly fetched is stamped in the cache.** `gatherSignals`
+  reports `askedGraph` so `resolveAuth` can tell a Graph answer from a cache hit, and a hit
+  writes nothing at all. Persisting whenever `isBedrockGroupMember` was non-null re-stamped
+  `at` with the clock on every run, and since `isFresh` is `now - at < 12h` the TTL slid
+  forward each launch: anyone running hai at least daily was checked against Graph once,
+  ever. A cached `{isMember: false}` then went on routing them to `own-licence` after they
+  were added to the group — the exact invisible personal spend the group check exists to
+  stop. Do not "fix" that by preserving the old `at` on a write: a hit has nothing to write.
+  The 12h TTL is deliberate now that it expires, and is discussed next to `CACHE_TTL_MS`.
+- **`sbx-hai`'s route note is decide-only.** `resolveAuth({ decideOnly: true })` stops at
+  the decision — no VPN probe, no `az keyvault secret show` against the private
+  `sps-ai-kv-sbox`, no `gateway-token.sh` and nothing through `logger.say`. The note is one
+  `logger.verbose` line, so settling the gateway for it put real I/O behind a line most runs
+  never print, and when the Key Vault read failed (off the VPN, the common case for
+  `sbx-hai`) it announced a Bedrock fallback that is untrue there: `sbx-hai` forwards no
+  credential and no route environment, sbx injecting its own. The refusals still apply, so
+  the note can never name a route that would bill a member's own subscription. Container
+  mode and the in-place path keep the full behaviour.
+- **`HAI_OFFLINE=1` is refused in its own words.** Offline neither `az account show` nor
+  Graph is called, so membership is always unknown and a personal credential is still
+  refused — but the remedy named first is `HAI_ROUTE=own-licence`
+  (`OFFLINE_MEMBERSHIP_REFUSAL`), never `az login` or the VPN, which is what the flag opted
+  out of. The cache cannot soften that: its key comes from `az account show`, so offline
+  there is no key to look under, and keying it on anything else reintroduces the
+  cross-identity bug that made the old route cache dead.
 - **No credential is ever written to disk.** The caches in `src/auth/auth-cache.ts` and
   `src/container/acr.ts` hold decisions, not secrets.
 - **The update check is never cached.** It is one GET behind a 1.5s timeout that already

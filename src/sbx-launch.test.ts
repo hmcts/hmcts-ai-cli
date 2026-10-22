@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createFakeSeams, exitCodeOf, type FakeSeams } from "./__fixtures__/fake-seams.js";
+import { HELPER_FILE } from "./auth/gateway.js";
+import { DEFAULT_BEDROCK_GROUP_ID } from "./az/group-membership.js";
 import { launchSbx } from "./sbx-launch.js";
 import { packageRoot } from "./update/self-update.js";
 
@@ -121,6 +123,36 @@ describe("launchSbx", () => {
 
     // Assert
     expect(seams.lines.join("")).toContain("route bedrock via env would apply on this host");
+  });
+
+  it("should report a group member's route without reading the Key Vault or warning about a fallback it forwards nothing of", async () => {
+    // Arrange — a member, and the note is verbose-only: settling the gateway for it would
+    // read a private Key Vault, write an apiKeyHelper and, off the VPN, say out loud that
+    // hai fell back to a Bedrock key, none of which reaches the sandbox.
+    const seams = createFakeSeams({
+      env: { HOME, HAI_NO_UPDATE: "1", HAI_VERBOSE: "1" },
+      cwd: WORKSPACE,
+      files: { [`${WORKSPACE}/workspace.yaml`]: MANIFEST },
+      respond: (argv) => {
+        if (argv[1] === "account") {
+          return { code: 0, stdout: JSON.stringify({ tenantId: "tenant", user: { name: "dev@hmcts.net" } }) };
+        }
+        if (argv[1] === "rest") {
+          return { code: 0, stdout: JSON.stringify({ value: [DEFAULT_BEDROCK_GROUP_ID] }) };
+        }
+        return respond(argv);
+      }
+    });
+
+    // Act
+    await launchSbx({ seams, processArgv: ["node", "sbx-hai"] }).catch(() => undefined);
+
+    // Assert
+    const said = seams.lines.join("");
+    expect(said).toContain("route gateway via gateway-apim would apply on this host");
+    expect(said).not.toContain("APIM key could not be read");
+    expect(seams.runner.calls.some((call) => call.argv[1] === "keyvault")).toBe(false);
+    expect(seams.fs.store.has(`${HOME}/.local/state/hai/${HELPER_FILE}`)).toBe(false);
   });
 
   it("should start the sandbox anyway when no route resolves on this host", async () => {

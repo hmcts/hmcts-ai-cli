@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { createFakeHiddenInput, createFakeSeams, FIXED_NOW } from "../__fixtures__/fake-seams.js";
 import { DEFAULT_BEDROCK_GROUP_ID } from "../az/group-membership.js";
 import type { AgentHub } from "./agent-hub.js";
-import { CACHE_FILE } from "./auth-cache.js";
+import { CACHE_FILE, CACHE_TTL_MS } from "./auth-cache.js";
+import { HELPER_FILE } from "./gateway.js";
 import { resolveAuth } from "./resolve-auth.js";
 
 const HOME = "/home/dev";
@@ -56,8 +57,9 @@ describe("resolveAuth", () => {
     expect(JSON.parse(seams.fs.store.get(CACHE_PATH) ?? "{}")).toEqual({ [IDENTITY]: { group: { at: FIXED_NOW, isMember: true } } });
   });
 
-  it("should reuse a cached group answer rather than ask Graph again", async () => {
-    // Arrange
+  it("should reuse a cached group answer rather than ask Graph again, and leave its timestamp alone", async () => {
+    // Arrange — re-stamping a hit slid the TTL forward on every run, so Graph was asked
+    // once and never again for anyone who runs hai at least daily.
     const cache = { [IDENTITY]: { group: { at: FIXED_NOW - 1000, isMember: true } } };
     const seams = createFakeSeams({ env: { HOME }, files: { [CACHE_PATH]: JSON.stringify(cache) }, respond: respondWithGateway });
 
@@ -67,6 +69,23 @@ describe("resolveAuth", () => {
     // Assert
     expect(resolution).toMatchObject({ route: "gateway", credentialSource: "gateway-apim" });
     expect(askedGraph(seams.runner.calls)).toBe(false);
+    expect(JSON.parse(seams.fs.store.get(CACHE_PATH) ?? "{}")).toEqual(cache);
+  });
+
+  it("should ask Graph again once the cached answer has genuinely expired", async () => {
+    // Arrange — one run to stamp the answer, then past the TTL with the same state dir.
+    let now = FIXED_NOW;
+    const seams = createFakeSeams({ env: { HOME }, respond: respondWithGateway, clock: { now: () => now, sleep: async () => undefined } });
+    await resolveAuth({ seams, agentHub: hub() });
+    now += CACHE_TTL_MS + 1;
+
+    // Act
+    const { resolution } = await resolveAuth({ seams, agentHub: hub() });
+
+    // Assert
+    expect(resolution).toMatchObject({ route: "gateway", credentialSource: "gateway-apim" });
+    expect(seams.runner.calls.filter((call) => call.argv[1] === "rest")).toHaveLength(2);
+    expect(JSON.parse(seams.fs.store.get(CACHE_PATH) ?? "{}")).toEqual({ [IDENTITY]: { group: { at: now, isMember: true } } });
   });
 
   it("should cache nothing when az cannot say who we are", async () => {
@@ -230,6 +249,34 @@ describe("resolveAuth", () => {
     });
   });
 
+  describe("decide-only", () => {
+    it("should resolve a member's route without the Key Vault, the helper script or a word on the terminal", async () => {
+      // Arrange — respondAz answers nothing for the Key Vault, which is the off-VPN shape.
+      const seams = createFakeSeams({ env: { HOME }, respond: respondAz });
+
+      // Act
+      const auth = await resolveAuth({ seams, agentHub: hub(), decideOnly: true });
+
+      // Assert
+      expect(auth.resolution).toMatchObject({ route: "gateway", credentialSource: "gateway-apim" });
+      expect(auth.gateway).toBeUndefined();
+      expect(seams.runner.calls.some((call) => call.argv[1] === "keyvault")).toBe(false);
+      expect(seams.fs.store.has(`${HOME}/.local/state/hai/${HELPER_FILE}`)).toBe(false);
+      expect(seams.lines).toEqual([]);
+    });
+
+    it("should still refuse to report a personal route to a confirmed member", async () => {
+      // Arrange
+      const seams = createFakeSeams({ env: { HOME, HAI_ROUTE: "own-licence" }, files: { [CREDENTIALS]: LIVE_LOGIN }, respond: respondAz });
+
+      // Act
+      const act = resolveAuth({ seams, agentHub: hub(), decideOnly: true });
+
+      // Assert
+      await expect(act).rejects.toThrow("HMCTS funds your Claude usage");
+    });
+  });
+
   describe("the block on a personal subscription", () => {
     it("should refuse HAI_ROUTE=own-licence for a confirmed member", async () => {
       // Arrange
@@ -263,6 +310,20 @@ describe("resolveAuth", () => {
 
       // Assert
       expect(resolution).toMatchObject({ route: "own-licence", credentialSource: "host-oauth" });
+    });
+
+    it("should refuse offline by naming HAI_ROUTE=own-licence, not the az login HAI_OFFLINE opted out of", async () => {
+      // Arrange — offline there is no membership answer to be had, so the refusal stands;
+      // what it must not do is prescribe the lookups the flag asked it to skip.
+      const seams = createFakeSeams({ env: { HOME, HAI_OFFLINE: "1", CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-x" } });
+
+      // Act
+      const err = await resolveAuth({ seams, agentHub: hub() }).catch((e: Error) => e);
+
+      // Assert
+      expect((err as Error).message).toContain("HAI_ROUTE=own-licence");
+      expect((err as Error).message).not.toMatch(/az login|VPN/);
+      expect(seams.runner.calls).toHaveLength(0);
     });
 
     it("should leave a confirmed non-member on their own licence", async () => {

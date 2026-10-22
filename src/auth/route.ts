@@ -18,6 +18,10 @@ export const MEMBER_REFUSAL =
 export const UNKNOWN_MEMBERSHIP_REFUSAL =
   "your Bedrock developer group membership could not be confirmed, so hai will not spend your personal claude.ai subscription by accident. Run az login with the F5 VPN up and try again, or set HAI_ROUTE=own-licence if billing your own subscription is genuinely what you want.";
 
+/** Offline there is nothing to retry: az and Graph were skipped because that is what the flag asks for. */
+export const OFFLINE_MEMBERSHIP_REFUSAL =
+  "HAI_OFFLINE=1, so your Bedrock developer group membership could not be checked and hai will not spend your personal claude.ai subscription by accident. Set HAI_ROUTE=own-licence if billing your own subscription is genuinely what you want, or drop HAI_OFFLINE to let hai check the group.";
+
 export function isRoute(value: string): value is Route {
   return (ROUTES as readonly string[]).includes(value);
 }
@@ -65,7 +69,10 @@ export function resolveRoute(signals: Signals): RouteResolution {
 /** Never an implicit personal fallback: an unchecked membership is not evidence of a non-member. */
 function unknownMembership(signals: Signals): RouteResolution {
   if (signals.hasOauthEnvToken || signals.hasHostClaudeCredential) {
-    return { route: "own-licence", credentialSource: "refused", reasons: [UNKNOWN_MEMBERSHIP_REFUSAL] };
+    // The refusal stands offline, but telling someone who asked for no lookups to go and
+    // run az login is advice against their own flag.
+    const refusal = signals.offline ? OFFLINE_MEMBERSHIP_REFUSAL : UNKNOWN_MEMBERSHIP_REFUSAL;
+    return { route: "own-licence", credentialSource: "refused", reasons: [refusal] };
   }
   // Nothing personal to fall back to, so the only thing left is a key pasted by hand,
   // and offering that spends nobody's own subscription.
@@ -112,6 +119,8 @@ export interface Signals {
   hasStoredBedrockKey: boolean;
   hasHostClaudeCredential: boolean;
   isBedrockGroupMember: boolean | null;
+  /** HAI_OFFLINE=1. It decides no route, only how an unconfirmable membership is explained. */
+  offline: boolean;
 }
 
 export interface RouteResolution {

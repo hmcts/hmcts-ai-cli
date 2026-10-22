@@ -69,7 +69,14 @@ it is never chosen on your behalf.
 Where your membership cannot be confirmed at all — no `az` session, no VPN, or Graph
 refuses the call — `hai` does not guess. It stops and says membership could not be
 confirmed. `HAI_ROUTE=own-licence` is accepted in that case, because typing it is a
-deliberate choice rather than an accident.
+deliberate choice rather than an accident. Under `HAI_OFFLINE=1` nothing is looked up at
+all, so membership is never confirmed and the refusal names `HAI_ROUTE=own-licence` rather
+than the `az login` the flag opted out of.
+
+The group answer is cached for 12 hours against your signed-in `az` identity, in
+`auth.json` in the state directory (`$XDG_STATE_HOME/hai`, or `~/.local/state/hai`).
+Reading it back does not extend it, so the check really does happen again twice a day;
+delete the file if you have just been added to the group and want it sooner.
 
 ## Environment variables
 
