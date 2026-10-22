@@ -27,9 +27,9 @@ export const ADD_HOST = "idam-simulator:127.0.0.1";
  * decision in it is snapshot-testable per platform, route and port profile — and so the
  * "no secret ever reaches the container config" guarantee is a test rather than a habit.
  *
- * Nothing from ctx.secretEnv is read here on purpose: secrets go in on a `docker exec`
- * stdin, because anything in --env or --env-file is readable afterwards with
- * `docker inspect` and is persisted in the container's config on disk.
+ * No secret can reach it: the context holds none. They go in on a `docker exec` stdin,
+ * because anything in --env or --env-file is readable afterwards with `docker inspect`
+ * and is persisted in the container's config on disk.
  */
 export function buildDockerArgs(ctx: ContainerContext): string[] {
   const argv = [
@@ -121,8 +121,6 @@ export interface ContainerContext {
   publicPorts: boolean;
   mounts: Mount[];
   tty: boolean;
-  /** Everything safe to record in the container config. */
+  /** Everything safe to record in the container config. The secret half never comes here. */
   env: Record<string, string>;
-  /** Carried only so that the no-secrets test has something real to look for. Never read here. */
-  secretEnv: Record<string, string>;
 }

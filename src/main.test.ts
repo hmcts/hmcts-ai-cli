@@ -34,7 +34,7 @@ describe("main", () => {
 
     // Assert
     expect(exitCodeOf(err)).toBe(1);
-    expect(seams.lines.join("")).toContain("HAI_PORTS=nonsense is not cft, minimal, none");
+    expect(seams.lines.join("")).toContain("HAI_PORTS=nonsense is not cft, none");
   });
 
   it("should redact a secret that reached an error message", async () => {

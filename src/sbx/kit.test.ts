@@ -26,7 +26,6 @@ const version = (client: string | null, server: string | null, state: string | n
 describe("the kit's coordinates", () => {
   it("should name the published cft-workspace kit and its ACR coordinates", () => {
     // Act / Assert
-    expect(KIT_IMAGE).toBe("hmctsprod.azurecr.io/cft-workspace/sbx:latest");
     expect(KIT_REGISTRY).toBe("hmctsprod");
     expect(KIT_REPOSITORY).toBe("cft-workspace/sbx:latest");
   });

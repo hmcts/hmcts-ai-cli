@@ -2,12 +2,11 @@ import type { Clock } from "../system/clock.js";
 import type { Env } from "../system/env.js";
 import type { Fs } from "../system/fs.js";
 import { STATE_DIR_MODE, STATE_FILE_MODE, stateDir, statePath, tryStatePath } from "../system/state-dir.js";
-import { isRoute, type RouteResolution } from "./route.js";
 
 export const CACHE_FILE = "auth.json";
 export const CACHE_TTL_MS = 12 * 60 * 60 * 1000;
 
-/** Routes and group membership only. A credential is never written here, or anywhere else on disk. */
+/** Group membership only, keyed by the signed-in identity. A credential is never written here, or anywhere else on disk. */
 export async function readAuthCache(deps: { fs: Fs; env: Env; clock: Clock }, key: string): Promise<AuthCacheEntry | null> {
   const path = tryStatePath(deps.env, CACHE_FILE);
   const contents = path === null ? null : await deps.fs.readText(path);
@@ -45,15 +44,6 @@ export async function writeAuthCache(deps: { fs: Fs; env: Env; clock: Clock }, k
 
 function sanitise(entry: Record<string, unknown>, now: number): AuthCacheEntry {
   const out: AuthCacheEntry = {};
-  const route = entry.route as Record<string, unknown> | undefined;
-  if (route !== undefined && isFresh(route.at, now) && typeof route.route === "string" && isRoute(route.route) && typeof route.credentialSource === "string") {
-    out.route = {
-      at: Number(route.at),
-      route: route.route,
-      credentialSource: route.credentialSource as RouteResolution["credentialSource"],
-      reasons: Array.isArray(route.reasons) ? route.reasons.filter((r): r is string => typeof r === "string") : []
-    };
-  }
   const group = entry.group as Record<string, unknown> | undefined;
   if (group !== undefined && isFresh(group.at, now) && typeof group.isMember === "boolean") {
     out.group = { at: Number(group.at), isMember: group.isMember };
@@ -67,6 +57,5 @@ function isFresh(at: unknown, now: number): boolean {
 }
 
 export interface AuthCacheEntry {
-  route?: { at: number } & RouteResolution;
   group?: { at: number; isMember: boolean };
 }

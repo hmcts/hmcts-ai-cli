@@ -27,21 +27,10 @@ function respondAz(argv: string[]) {
   return undefined;
 }
 
+const askedGraph = (calls: { argv: string[] }[]) => calls.some((call) => call.argv[1] === "rest");
+
 describe("resolveAuth", () => {
-  it("should resolve a route and cache it under the signed-in identity", async () => {
-    // Arrange
-    const seams = createFakeSeams({ env: { HOME }, respond: respondAz });
-
-    // Act
-    const result = await resolveAuth({ seams, agentHub: hub(async () => KEY) });
-
-    // Assert
-    expect(result).toMatchObject({ route: "bedrock", credentialSource: "agent-hub" });
-    const cached = JSON.parse(seams.fs.store.get(CACHE_PATH) ?? "{}");
-    expect(cached[IDENTITY].route).toMatchObject({ at: FIXED_NOW, route: "bedrock", credentialSource: "agent-hub" });
-  });
-
-  it("should cache the group answer when one was obtained", async () => {
+  it("should cache the group answer under the signed-in identity", async () => {
     // Arrange
     const seams = createFakeSeams({ env: { HOME }, respond: respondAz });
 
@@ -49,10 +38,23 @@ describe("resolveAuth", () => {
     await resolveAuth({ seams, agentHub: hub() });
 
     // Assert
-    expect(JSON.parse(seams.fs.store.get(CACHE_PATH) ?? "{}")[IDENTITY].group).toEqual({ at: FIXED_NOW, isMember: true });
+    expect(JSON.parse(seams.fs.store.get(CACHE_PATH) ?? "{}")).toEqual({ [IDENTITY]: { group: { at: FIXED_NOW, isMember: true } } });
   });
 
-  it("should cache under an anonymous key when az cannot say who we are", async () => {
+  it("should reuse a cached group answer rather than ask Graph again", async () => {
+    // Arrange
+    const cache = { [IDENTITY]: { group: { at: FIXED_NOW - 1000, isMember: true } } };
+    const seams = createFakeSeams({ env: { HOME }, files: { [CACHE_PATH]: JSON.stringify(cache) }, respond: respondAz });
+
+    // Act
+    const result = await resolveAuth({ seams, agentHub: hub() });
+
+    // Assert
+    expect(result).toMatchObject({ route: "bedrock", credentialSource: "prompt" });
+    expect(askedGraph(seams.runner.calls)).toBe(false);
+  });
+
+  it("should cache nothing when az cannot say who we are", async () => {
     // Arrange
     const seams = createFakeSeams({ env: { HOME }, respond: (argv) => (argv[1] === "account" ? { code: 1, stderr: "no" } : respondAz(argv)) });
 
@@ -60,62 +62,10 @@ describe("resolveAuth", () => {
     await resolveAuth({ seams, agentHub: hub(async () => KEY) });
 
     // Assert
-    expect(Object.keys(JSON.parse(seams.fs.store.get(CACHE_PATH) ?? "{}"))).toEqual(["anonymous"]);
+    expect(seams.fs.store.has(CACHE_PATH)).toBe(false);
   });
 
-  it("should not ask az who we are when offline", async () => {
-    // Arrange
-    const seams = createFakeSeams({ env: { HOME, AWS_BEARER_TOKEN_BEDROCK: KEY, HAI_OFFLINE: "1" } });
-
-    // Act
-    await resolveAuth({ seams, agentHub: hub() });
-
-    // Assert
-    expect(seams.runner.calls).toHaveLength(0);
-  });
-
-  it("should reuse the cached route when offline", async () => {
-    // Arrange
-    const cache = { anonymous: { route: { at: FIXED_NOW - 1000, route: "bedrock", credentialSource: "agent-hub", reasons: ["agent-hub holds a key"] } } };
-    const seams = createFakeSeams({ env: { HOME, HAI_OFFLINE: "1", HAI_VERBOSE: "1" }, files: { [CACHE_PATH]: JSON.stringify(cache) } });
-
-    // Act
-    const result = await resolveAuth({ seams, agentHub: hub() });
-
-    // Assert
-    expect(result).toMatchObject({ route: "bedrock", credentialSource: "agent-hub" });
-    expect(result.reasons).toContain("from the 12h route cache");
-    expect(seams.lines.join("")).toContain("using the cached bedrock route");
-  });
-
-  it.each([
-    ["a Bedrock key in the environment", { AWS_BEARER_TOKEN_BEDROCK: KEY }, "bedrock", "env"],
-    ["an OAuth token in the environment", { CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-x" }, "own-licence", "env"]
-  ])("should prefer %s over the cached route when offline", async (_name, env, route, credentialSource) => {
-    // Arrange
-    const cache = { anonymous: { route: { at: FIXED_NOW - 1000, route: "gateway", credentialSource: "gateway-apim", reasons: [] } } };
-    const seams = createFakeSeams({ env: { HOME, HAI_OFFLINE: "1", ...env }, files: { [CACHE_PATH]: JSON.stringify(cache) } });
-
-    // Act
-    const result = await resolveAuth({ seams, agentHub: hub() });
-
-    // Assert
-    expect(result).toMatchObject({ route, credentialSource });
-  });
-
-  it("should prefer HAI_ROUTE over the cached route when offline", async () => {
-    // Arrange
-    const cache = { anonymous: { route: { at: FIXED_NOW - 1000, route: "bedrock", credentialSource: "agent-hub", reasons: [] } } };
-    const seams = createFakeSeams({ env: { HOME, HAI_OFFLINE: "1", HAI_ROUTE: "gateway" }, files: { [CACHE_PATH]: JSON.stringify(cache) } });
-
-    // Act
-    const result = await resolveAuth({ seams, agentHub: hub() });
-
-    // Assert
-    expect(result.route).toBe("gateway");
-  });
-
-  it("should resolve afresh when offline with nothing cached", async () => {
+  it("should ask az nothing at all when offline", async () => {
     // Arrange
     const seams = createFakeSeams({ env: { HOME, HAI_OFFLINE: "1" } });
 
@@ -124,6 +74,21 @@ describe("resolveAuth", () => {
 
     // Assert — unknown membership still offers the prompt rather than failing outright.
     expect(result).toMatchObject({ route: "bedrock", credentialSource: "prompt" });
+    expect(seams.runner.calls).toHaveLength(0);
+    expect(seams.fs.store.has(CACHE_PATH)).toBe(false);
+  });
+
+  it("should ask az nothing when the environment already settles the route", async () => {
+    // Arrange
+    const seams = createFakeSeams({ env: { HOME, AWS_BEARER_TOKEN_BEDROCK: KEY } });
+
+    // Act
+    const result = await resolveAuth({ seams, agentHub: hub() });
+
+    // Assert
+    expect(result).toMatchObject({ route: "bedrock", credentialSource: "env" });
+    expect(seams.runner.calls).toHaveLength(0);
+    expect(seams.fs.store.has(CACHE_PATH)).toBe(false);
   });
 
   it("should fail with all three remedies when no signal fires at all", async () => {
@@ -155,11 +120,11 @@ describe("resolveAuth", () => {
     const seams = createFakeSeams({ env: { HAI_VERBOSE: "1" }, respond: respondAz });
 
     // Act
-    const result = await resolveAuth({ seams, agentHub: hub(async () => KEY) });
+    const result = await resolveAuth({ seams, agentHub: hub() });
 
     // Assert — no HOME means no state dir, which must not stop a launch.
     expect(result.route).toBe("bedrock");
-    expect(seams.lines.join("")).toContain("could not write the route cache");
+    expect(seams.lines.join("")).toContain("could not write the group-membership cache");
   });
 
   it("should ask az who we are before it asks agent-hub anything", async () => {

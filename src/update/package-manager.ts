@@ -19,22 +19,19 @@ export function detectPackageManager(input: { execPath: string; packagePath: str
   if (packagePath.includes(NPX_MARKER) || execPath.includes(NPX_MARKER) || input.npmCommand === "exec") {
     // A one-off `npx @hmcts-cft/hai-cli` already fetched the latest; there is nothing to
     // update and nothing worth saying about it.
-    return { manager: "npx", command: null, manualCommand: null, reason: "running under npx" };
+    return { command: null, manualCommand: null, reason: "running under npx" };
   }
 
   const command = ["npm", "install", "-g", PACKAGE_NAME, REGISTRY_ARG];
   const reason = "assuming a global npm install";
   if (input.prefixWritable === false) {
     // Never sudo: tell the engineer the command and carry on with the version we have.
-    return { manager: "npm", command: null, manualCommand: command, reason: `${reason}, but its install prefix is not writable` };
+    return { command: null, manualCommand: command, reason: `${reason}, but its install prefix is not writable` };
   }
-  return { manager: "npm", command, manualCommand: null, reason };
+  return { command, manualCommand: null, reason };
 }
 
-export type PackageManagerName = "npm" | "npx";
-
 export interface PackageManagerPlan {
-  manager: PackageManagerName;
   /** Null when nothing should be run automatically. */
   command: string[] | null;
   /** Set when the update has to be run by hand; print it rather than attempting it. */

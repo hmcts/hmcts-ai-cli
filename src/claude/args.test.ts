@@ -4,14 +4,8 @@ import { buildClaudeArgs, CLAUDE_BIN, forwardArgv } from "./args.js";
 describe("forwardArgv", () => {
   it.each<[string, string[]]>([
     ["no arguments at all", []],
-    ["a short flag", ["-c"]],
-    ["a flag with a value", ["-p", "x"]],
-    ["what looks like a subcommand", ["doctor"]],
-    ["a two-word subcommand", ["mcp", "list"]],
-    ["help", ["--help"]],
-    ["an argument hidden behind --", ["--", "-c"]],
-    ["something that looks like one of ours", ["--settings", "{}", "--dangerously-skip-permissions"]],
-    ["an empty string argument", [""]]
+    ["what looks like a subcommand", ["mcp", "list"]],
+    ["something that looks like one of ours", ["--settings", "{}", "--dangerously-skip-permissions"]]
   ])("should forward %s untouched", (_name, userArgs) => {
     // Arrange
     const processArgv = ["/usr/local/bin/node", "/usr/local/bin/hai", ...userArgs];

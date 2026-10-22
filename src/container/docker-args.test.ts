@@ -38,12 +38,11 @@ function context(overrides: Partial<ContainerContext> = {}): ContainerContext {
     secretsDir: SECRETS_DIR,
     runtimeDir: `${HOME}/.local/state/hai/runtime`,
     dns: ["10.11.75.4", "168.63.129.16", "8.8.8.8"],
-    ports: expandPorts(resolvePorts("minimal")),
+    ports: expandPorts(resolvePorts("3000,3001")),
     publicPorts: false,
     mounts: resolveMounts({ spec, shareCaches: false, ownHistory: false, sessionName: SESSION, containerHome: "/home/hmcts" }),
     tty: true,
     env: { HAI_ENV_READY: "1", HAI_IN_CONTAINER: "1", HAI_SECRETS_DIR: SECRETS_DIR },
-    secretEnv: {},
     ...overrides
   };
 }
@@ -79,7 +78,6 @@ describe("buildDockerArgs", () => {
 
   it.each<[string, string]>([
     ["cft", "cft"],
-    ["minimal", "minimal"],
     ["none", "none"]
   ])("should publish the %s port profile", (_name, profile) => {
     // Act
@@ -166,13 +164,13 @@ describe("the container config", () => {
   it.each(ROUTES)("should hold no credential value on the %s route", (route) => {
     // Arrange
     const { open, secret } = splitEnv(routeEnv(route));
-    const ctx = context({ env: { ...open, HAI_IN_CONTAINER: "1" }, secretEnv: secret });
+    const ctx = context({ env: { ...open, HAI_IN_CONTAINER: "1" } });
 
     // Act
     const printed = [...buildDockerArgs(ctx), ...buildSessionExecArgs(ctx, ["claude"])].join(" ");
 
     // Assert — the values, not just the names: a name in --env with the value elsewhere is fine.
-    for (const value of Object.values(ctx.secretEnv)) {
+    for (const value of Object.values(secret)) {
       expect(printed).not.toContain(value);
     }
     for (const value of [BEDROCK_KEY, APIM_KEY, OAUTH_TOKEN]) {
@@ -182,24 +180,15 @@ describe("the container config", () => {
 
   it.each(ROUTES)("should still carry the %s route's open settings, so the route works", (route) => {
     // Arrange
-    const { open, secret } = splitEnv(routeEnv(route));
+    const { open } = splitEnv(routeEnv(route));
 
     // Act
-    const argv = buildDockerArgs(context({ env: open, secretEnv: secret })).join(" ");
+    const argv = buildDockerArgs(context({ env: open })).join(" ");
 
     // Assert
     for (const [name, value] of Object.entries(open)) {
       expect(argv).toContain(`--env ${name}=${value}`);
     }
-  });
-
-  it("should leave a secret that is only in the ctx out of the argv entirely", () => {
-    // Act
-    const argv = buildDockerArgs(context({ secretEnv: { AWS_BEARER_TOKEN_BEDROCK: BEDROCK_KEY } })).join(" ");
-
-    // Assert
-    expect(argv).not.toContain(BEDROCK_KEY);
-    expect(argv).not.toContain("AWS_BEARER_TOKEN_BEDROCK");
   });
 });
 

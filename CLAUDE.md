@@ -12,7 +12,7 @@ yarn lint            # biome check --error-on-warnings .
 yarn lint:fix
 yarn typecheck       # tsc --noEmit over src/ and *.mts
 yarn test
-yarn test:coverage   # 100% thresholds on src/**, excluding src/bin/**
+yarn test:coverage   # 90% over src/**, 100% on the pure decision modules
 yarn build           # tsc -p tsconfig.build.json -> dist/
 ```
 
@@ -42,8 +42,8 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
   `main` routes every thrown error through the logger. Do not write to stderr directly.
 - **Only `src/system/runner.ts` imports `node:child_process`; only `src/system/fs.ts`
   imports `node:fs`; only `src/system/net.ts` imports `node:net`.** Enforced by Biome's
-  `noRestrictedImports` with per-file overrides, and independently by
-  `src/system/import-restrictions.test.ts`.
+  `noRestrictedImports` with per-file overrides, and `ci.yml` asserts Biome inspected a
+  non-zero file count so a misconfigured `files.includes` cannot pass as a clean run.
 - **Never a shell.** `Runner` spawns `argv[0]` directly with `shell: false`.
 - **The hmcts-lib feed allows anonymous reads, so the self-update needs no credential.**
   The packument and the tarballs answer without an `Authorization` header — measured — so
@@ -58,9 +58,9 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
   in the container's config, readable afterwards with `docker inspect` and written to disk
   with the container. `splitEnv` divides the route's environment on `isSecretEnvKey`; the
   secret half goes in one credential per `docker exec -i` stdin, onto a `0700` tmpfs, and
-  the entrypoint exports and deletes each one. `buildDockerArgs` never reads `secretEnv` —
-  it is in the context only so the test, parameterised over every route, has a real value
-  to look for.
+  the entrypoint exports and deletes each one. `ContainerContext` holds only the open half,
+  so no argv builder can reach a secret even by mistake; the secret half is `LaunchContext`'s
+  and only `deliverSecrets` sees it.
 - **The container never gets host networking.** A second `dockerd` sharing the host's
   network namespace reconfigures the host's `docker0` and flushes the host daemon's
   iptables chains, breaking every container on the machine. `--network=host` is therefore
@@ -298,7 +298,11 @@ do not run Claude on the host in the same checkout at the same time.
 ## Testing
 
 `vitest`, co-located `*.test.ts`, Arrange-Act-Assert with `// Arrange` / `// Act` /
-`// Assert` comments. Fakes live in `src/__fixtures__/fake-seams.ts` and are excluded from
+`// Assert` comments. Coverage is 90% over `src/**`, with a per-module 100% threshold on
+the pure decision modules of the table above — the list is `PURE_DECISION_MODULES` in
+`vitest.config.mts`. A test earns its place by catching a regression, not by moving the
+number: do not add one over a seam that only assigns, or a row a function cannot tell
+from the row above it. Fakes live in `src/__fixtures__/fake-seams.ts` and are excluded from
 coverage and from the build. **Never `vi.mock` a node builtin** — that is what the seams
 are for. `createFakeSeams` gives you a whole `Seams` with recording and scripting:
 

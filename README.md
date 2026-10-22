@@ -41,7 +41,7 @@ Note: If you are using a HMCTS license via the AI Gateway you will need to conne
 | `HAI_ROUTE` | `gateway` \| `own-licence`; chooses the route instead of letting `hai` work it out |
 | `HAI_DRY_RUN=1` | print the `claude` invocation that would run, then exit 0 |
 | `HAI_VERBOSE=1` | explain what was detected and why |
-| `HAI_OFFLINE=1` | environment and cache only; no lookups and no registry |
+| `HAI_OFFLINE=1` | environment only; no lookups and no registry |
 | `HAI_NO_UPDATE=1` | skip the self-update check |
 | `HAI_FORCE_CONTAINER=1` | treat this as a container even if nothing was detected |
 | `HAI_GATEWAY_APIM_SECRET` | override the Key Vault secret name for the APIM key |

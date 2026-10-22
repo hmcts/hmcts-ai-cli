@@ -48,7 +48,7 @@ export async function runContainerMode(input: {
   pluginDirs: string[];
 }): Promise<void> {
   const { seams } = input;
-  const ctx = await gatherContext(input);
+  const { secretEnv, ...ctx } = await gatherContext(input);
   const claudeArgv = await containerClaudeArgs(input, ctx);
   const dockerArgv = buildDockerArgs(ctx);
   const sessionArgv = buildSessionExecArgs(ctx, claudeArgv);
@@ -56,7 +56,7 @@ export async function runContainerMode(input: {
   if (isEnabled(seams.env, "HAI_DRY_RUN")) {
     seams.stdout(`${dockerArgv.join(" ")}\n`);
     seams.stdout(`${sessionArgv.join(" ")}\n`);
-    seams.stdout(`  secrets delivered on a docker exec stdin: ${Object.keys(ctx.secretEnv).sort().join(", ") || "none"}\n`);
+    seams.stdout(`  secrets delivered on a docker exec stdin: ${Object.keys(secretEnv).sort().join(", ") || "none"}\n`);
     for (const line of describeEnv(input.added)) {
       seams.stdout(`  ${line}\n`);
     }
@@ -79,7 +79,7 @@ export async function runContainerMode(input: {
     await pullImage(seams, { image: ctx.image, policy: seams.env.HAI_PULL });
     await ensureNetwork(seams, ctx.network);
     started = await ensureContainer(seams, ctx, dockerArgv);
-    await deliverSecrets(seams, ctx);
+    await deliverSecrets(seams, ctx, secretEnv);
     await deliverDockerConfig(seams, ctx);
     // Only the session that started the container watches it: a reattaching one would be a
     // second watcher racing the first for the same host ports.
@@ -101,7 +101,10 @@ export async function runContainerMode(input: {
   seams.exit(code);
 }
 
-async function gatherContext(input: { seams: Seams; added: Record<string, string> }): Promise<ContainerContext & { home: string; secretsDir: string }> {
+/** The context plus what only the launch needs: the credentials, which no argv may carry, and HOME. */
+type LaunchContext = ContainerContext & { home: string; secretEnv: Record<string, string> };
+
+async function gatherContext(input: { seams: Seams; added: Record<string, string> }): Promise<LaunchContext> {
   const { seams } = input;
   const home = seams.env.HOME;
   if (home === undefined || home === "") {
@@ -276,14 +279,14 @@ async function waitForNestedDocker(seams: Seams, ctx: ContainerContext): Promise
   seams.logger.say("the nested Docker engine did not come up; docker, cftlib and Testcontainers will not work in this session");
 }
 
-async function deliverSecrets(seams: Seams, ctx: ContainerContext): Promise<void> {
-  for (const [name, value] of Object.entries(ctx.secretEnv)) {
+async function deliverSecrets(seams: Seams, ctx: ContainerContext, secretEnv: Record<string, string>): Promise<void> {
+  for (const [name, value] of Object.entries(secretEnv)) {
     const result = await seams.runner.run(buildSecretExecArgs(ctx, name), { stdin: value });
     if (result.code !== 0) {
       throw new Error(`could not hand ${name} to the container: ${result.stderr.trim()}`);
     }
   }
-  seams.logger.verbose(`delivered ${Object.keys(ctx.secretEnv).length} credential(s) on a docker exec stdin`);
+  seams.logger.verbose(`delivered ${Object.keys(secretEnv).length} credential(s) on a docker exec stdin`);
 }
 
 /**

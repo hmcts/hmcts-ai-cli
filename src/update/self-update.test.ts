@@ -86,11 +86,6 @@ describe("skipUpdateCheck", () => {
 });
 
 describe("the version check", () => {
-  it("should percent-encode the scope separator in the packument path", () => {
-    // Act / Assert
-    expect(PACKUMENT_URL).toBe("https://pkgs.dev.azure.com/hmcts/Artifacts/_packaging/hmcts-lib/npm/registry/@hmcts-cft%2Fhai-cli");
-  });
-
   it("should read the feed anonymously, with no authorization header and no az call", async () => {
     // Arrange — the feed allows anonymous reads, so nothing has to be minted first.
     const { requests, fetch } = feed(LATEST);

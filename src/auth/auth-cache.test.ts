@@ -7,19 +7,14 @@ const HOME = "/home/dev";
 const CACHE_PATH = `${HOME}/.local/state/hai/${CACHE_FILE}`;
 const KEY = "tenant:dev@hmcts.net";
 
-const FRESH = {
-  [KEY]: {
-    route: { at: FIXED_NOW - 1000, route: "bedrock", credentialSource: "agent-hub", reasons: ["agent-hub holds a Bedrock API key for you"] },
-    group: { at: FIXED_NOW - 1000, isMember: true }
-  }
-};
+const FRESH = { [KEY]: { group: { at: FIXED_NOW - 1000, isMember: true } } };
 
 function seamsWith(contents?: string) {
   return createFakeSeams({ env: { HOME }, files: contents === undefined ? {} : { [CACHE_PATH]: contents } });
 }
 
 describe("readAuthCache", () => {
-  it("should return a fresh route and group entry", async () => {
+  it("should return a fresh group entry", async () => {
     // Arrange
     const seams = seamsWith(JSON.stringify(FRESH));
 
@@ -27,7 +22,6 @@ describe("readAuthCache", () => {
     const entry = await readAuthCache(seams, KEY);
 
     // Assert
-    expect(entry?.route).toMatchObject({ route: "bedrock", credentialSource: "agent-hub" });
     expect(entry?.group).toMatchObject({ isMember: true });
   });
 
@@ -50,59 +44,17 @@ describe("readAuthCache", () => {
     expect(await readAuthCache(seamsWith(contents), key)).toBeNull();
   });
 
-  it("should drop a route entry older than the 12h ttl", async () => {
-    // Arrange
-    const stale = { [KEY]: { route: { ...FRESH[KEY].route, at: FIXED_NOW - CACHE_TTL_MS } } };
-
+  it.each([
+    ["is older than the 12h ttl", { at: FIXED_NOW - CACHE_TTL_MS, isMember: true }],
+    ["carries no timestamp", { isMember: true }],
+    ["carries an unparseable timestamp", { at: "yesterday", isMember: true }],
+    ["holds a membership that is not a boolean", { at: FIXED_NOW, isMember: "yes" }]
+  ])("should drop a group entry that %s", async (_name, group) => {
     // Act
-    const entry = await readAuthCache(seamsWith(JSON.stringify(stale)), KEY);
-
-    // Assert
-    expect(entry?.route).toBeUndefined();
-  });
-
-  it("should drop a stale group entry", async () => {
-    // Arrange
-    const stale = { [KEY]: { group: { at: FIXED_NOW - CACHE_TTL_MS - 1, isMember: true } } };
-
-    // Act
-    const entry = await readAuthCache(seamsWith(JSON.stringify(stale)), KEY);
+    const entry = await readAuthCache(seamsWith(JSON.stringify({ [KEY]: { group } })), KEY);
 
     // Assert
     expect(entry?.group).toBeUndefined();
-  });
-
-  it.each([
-    ["an unknown route name", { route: { at: FIXED_NOW, route: "magic", credentialSource: "env", reasons: [] } }],
-    ["a non-string route", { route: { at: FIXED_NOW, route: 7, credentialSource: "env", reasons: [] } }],
-    ["no credential source", { route: { at: FIXED_NOW, route: "bedrock", reasons: [] } }],
-    ["no timestamp", { route: { route: "bedrock", credentialSource: "env", reasons: [] } }],
-    ["an unparseable timestamp", { route: { at: "yesterday", route: "bedrock", credentialSource: "env", reasons: [] } }]
-  ])("should drop a route entry with %s", async (_name, entry) => {
-    // Act
-    const result = await readAuthCache(seamsWith(JSON.stringify({ [KEY]: entry })), KEY);
-
-    // Assert
-    expect(result?.route).toBeUndefined();
-  });
-
-  it.each([
-    ["reasons that are not an array", { at: FIXED_NOW, route: "bedrock", credentialSource: "env", reasons: "because" }, []],
-    ["reasons holding non-strings", { at: FIXED_NOW, route: "bedrock", credentialSource: "env", reasons: ["a", 7] }, ["a"]]
-  ])("should repair %s", async (_name, route, expected) => {
-    // Act
-    const result = await readAuthCache(seamsWith(JSON.stringify({ [KEY]: { route } })), KEY);
-
-    // Assert
-    expect(result?.route?.reasons).toEqual(expected);
-  });
-
-  it("should drop a group entry whose membership is not a boolean", async () => {
-    // Act
-    const result = await readAuthCache(seamsWith(JSON.stringify({ [KEY]: { group: { at: FIXED_NOW, isMember: "yes" } } })), KEY);
-
-    // Assert
-    expect(result?.group).toBeUndefined();
   });
 });
 
@@ -147,7 +99,7 @@ describe("writeAuthCache", () => {
     const seams = seamsWith();
 
     // Act
-    await writeAuthCache(seams, KEY, { route: { at: FIXED_NOW, route: "bedrock", credentialSource: "agent-hub", reasons: [] } });
+    await writeAuthCache(seams, KEY, { group: { at: FIXED_NOW, isMember: true } });
 
     // Assert
     const written = seams.fs.store.get(CACHE_PATH) ?? "";

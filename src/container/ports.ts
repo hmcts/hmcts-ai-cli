@@ -5,10 +5,7 @@ import type { Net } from "../system/net.js";
 /** The ports a CFT stack actually listens on: cftlib, XUI, CCD, IDAM, Postgres, Redis, Elasticsearch. */
 export const CFT_PORTS = ["3000", "3001", "3100", "3206", "3209", "3453", "3460", "4096", "4451-4456", "5062", "5555", "6432", "8087", "8489", "9200"];
 
-/** A frontend and its API, for a service-team repo that is not running the whole stack. */
-export const MINIMAL_PORTS = ["3000", "3001"];
-
-export const PORT_PROFILES: Record<string, string[]> = { cft: CFT_PORTS, minimal: MINIMAL_PORTS, none: [] };
+export const PORT_PROFILES: Record<string, string[]> = { cft: CFT_PORTS, none: [] };
 
 const PORT_SPEC = /^\d{1,5}(-\d{1,5})?$/;
 const MAX_PORT = 65535;
@@ -46,7 +43,7 @@ export function resolvePorts(spec: string | undefined): string[] {
     .filter((entry) => entry !== "");
   const bad = entries.filter((entry) => !PORT_SPEC.test(entry) || !inRange(entry));
   if (entries.length === 0 || bad.length > 0) {
-    throw new Error(`HAI_PORTS=${spec} is not cft, minimal, none or a comma-separated list of ports and port ranges (${bad.join(", ")})`);
+    throw new Error(`HAI_PORTS=${spec} is not cft, none or a comma-separated list of ports and port ranges (${bad.join(", ")})`);
   }
   return entries;
 }

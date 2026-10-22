@@ -667,8 +667,8 @@ describe("runContainerMode", () => {
 
     it("should bind every mapping to loopback, and to 0.0.0.0 only with HAI_PORTS_PUBLIC=1", async () => {
       // Arrange
-      const loopback = seamsIn({ HAI_PORTS: "minimal" });
-      const open = seamsIn({ HAI_PORTS: "minimal", HAI_PORTS_PUBLIC: "1" });
+      const loopback = seamsIn({ HAI_PORTS: "3000,3001" });
+      const open = seamsIn({ HAI_PORTS: "3000,3001", HAI_PORTS_PUBLIC: "1" });
 
       // Act
       await runContainerMode(input(loopback)).catch(() => undefined);

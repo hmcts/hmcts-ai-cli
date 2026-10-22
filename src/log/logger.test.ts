@@ -50,16 +50,4 @@ describe("createLogger", () => {
     // Assert
     expect(lines).toEqual(["hai: detail\n"]);
   });
-
-  it("should say a once-keyed message only the first time", () => {
-    // Arrange
-    const { lines, logger } = capture();
-
-    // Act
-    logger.once("rate-limit", "mind the rate limit");
-    logger.once("rate-limit", "mind the rate limit");
-
-    // Assert
-    expect(lines).toHaveLength(1);
-  });
 });

@@ -7,7 +7,6 @@ import {
   EPHEMERAL_LOW_FALLBACK,
   expandPorts,
   LOCAL_PORT_RANGE_PATH,
-  MINIMAL_PORTS,
   type PortProbe,
   parseEphemeralLow,
   portClashMessage,
@@ -29,7 +28,6 @@ describe("resolvePorts", () => {
     ["unset, the port watcher being what publishes by default now", undefined, []],
     ["an empty string", "", []],
     ["cft", "cft", CFT_PORTS],
-    ["minimal", "minimal", MINIMAL_PORTS],
     ["none", "none", []],
     ["one port", "8080", ["8080"]],
     ["a list", "3000,3001", ["3000", "3001"]],
@@ -256,7 +254,7 @@ describe("choosePorts", () => {
     const seams = createFakeSeams();
 
     // Act
-    const published = await choosePorts(seams, "minimal");
+    const published = await choosePorts(seams, "3000,3001");
 
     // Assert
     expect(published).toEqual([3000, 3001]);
@@ -322,7 +320,7 @@ describe("choosePorts", () => {
     const seams = createFakeSeams({ env: { HAI_VERBOSE: "1" }, portsInUse: [3001] });
 
     // Act
-    await choosePorts(seams, "minimal");
+    await choosePorts(seams, "3000,3001");
 
     // Assert
     expect(seams.lines.join("")).toContain("publishing 1 of 2 port(s)");

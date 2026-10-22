@@ -8,10 +8,7 @@ const NOTHING: ContainerProbe = {
   ownMarker: false,
   hasDockerEnv: false,
   isSandbox: false,
-  hasRemoteContainersEnv: false,
-  hasPodmanEnv: false,
-  hasContainerEnvVar: false,
-  cgroupMentionsContainer: false
+  hasRemoteContainersEnv: false
 };
 
 function probe(overrides: Partial<ContainerProbe>): ContainerProbe {
@@ -19,34 +16,23 @@ function probe(overrides: Partial<ContainerProbe>): ContainerProbe {
 }
 
 describe("isInContainer", () => {
-  it.each<[keyof ContainerProbe, boolean]>([
-    ["forced", true],
-    ["ownMarker", true],
-    ["hasDockerEnv", true],
-    ["isSandbox", true],
-    ["hasRemoteContainersEnv", true],
-    ["hasPodmanEnv", true],
-    ["hasContainerEnvVar", true],
-    ["cgroupMentionsContainer", false]
-  ])("should treat %s on its own as containerised: %s", (signal, expected) => {
+  it.each<[keyof ContainerProbe]>([
+    ["forced"],
+    ["ownMarker"],
+    ["hasDockerEnv"],
+    ["isSandbox"],
+    ["hasRemoteContainersEnv"]
+  ])("should treat %s on its own as containerised", (signal) => {
     // Act
     const result = isInContainer(probe({ [signal]: true }));
 
     // Assert
-    expect(result).toBe(expected);
+    expect(result).toBe(true);
   });
 
   it("should report nothing at all as not containerised", () => {
     // Act / Assert
     expect(isInContainer(NOTHING)).toBe(false);
-  });
-
-  it("should still detect a container when cgroup v2 reports a bare 0::/ alongside a real signal", () => {
-    // Arrange — the false negative: /proc/1/cgroup gives away nothing under cgroup v2.
-    const cgroupV2 = probe({ hasDockerEnv: true, cgroupMentionsContainer: false });
-
-    // Act / Assert
-    expect(isInContainer(cgroupV2)).toBe(true);
   });
 
   it("should let HAI_FORCE_CONTAINER override a probe that found nothing", () => {
@@ -82,14 +68,6 @@ describe("containerReasons", () => {
     expect(reasons[1]).toContain("REMOTE_CONTAINERS");
   });
 
-  it("should mark the cgroup signal as corroborating only", () => {
-    // Act
-    const reasons = containerReasons(probe({ hasDockerEnv: true, cgroupMentionsContainer: true }));
-
-    // Assert
-    expect(reasons[1]).toContain("corroborating only");
-  });
-
   it("should list nothing when no signal fired", () => {
     // Act / Assert
     expect(containerReasons(NOTHING)).toEqual([]);
@@ -103,11 +81,8 @@ describe("containerReasons", () => {
 
 describe("probeContainer", () => {
   it("should find nothing on a bare host", async () => {
-    // Arrange
-    const fs = createFakeFs({ "/proc/1/cgroup": "0::/\n" });
-
     // Act
-    const result = await probeContainer({ env: {}, fs });
+    const result = await probeContainer({ env: {}, fs: createFakeFs() });
 
     // Assert
     expect(result).toEqual(NOTHING);
@@ -115,18 +90,13 @@ describe("probeContainer", () => {
 
   it("should read every file probe", async () => {
     // Arrange
-    const fs = createFakeFs({
-      "/.dockerenv": "",
-      "/etc/cft-sandbox-env.sh": "export IS_SANDBOX=1",
-      "/run/.containerenv": "",
-      "/proc/1/cgroup": "0::/docker/abc123"
-    });
+    const fs = createFakeFs({ "/.dockerenv": "", "/etc/cft-sandbox-env.sh": "export IS_SANDBOX=1" });
 
     // Act
     const result = await probeContainer({ env: {}, fs });
 
     // Assert
-    expect(result).toMatchObject({ hasDockerEnv: true, isSandbox: true, hasPodmanEnv: true, cgroupMentionsContainer: true });
+    expect(result).toMatchObject({ hasDockerEnv: true, isSandbox: true });
   });
 
   it.each([
@@ -134,7 +104,6 @@ describe("probeContainer", () => {
     ["REMOTE_CONTAINERS"],
     ["REMOTE_CONTAINERS_IPC"],
     ["CODESPACES"],
-    ["container"],
     ["HAI_IN_CONTAINER"],
     ["HAI_FORCE_CONTAINER"]
   ])("should read %s out of the environment", async (name) => {
@@ -159,13 +128,5 @@ describe("probeContainer", () => {
 
     // Assert
     expect(result.hasRemoteContainersEnv).toBe(false);
-  });
-
-  it.each([["containerd"], ["kubepods"]])("should notice %s in the cgroup", async (marker) => {
-    // Act
-    const result = await probeContainer({ env: {}, fs: createFakeFs({ "/proc/1/cgroup": `0::/${marker}/x` }) });
-
-    // Assert
-    expect(result.cgroupMentionsContainer).toBe(true);
   });
 });
