@@ -95,6 +95,14 @@ jobs:
           # This cannot loop: pushes made with GITHUB_TOKEN do not trigger workflows.
           git commit -m "chore: release v${VERSION} [skip ci]"
           git tag "v${VERSION}"
+          # The tag is pushed here and never moved, because it is the only record of which tree
+          # was actually published. The loop below may rebase this commit onto a merge that
+          # landed during the gates, and moving the tag with `git tag -f` would point the
+          # release at a tree carrying a change this run never gated and never packed. So the
+          # tag can end up off the branch's history when that happens — pushing it keeps the
+          # object reachable — and that is the honest outcome: `git checkout v<version>` gives
+          # you what the feed has.
+          git push origin "v${VERSION}"
           # A merge during the gates leaves this push non-fast-forward. Rebase onto it and try
           # again: the commit touches package.json alone, and the concurrency group means no
           # other release can be moving that file underneath us.
@@ -103,11 +111,9 @@ jobs:
                   break
               fi
               if [ "$attempt" = 3 ]; then
-                  echo "::error::published v${VERSION} but could not record it on ${GITHUB_REF_NAME}. Set version to ${VERSION} in package.json by hand, or the next release will retry a version the feed already has." >&2
+                  echo "::error::published and tagged v${VERSION} but could not record the bump on ${GITHUB_REF_NAME}. Set version to ${VERSION} in package.json by hand, or the next release will retry a version the feed already has." >&2
                   exit 1
               fi
               git fetch origin "${GITHUB_REF_NAME}"
               git rebase "origin/${GITHUB_REF_NAME}"
-              git tag -f "v${VERSION}"
           done
-          git push origin "v${VERSION}"
