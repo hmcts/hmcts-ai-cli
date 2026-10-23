@@ -94,7 +94,13 @@ jobs:
           git add package.json
           # This cannot loop: pushes made with GITHUB_TOKEN do not trigger workflows.
           git commit -m "chore: release v${VERSION} [skip ci]"
-          git tag "v${VERSION}"
+          # Said from more than one place below, and it is the only record of the way out.
+          UNRECORDED="published v${VERSION} but could not record the bump on ${GITHUB_REF_NAME}. Set version to ${VERSION} in package.json by hand, or the next release will retry a version the feed already has."
+          # The commit that was gated and packed, pinned before the loop below can rebase it onto
+          # a merge that landed meanwhile. The tag is made from this rather than from whatever
+          # ends up on the branch, so `git checkout v<version>` gives you what the feed has — the
+          # object survives the rebase because `actions/checkout` sets `gc.auto 0`.
+          published="$(git rev-parse HEAD)"
           # A merge during the gates leaves this push non-fast-forward. Rebase onto it and try
           # again: the commit touches package.json alone, and the concurrency group means no
           # other release can be moving that file underneath us.
@@ -103,11 +109,22 @@ jobs:
                   break
               fi
               if [ "$attempt" = 3 ]; then
-                  echo "::error::published v${VERSION} but could not record it on ${GITHUB_REF_NAME}. Set version to ${VERSION} in package.json by hand, or the next release will retry a version the feed already has." >&2
+                  echo "::error::${UNRECORDED}" >&2
                   exit 1
               fi
-              git fetch origin "${GITHUB_REF_NAME}"
-              git rebase "origin/${GITHUB_REF_NAME}"
-              git tag -f "v${VERSION}"
+              # Both of these can fail under `-e` — a conflicting rebase most plausibly, since a
+              # merge editing the top of package.json lands within the default merge context of
+              # the version line. Without catching them the step dies before the message above,
+              # which is the only place the way out is written down.
+              git fetch origin "${GITHUB_REF_NAME}" || true
+              git rebase "origin/${GITHUB_REF_NAME}" || {
+                  echo "::error::${UNRECORDED}" >&2
+                  exit 1
+              }
           done
-          git push origin "v${VERSION}"
+          # Last, so that a transient failure tagging cannot stop the bump being recorded. Those
+          # two failures are not equals: a tag the next run can add is a gap, a published version
+          # master does not know about is permanent, because every later run bumps to that same
+          # number and npm answers 403 for good. That is what happened to 0.0.14.
+          git push origin "${published}:refs/tags/v${VERSION}" ||
+              echo "::warning::published v${VERSION} and recorded the bump, but could not tag ${published}. Tag it by hand; nothing reads the tags, so no release is blocked."
