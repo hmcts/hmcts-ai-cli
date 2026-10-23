@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildClaudeEnv } from "../auth/claude-env.js";
+import { buildClaudeEnv, conflictingEnv } from "../auth/claude-env.js";
 import { ROUTES } from "../auth/route.js";
 import { splitEnv } from "./container-env.js";
 import {
@@ -41,6 +41,7 @@ function context(overrides: Partial<ContainerContext> = {}): ContainerContext {
     mounts: resolveMounts({ spec }),
     tty: true,
     env: { HAI_ENV_READY: "1", HAI_IN_CONTAINER: "1", HAI_SECRETS_DIR: SECRETS_DIR },
+    sessionEnv: {},
     ...overrides
   };
 }
@@ -134,7 +135,7 @@ describe("the container config", () => {
   it.each(ROUTES)("should hold no credential value on the %s route", (route) => {
     // Arrange
     const { open, secret } = splitEnv(routeEnv(route));
-    const ctx = context({ env: { ...open, HAI_IN_CONTAINER: "1" } });
+    const ctx = context({ sessionEnv: { ...open, HAI_UNSET_ENV: conflictingEnv(route).join(",") } });
 
     // Act
     const printed = [...buildDockerArgs(ctx), ...buildSessionExecArgs(ctx, ["claude"])].join(" ");
@@ -148,16 +149,19 @@ describe("the container config", () => {
     }
   });
 
-  it.each(ROUTES)("should still carry the %s route's open settings, so the route works", (route) => {
-    // Arrange
+  it.each(ROUTES)("should keep the %s route's environment off the create, which a reattach would inherit", (route) => {
+    // Arrange — `docker run --env` is create-time only and `lockDecision` reattaches a
+    // second terminal to the first's container, so a payer fact here is the previous
+    // session's for every session after it.
     const { open } = splitEnv(routeEnv(route));
+    const ctx = context({ sessionEnv: { ...open, HAI_UNSET_ENV: conflictingEnv(route).join(",") } });
 
     // Act
-    const argv = buildDockerArgs(context({ env: open })).join(" ");
+    const argv = buildDockerArgs(ctx).join(" ");
 
     // Assert
-    for (const [name, value] of Object.entries(open)) {
-      expect(argv).toContain(`--env ${name}=${value}`);
+    for (const name of [...Object.keys(open), "HAI_UNSET_ENV"]) {
+      expect(argv).not.toContain(`--env ${name}=`);
     }
   });
 });
@@ -194,6 +198,31 @@ describe("buildSessionExecArgs", () => {
     // Assert
     expect(argv).not.toContain("-t");
     expect(argv).toContain("-i");
+  });
+
+  it.each(ROUTES)("should carry the %s route's own environment and unset names, so a reattach brings its own payer", (route) => {
+    // Arrange — the hole this closes: terminal 2 running HAI_ROUTE=bedrock reattaches to
+    // terminal 1's byol container, and only the exec is per session.
+    const { open } = splitEnv(routeEnv(route));
+    const unset = conflictingEnv(route).join(",");
+
+    // Act
+    const argv = buildSessionExecArgs(context({ sessionEnv: { ...open, HAI_UNSET_ENV: unset } }), ["claude"]).join(" ");
+
+    // Assert
+    for (const [name, value] of Object.entries(open)) {
+      expect(argv).toContain(`--env ${name}=${value}`);
+    }
+    expect(argv).toContain(`--env HAI_UNSET_ENV=${unset}`);
+  });
+
+  it("should put every --env before the container name, where docker exec takes its options", () => {
+    // Act
+    const argv = buildSessionExecArgs(context({ sessionEnv: { A: "1", Z: "2" } }), ["claude"]);
+
+    // Assert
+    expect(argv.lastIndexOf("--env")).toBeLessThan(argv.indexOf(SESSION));
+    expect(argv.filter((arg) => /^[AZ]=/.test(arg))).toEqual(["A=1", "Z=2"]);
   });
 });
 

@@ -9,8 +9,10 @@ import type { Env } from "../system/env.js";
 export const PASSTHROUGH = ["HAI_VERBOSE", "HAI_ROUTE", "HAI_OFFLINE", "HAI_NO_UPDATE", "AGENT_HUB_PLUGINS", "TERM", "COLORTERM", "LANG"];
 
 /**
- * Splits the route's environment on which names hold a credential. The open half goes on
- * `docker run --env`, the secret half on a `docker exec` stdin.
+ * Splits the route's environment on which names hold a credential. Both halves travel per
+ * session, because a second terminal reattaches to the first's container: the open half as
+ * `--env` on the session's own `docker exec`, the secret half on a `docker exec` stdin.
+ * Neither goes on `docker run`, which is create-time only.
  */
 export function splitEnv(env: Record<string, string>): { open: Record<string, string>; secret: Record<string, string> } {
   const open: Record<string, string> = {};

@@ -28,9 +28,13 @@ export function canPrompt(seams: Seams): boolean {
  * failed separately for a VPN that is down, and asking someone to paste a key the hub
  * already holds both wastes the key and overwrites it on the way back out.
  *
- * A key pasted at the prompt is still saved back to agent-hub when it can be — that is a
- * write, not a source, and it is what lets a later unset run find it. When it cannot be
- * saved, it is used for this session only and the user is told so.
+ * The hub read and the hub write stand or fall together. A key pasted on the unset path is
+ * saved back when it can be, which is what lets the next run find it; a named route neither
+ * reads nor writes it, because an engineer who pastes a wrong or expired key under
+ * `HAI_ROUTE=bedrock` would otherwise overwrite the working key the hub holds and break
+ * every later unset-path session — the same overwrite hazard that makes the downgrade read
+ * the hub first. When a save is attempted and fails, the key is used for this session only
+ * and the user is told so.
  */
 export async function resolveBedrockKey(deps: { seams: Seams; agentHub: AgentHub; offline: boolean; byName: boolean }): Promise<string> {
   const { seams, agentHub } = deps;
@@ -46,7 +50,11 @@ export async function resolveBedrockKey(deps: { seams: Seams; agentHub: AgentHub
   }
 
   if (deps.byName) {
-    return await promptAndSave(seams, agentHub, NO_ENV_KEY_HELP);
+    requirePrompt(seams, NO_ENV_KEY_HELP);
+    seams.logger.say(
+      `${NO_ENV_KEY_HELP} It is not saved to agent-hub: HAI_ROUTE=bedrock does not read it either, so a key pasted here must not overwrite the one it holds.`
+    );
+    return promptForKey(seams);
   }
 
   let stored: string | null = null;

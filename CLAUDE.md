@@ -162,6 +162,12 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
   timeout) while the Key Vault failed separately for a VPN that is down, and the two are
   independent. Asking someone to paste a key the hub already holds wastes it and
   `promptAndSave` then PUTs the pasted value over it.
+- **The hub read and the hub write stand or fall together.** A key pasted on the unset path
+  is saved back, which is what lets the next run find it; a named route neither reads nor
+  writes it. An engineer pasting a wrong or expired key under `HAI_ROUTE=bedrock` would
+  otherwise overwrite the working key the hub holds and break every later unset-path
+  session — the same overwrite hazard that makes the downgrade read the hub first, so the
+  two rules have to agree.
 - **Not setting a variable is not the same as removing it.** The handover is
   `{ ...process.env, ...buildClaudeEnv(...) }`, so a `CLAUDE_CODE_USE_BEDROCK=1` in a shell
   profile survived into a `byol` session: hai printed "paid for by your own Claude licence"
@@ -169,10 +175,25 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
   payers' credential and transport variables, dropped from the in-place handover and passed
   to the container as `HAI_UNSET_ENV` for the entrypoint to `unset` — before it exports the
   delivered credentials, so one of ours is never unset. It must stay disjoint from what
-  `buildClaudeEnv` sets for the same route, which is asserted. The tuning variables
-  `existingOr` exists to let an engineer win on (`AWS_REGION`, the model names,
-  `ANTHROPIC_BEDROCK_BASE_URL`) are deliberately not in it. cft-workspace's virtual-agent
-  entrypoint does the same thing with two `unset` lines, and is the precedent.
+  `buildClaudeEnv` sets for the same route, which is asserted per route and per name — an
+  `arrayContaining` over the whole list only fails when *every* name is present, so it
+  passed with `AWS_REGION` smuggled into one route. cft-workspace's virtual-agent entrypoint
+  does the same thing with two `unset` lines, and is the precedent.
+- **A base URL is a routing fact, not a tuning knob.** Clearing `ANTHROPIC_CUSTOM_HEADERS`
+  and not `ANTHROPIC_BEDROCK_BASE_URL` turned a misroute into an unexplained 401: the header
+  carries the APIM key but the URL is what routes, so a shell holding cft-workspace's old
+  gateway quadruple, running an explicit `bedrock`, lost the key and the skip-auth flag and
+  kept a URL pointing at the gateway — every request reached APIM unauthenticated. Each
+  route therefore clears the base URLs it does not set itself, and `ANTHROPIC_BASE_URL` on
+  all four, where an inherited value would send a personal OAuth token to a third-party
+  endpoint. `ai-gateway` keeps an engineer's `ANTHROPIC_BEDROCK_BASE_URL` because it *sets*
+  one through `existingOr`, and that is deliberately the only way to point a route at a
+  custom endpoint: nothing in the environment distinguishes a URL set on purpose for this
+  session from one a previous route left behind, so the route that owns the variable is the
+  only place that question can be answered. A direct-Bedrock proxy consequently cannot be
+  expressed today — that wants an `HAI_*` variable of its own, not a silently honoured
+  leftover. The genuine knobs `existingOr` exists for, `AWS_REGION` and the model names, are
+  deliberately not in the set.
 - **`own-licence` and `gateway` are gone, and they fail by name rather than aliasing.**
   `badRouteMessage` names the replacement. `gateway` is the one that had to go: in
   cft-workspace `AGENT_HUB_MODEL_ROUTE=gateway` is a legacy alias meaning **Bedrock** while
@@ -283,9 +304,24 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
   in the container's config, readable afterwards with `docker inspect` and written to disk
   with the container. `splitEnv` divides the route's environment on `isSecretEnvKey`; the
   secret half goes in one credential per `docker exec -i` stdin, onto a `0700` tmpfs, and
-  the entrypoint exports and deletes each one. `ContainerContext` holds only the open half,
-  so no argv builder can reach a secret even by mistake; the secret half is `LaunchContext`'s
-  and only `deliverSecrets` sees it.
+  the entrypoint exports and deletes each one. `ContainerContext` holds only the open half
+  (as `sessionEnv`), so no argv builder can reach a secret even by mistake; the secret half
+  is `LaunchContext`'s and only `deliverSecrets` sees it.
+- **The route's environment goes on the session's `docker exec`, never on `docker run`.**
+  `--env` on a create is create-time only, and `lockDecision` reattaches a second session to
+  the container the first one started — `sessionName` is a hash of the repo path, so two
+  terminals in one repo share it. A payer fact passed at create time is therefore the
+  *first* session's for every session after it: `HAI_ROUTE=bedrock` reattaching to a `byol`
+  container got its bearer token, which does arrive per session on the exec stdin, with no
+  `CLAUDE_CODE_USE_BEDROCK` to switch it on and the first session's `HAI_UNSET_ENV` still in
+  force, so `claude` fell back to the bind-mounted `~/.claude` login — a personal session hai
+  had just announced as HMCTS's. The mirror case kept the first session's
+  `CLAUDE_CODE_USE_BEDROCK=1`. So `ctx.env` holds only facts about the whole container (the
+  markers, the secrets dir, the nested DNS, the passthrough) and `ctx.sessionEnv` holds this
+  session's route. `docker exec` inherits the container's environment and these go over it.
+  (`passthroughEnv` is still on the create, so `HAI_VERBOSE` and `HAI_ROUTE` inside a
+  reattached session are the first session's. They decide no credential, but they are the
+  remaining asymmetry if one turns out to matter.)
 - **`buildClaudeEnv` is the only way a credential reaches a container session.**
   `passthroughEnv` carries no credential-bearing name by design, so whatever
   `buildClaudeEnv` leaves out simply is not there inside. That is why `byol` returns an
@@ -296,6 +332,13 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
   `docker run` argv. In place the value is the one the process already had, so repeating it
   changes nothing. A `byol` session whose credential genuinely *is* the `~/.claude` login
   needs nothing injected: that directory is bind-mounted.
+- **Clearing a credential the engineer exported is said out loud; clearing a switch is not.**
+  `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` are cleared on every route, so someone
+  whose only credential was one of them would otherwise meet claude's own "invalid API key"
+  with nothing anywhere saying hai had taken it away. `isSecretEnvKey` is the discriminator —
+  which is why `ANTHROPIC_AUTH_TOKEN` is now in it; no route sets it, but it is a credential
+  by definition and `redact` should have been masking it too. A switch stays at
+  `logger.verbose`: it is worth recording, but nothing of theirs went missing.
 - **The container never gets host networking.** A second `dockerd` sharing the host's
   network namespace reconfigures the host's `docker0` and flushes the host daemon's
   iptables chains, breaking every container on the machine. `--network=host` is therefore

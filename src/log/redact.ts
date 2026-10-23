@@ -20,13 +20,19 @@ const SECRET_ENV_KEYS = new Set([
   "CLAUDE_CODE_OAUTH_TOKEN",
   "ANTHROPIC_CUSTOM_HEADERS",
   "ANTHROPIC_API_KEY",
+  // No route of hai's sets this, but `conflictingEnv` clears it on all four, and whether a
+  // name hai clears was a credential or a switch is what decides whether that is said out
+  // loud or only under HAI_VERBOSE. It is a credential by definition.
+  "ANTHROPIC_AUTH_TOKEN",
   "AGENT_HUB_LAUNCH_TOKEN"
 ]);
 
 /**
- * The one list of which environment variables hold a credential. Container mode splits
- * the route's environment on it: these go to the container on a `docker exec` stdin, the
- * rest on `docker run --env`, where `docker inspect` would read them back.
+ * The one list of which environment variables hold a credential. Container mode splits the
+ * route's environment on it: these go to the container on a `docker exec` stdin and the
+ * rest as `--env` on the session's own exec, neither on `docker run --env`, where
+ * `docker inspect` would read them back. It is also what decides whether a name hai
+ * *clears* is said out loud or only under `HAI_VERBOSE`.
  */
 export function isSecretEnvKey(name: string): boolean {
   return SECRET_ENV_KEYS.has(name);

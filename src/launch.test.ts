@@ -480,6 +480,36 @@ describe("launch", () => {
       expect(execEnv(seams).CLAUDE_CODE_OAUTH_TOKEN).toBe("sk-ant-oat01-x");
     });
 
+    it("should say out loud that it cleared a credential the engineer exported", async () => {
+      // Arrange — someone whose only credential was an exported ANTHROPIC_API_KEY would
+      // otherwise get claude's own "invalid API key" with nothing saying hai removed it.
+      const seams = seamsIn({ ANTHROPIC_API_KEY: "sk-ant-api03-mine" });
+
+      // Act
+      await launch({ seams, processArgv: ["node", "hai"] });
+
+      // Assert — said, not verbose: there is no HAI_VERBOSE in this environment.
+      expect(seams.lines.join("")).toContain("cleared ANTHROPIC_API_KEY");
+      expect(seams.lines.join("")).toContain("a credential the bedrock route does not use");
+    });
+
+    it("should leave a cleared switch at verbose, which is not news in the same way", async () => {
+      // Arrange — a stale Bedrock switch on a personal route is worth clearing but says
+      // nothing about a credential of theirs going missing.
+      const seams = createFakeSeams({
+        env: { HOME, HAI_NO_UPDATE: "1", HAI_ROUTE: "byol", CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-x", CLAUDE_CODE_USE_BEDROCK: "1" },
+        files: IN_CONTAINER,
+        respond: notAMember
+      });
+
+      // Act
+      await launch({ seams, processArgv: ["node", "hai"] });
+
+      // Assert
+      expect(seams.lines.join("")).not.toContain("cleared");
+      expect(execEnv(seams).CLAUDE_CODE_USE_BEDROCK).toBeUndefined();
+    });
+
     it("should clear an inherited CLAUDE_CODE_OAUTH_TOKEN on bedrock, the same rule the other way round", async () => {
       // Arrange
       const seams = seamsIn({ CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-x" });

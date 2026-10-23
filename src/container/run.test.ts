@@ -80,19 +80,26 @@ describe("runContainerMode", () => {
     expect(seams.runner.interactiveCalls[0]?.argv.slice(-4)).toEqual(["/opt/hai/entrypoint.sh", "claude", "--settings", `{${HOOKS}}`]);
   });
 
-  it("should tell the entrypoint which variables to unset, because the image may set another route's", async () => {
-    // Arrange — nothing on the host reaches the container uninvited, but the devcontainer
-    // image is built for Bedrock and could set CLAUDE_CODE_USE_BEDROCK itself, which would
-    // outrank a personal route's OAuth credential.
+  it("should carry this session's route environment and unset names on the exec, not the create", async () => {
+    // Arrange — `docker run --env` is create-time only and a second terminal in the same
+    // repo reattaches to this container, so anything the payer depends on has to be per
+    // session: terminal 2 on HAI_ROUTE=bedrock would otherwise run under terminal 1's byol
+    // environment, with its Bedrock key arriving but no CLAUDE_CODE_USE_BEDROCK to use it.
     const seams = seamsIn();
 
     // Act
     await runContainerMode(input(seams)).catch(() => undefined);
 
-    // Assert — names only, so this is open rather than a secret, and the entrypoint unsets
-    // them before it exports anything hai delivered.
-    expect(argvOf(seams, ["docker", "run"])).toContain(`HAI_UNSET_ENV=${conflictingEnv("bedrock").join(",")}`);
+    // Assert — names only for the unset list, so it is open rather than a secret, and the
+    // entrypoint unsets them before it exports anything hai delivered.
+    const session = seams.runner.interactiveCalls[0]?.argv.join(" ") ?? "";
+    expect(session).toContain(`--env HAI_UNSET_ENV=${conflictingEnv("bedrock").join(",")}`);
+    expect(session).toContain("--env CLAUDE_CODE_USE_BEDROCK=1");
     expect(conflictingEnv("bedrock")).toContain("CLAUDE_CODE_OAUTH_TOKEN");
+
+    const create = argvOf(seams, ["docker", "run"]).join(" ");
+    expect(create).not.toContain("HAI_UNSET_ENV");
+    expect(create).not.toContain("CLAUDE_CODE_USE_BEDROCK");
   });
 
   it("should default to the published image with no HAI_IMAGE set", async () => {
@@ -207,6 +214,29 @@ describe("runContainerMode", () => {
     expect(seams.runner.calls.filter((call) => call.argv[1] === "run")).toEqual([]);
     expect(seams.runner.calls.filter((call) => call.argv[1] === "rm")).toEqual([]);
     expect(seams.lines.join("")).toContain("reattaches");
+  });
+
+  it("should run a reattached session under its own route, not the one that created the container", async () => {
+    // Arrange — the hole: terminal 1 resolved byol in this repo, terminal 2 runs
+    // HAI_ROUTE=bedrock in the same repo and reclaims the lock, because `sessionName` is a
+    // hash of the repo path. No `docker run` happens at all for terminal 2, so anything its
+    // payer depends on has to arrive on the exec.
+    const seams = seamsIn(
+      {},
+      {},
+      {
+        respond: (argv) => (argv[0] === "docker" && argv[1] === "inspect" && argv.includes(SESSION) ? { code: 0, stdout: "true\n" } : respond(argv))
+      }
+    );
+
+    // Act
+    await runContainerMode(input(seams)).catch(() => undefined);
+
+    // Assert — its own switch and its own unset list, with no create to have carried them.
+    const session = seams.runner.interactiveCalls[0]?.argv.join(" ") ?? "";
+    expect(seams.runner.calls.filter((call) => call.argv[1] === "run")).toEqual([]);
+    expect(session).toContain("--env CLAUDE_CODE_USE_BEDROCK=1");
+    expect(session).toContain(`--env HAI_UNSET_ENV=${conflictingEnv("bedrock").join(",")}`);
   });
 
   it("should replace a container that exists but has stopped", async () => {

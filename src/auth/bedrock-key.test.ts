@@ -149,9 +149,11 @@ describe("resolveBedrockKey", () => {
       // Act
       const key = await resolveBedrockKey({ seams, agentHub, offline: false, byName: true });
 
-      // Assert
+      // Assert — and it writes nothing either: a wrong or expired key pasted here would
+      // overwrite the working one the hub holds and break every later unset-path session.
       expect(key).toBe(TYPED);
-      expect(agentHub.puts).toEqual([TYPED]);
+      expect(agentHub.puts).toEqual([]);
+      expect(seams.lines.join("")).toContain("It is not saved to agent-hub");
     });
 
     it("should not claim nothing is stored for you, which nobody checked", async () => {

@@ -24,18 +24,37 @@ const API_KEY_HELPER_TTL_MS = "300000";
  *
  * Each route drops the credential and transport variables belonging to the *other* payers,
  * and never one it sets itself — `conflictingEnv` and `buildClaudeEnv` are disjoint per
- * route, which is asserted. Tuning variables the engineer is allowed to win on
- * (`AWS_REGION`, the model names, `ANTHROPIC_BEDROCK_BASE_URL`) are deliberately not here.
- * `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` go on every route: no route of hai's uses
- * them, and either would quietly take precedence over the one that pays. cft-workspace's
- * virtual-agent entrypoint unsets the same two on both of its branches.
+ * route, which is asserted. `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` go on every
+ * route: no route of hai's uses them, and either would quietly take precedence over the one
+ * that pays. cft-workspace's virtual-agent entrypoint unsets the same two on both branches.
+ *
+ * **A base URL is a routing fact, not a tuning knob.** Clearing `ANTHROPIC_CUSTOM_HEADERS`
+ * without `ANTHROPIC_BEDROCK_BASE_URL` turned a misroute into an unexplained 401: a shell
+ * carrying cft-workspace's old gateway quadruple, running an explicit `bedrock`, lost the
+ * APIM key and the skip-auth flag and kept a base URL pointing at the gateway, so every
+ * request reached APIM unauthenticated. So each route clears the base URLs it does not set
+ * itself, and `ANTHROPIC_BASE_URL` on all four, since none of them uses it and an inherited
+ * one would send a personal OAuth token to a third-party endpoint.
+ *
+ * The one route that keeps an engineer's own is `ai-gateway`, which *sets*
+ * `ANTHROPIC_BEDROCK_BASE_URL` through `existingOr` — that is the only way to point a route
+ * at a custom endpoint, and it is deliberate that there is exactly one: nothing in the
+ * environment distinguishes a base URL set on purpose for this session from one a previous
+ * route left behind, so the route that owns the variable is the only place the question can
+ * be answered. A direct-Bedrock proxy therefore cannot be expressed today; that wants an
+ * `HAI_*` variable of its own rather than a silently honoured leftover.
+ *
+ * Genuine tuning knobs the engineer is allowed to win on — `AWS_REGION` and the model
+ * names — are deliberately not here.
  */
 export const CONFLICTING_ENV: Record<Route, readonly string[]> = {
-  // The Bedrock switch, key and gateway transport: all four would override the OAuth
-  // credential a personal licence depends on.
+  // The Bedrock switch, key and gateway transport, plus both base URLs: every one of them
+  // would override or misroute the OAuth credential a personal licence depends on.
   "agent-hub": [
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_BEDROCK_BASE_URL",
     "ANTHROPIC_CUSTOM_HEADERS",
     "AWS_BEARER_TOKEN_BEDROCK",
     "CLAUDE_CODE_SKIP_BEDROCK_AUTH",
@@ -44,17 +63,29 @@ export const CONFLICTING_ENV: Record<Route, readonly string[]> = {
   byol: [
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_BEDROCK_BASE_URL",
     "ANTHROPIC_CUSTOM_HEADERS",
     "AWS_BEARER_TOKEN_BEDROCK",
     "CLAUDE_CODE_SKIP_BEDROCK_AUTH",
     "CLAUDE_CODE_USE_BEDROCK"
   ],
-  // The gateway authenticates for us, so a bearer token is not its credential; a personal
-  // token would be a different payer entirely.
-  "ai-gateway": ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "AWS_BEARER_TOKEN_BEDROCK", "CLAUDE_CODE_OAUTH_TOKEN"],
-  // Skip-bedrock-auth would stop claude signing with the bearer token this route is for,
-  // and a stale APIM header would send a Bedrock-keyed session through the gateway.
-  bedrock: ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_CUSTOM_HEADERS", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_SKIP_BEDROCK_AUTH"]
+  // The gateway authenticates for us, so a bearer token is not its credential and a
+  // personal token is a different payer entirely. Its own base URL is absent here because
+  // it sets one, which is what lets an engineer point this route somewhere else.
+  "ai-gateway": ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "AWS_BEARER_TOKEN_BEDROCK", "CLAUDE_CODE_OAUTH_TOKEN"],
+  // Skip-bedrock-auth would stop claude signing with the bearer token this route is for; a
+  // stale APIM header and base URL together send a Bedrock-keyed session to the gateway,
+  // and the base URL alone sends it there with no key at all.
+  bedrock: [
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_BEDROCK_BASE_URL",
+    "ANTHROPIC_CUSTOM_HEADERS",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "CLAUDE_CODE_SKIP_BEDROCK_AUTH"
+  ]
 };
 
 /** Pure over the route alone, so container mode can forward the names and the entrypoint unset them. */

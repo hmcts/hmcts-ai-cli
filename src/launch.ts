@@ -10,9 +10,9 @@ import { sessionRegistryHooks } from "./claude/hooks.js";
 import { buildSettings, materialiseSettings } from "./claude/settings.js";
 import { extractUserSettings, mergeSettings, readUserSettings } from "./claude/user-settings.js";
 import { runContainerMode } from "./container/run.js";
-import { describeEnv } from "./log/redact.js";
+import { describeEnv, isSecretEnvKey } from "./log/redact.js";
 import { containerReasons, isInContainer, probeContainer } from "./system/container.js";
-import { asProcessEnv, isEnabled } from "./system/env.js";
+import { asProcessEnv, isEnabled, isSet } from "./system/env.js";
 import type { Seams } from "./system/seams.js";
 import { maybeSelfUpdate, readCurrentVersion } from "./update/self-update.js";
 import { parsePluginNames, resolvePluginDirs } from "./workspace/plugin-dirs.js";
@@ -55,6 +55,18 @@ export async function launch(deps: { seams: Seams; processArgv: string[] }): Pro
   // process environment with `added` over it, so another payer's credential or switch
   // would survive and the line just printed would be a lie.
   const removed = auth === null ? [] : conflictingEnv(auth.resolution.route);
+  const dropped = removed.filter((name) => isSet(seams.env, name));
+  // A credential of the engineer's own that this route will not use is said out loud rather
+  // than left at verbose: without it the only clue is claude's own "invalid API key", with
+  // nothing anywhere saying hai took it away. A switch is not news in the same way.
+  const droppedCredentials = dropped.filter(isSecretEnvKey);
+  if (auth !== null && droppedCredentials.length > 0) {
+    seams.logger.say(`cleared ${droppedCredentials.join(", ")} — a credential the ${auth.resolution.route} route does not use, so claude will not see it`);
+  }
+  const droppedSwitches = dropped.filter((name) => !isSecretEnvKey(name));
+  if (droppedSwitches.length > 0) {
+    seams.logger.verbose(`cleared ${droppedSwitches.join(", ")}, which belong to another route`);
+  }
 
   const root = await findWorkspaceRoot(seams);
   const pluginDirs = root === null ? [] : await resolvePluginDirs({ ...seams, root, names: parsePluginNames(seams.env.AGENT_HUB_PLUGINS) });
@@ -91,12 +103,8 @@ export async function launch(deps: { seams: Seams; processArgv: string[] }): Pro
   // inherited by every shell in the session and short-circuit each nested hai past the
   // update check for good. Only a container hai starts gets them (src/container/run.ts).
   const env = { ...asProcessEnv(seams.env), ...added };
-  const cleared = removed.filter((name) => name in env);
-  for (const name of cleared) {
+  for (const name of removed) {
     delete env[name];
-  }
-  if (cleared.length > 0) {
-    seams.logger.verbose(`cleared ${cleared.join(", ")}, which belong to another route`);
   }
 
   if (isEnabled(seams.env, "HAI_DRY_RUN")) {
@@ -104,8 +112,8 @@ export async function launch(deps: { seams: Seams; processArgv: string[] }): Pro
     for (const line of describeEnv(added)) {
       seams.stdout(`  ${line}\n`);
     }
-    if (cleared.length > 0) {
-      seams.stdout(`  cleared: ${cleared.join(", ")}\n`);
+    if (dropped.length > 0) {
+      seams.stdout(`  cleared: ${dropped.join(", ")}\n`);
     }
     seams.exit(0);
   }

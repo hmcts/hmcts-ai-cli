@@ -165,10 +165,39 @@ describe("buildClaudeEnv", () => {
       expect(clash).toEqual([]);
     });
 
-    it.each(ROUTES)("should leave the tuning variables the engineer is allowed to win on alone, on %s", (route) => {
-      // Assert — AWS_REGION, the model names and the base url are deliberately not payer
-      // facts; `existingOr` exists to let an engineer override them.
-      expect([...conflictingEnv(route)]).not.toEqual(expect.arrayContaining(["AWS_REGION", "ANTHROPIC_BEDROCK_BASE_URL", ...Object.keys(DEFAULT_MODELS)]));
+    it.each(
+      ROUTES.flatMap((route) => ["AWS_REGION", ...Object.keys(DEFAULT_MODELS)].map((name) => [route, name] as [Route, string]))
+    )("should leave %s's %s alone, a tuning knob rather than a payer fact", (route, name) => {
+      // Assert — per name, because `arrayContaining` over a list only fails when *every*
+      // one of them is present: AWS_REGION added on its own used to pass.
+      expect(conflictingEnv(route)).not.toContain(name);
+    });
+
+    it.each<[Route, string]>([
+      ["byol", "ANTHROPIC_BEDROCK_BASE_URL"],
+      ["agent-hub", "ANTHROPIC_BEDROCK_BASE_URL"],
+      ["bedrock", "ANTHROPIC_BEDROCK_BASE_URL"]
+    ])("should clear the Bedrock base url on %s, because the header carries the key but the url does the routing", (route, name) => {
+      // Assert — a shell carrying cft-workspace's old gateway quadruple otherwise kept a
+      // url pointing at the AI Gateway while the APIM key was stripped: every request
+      // reached APIM unauthenticated and 401d with nothing explaining why.
+      expect(conflictingEnv(route)).toContain(name);
+    });
+
+    it("should leave the Bedrock base url on ai-gateway, the one route that sets one itself", () => {
+      // Assert — `existingOr` there is the single documented way to point a route at a
+      // custom endpoint; nothing in the environment can tell a deliberate url from a
+      // leftover, so the route that owns the variable is the only place to answer it.
+      expect(conflictingEnv("ai-gateway")).not.toContain("ANTHROPIC_BEDROCK_BASE_URL");
+      expect(
+        buildClaudeEnv({ env: { ANTHROPIC_BEDROCK_BASE_URL: "https://local/bedrock" }, route: "ai-gateway", gateway: GATEWAY }).ANTHROPIC_BEDROCK_BASE_URL
+      ).toBe("https://local/bedrock");
+    });
+
+    it.each(ROUTES)("should clear ANTHROPIC_BASE_URL on %s, which no route of ours uses", (route) => {
+      // Assert — an inherited one would send a personal OAuth token to a third-party
+      // endpoint on byol, and is meaningless on the rest.
+      expect(conflictingEnv(route)).toContain("ANTHROPIC_BASE_URL");
     });
   });
 

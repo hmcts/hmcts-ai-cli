@@ -152,7 +152,6 @@ async function gatherContext(input: { seams: Seams; added: Record<string, string
     tty: seams.hiddenInput.isTty,
     env: {
       ...passthroughEnv(seams.env),
-      ...open,
       ...(await gitIdentity(seams)),
       HAI_IN_CONTAINER: "1",
       HAI_ENV_READY: "1",
@@ -161,11 +160,16 @@ async function gatherContext(input: { seams: Seams; added: Record<string, string
       // but whether this container is still running does.
       [CONTAINER_ENV]: session,
       HAI_SECRETS_DIR: SECRETS_DIR,
-      HAI_NESTED_DNS: dns.servers.join(","),
+      HAI_NESTED_DNS: dns.servers.join(",")
+    },
+    // Per session, not per container: a reattaching terminal must bring its own route with
+    // it rather than inherit whichever one created the container. `docker exec` inherits
+    // the container's environment and these go over the top of it.
+    sessionEnv: {
+      ...open,
       // Names only, no values, so this is open: the entrypoint unsets each before it
-      // exports the credentials. `passthroughEnv` carries no credential name, so nothing
-      // here comes off the host — but the devcontainer image is built for Bedrock and may
-      // set CLAUDE_CODE_USE_BEDROCK itself, which would quietly outrank a personal route's
+      // exports the credentials. The devcontainer image is built for Bedrock and may set
+      // CLAUDE_CODE_USE_BEDROCK itself, which would quietly outrank a personal route's
       // OAuth credential and make the launch line wrong about who pays.
       HAI_UNSET_ENV: input.removed.join(",")
     },
