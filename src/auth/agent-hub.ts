@@ -8,8 +8,17 @@ export const DEFAULT_AGENT_HUB_URL = "https://agent-hub.aat.platform.hmcts.net";
 export const DEFAULT_AGENT_HUB_SCOPE = "api://dtsse-agent-hub/.default";
 
 const REQUEST_TIMEOUT_MS = 15_000;
-const CREDENTIAL_KIND = "bedrock";
-const CREDENTIAL_PATH = `/api/agent/credentials/${CREDENTIAL_KIND}`;
+
+/**
+ * The hub's own credential kinds, of which hai asks for two: the Bedrock API key the
+ * `bedrock` route uses, and the `claude setup-token` output the `agent-hub` route uses.
+ * The hub's `OWNER_READABLE` is `["bedrock", "claude_md", "git_identity"]`, so `claude` is
+ * readable only by a virtual agent holding a launch token — an owner asking for it is
+ * refused, and the `agent-hub` route fails saying so. Widening that is a change to the hub.
+ */
+export const CREDENTIAL_KINDS = ["bedrock", "claude"] as const;
+
+const credentialPath = (kind: CredentialKind) => `/api/agent/credentials/${kind}`;
 
 /**
  * agent-hub is reachable from the public internet, so nothing here is gated on the VPN
@@ -25,12 +34,12 @@ export function createAgentHub(deps: { runner: Runner; net: Net; env: Env; clock
     return tokenPromise;
   };
 
-  const request = async (method: string, body?: unknown): Promise<Response> => {
+  const request = async (kind: CredentialKind, method: string, body?: unknown): Promise<Response> => {
     const headers: Record<string, string> = { Authorization: `Bearer ${await token()}` };
     if (body !== undefined) {
       headers["Content-Type"] = "application/json";
     }
-    return deps.net.fetch(`${baseUrl}${CREDENTIAL_PATH}`, {
+    return deps.net.fetch(`${baseUrl}${credentialPath(kind)}`, {
       method,
       headers,
       body: body === undefined ? undefined : JSON.stringify(body),
@@ -41,29 +50,31 @@ export function createAgentHub(deps: { runner: Runner; net: Net; env: Env; clock
   return {
     baseUrl,
 
-    async getBedrockKey() {
-      const res = await request("GET");
+    async getCredential(kind) {
+      const res = await request(kind, "GET");
       if (res.status === 404) {
         return null;
       }
       if (!res.ok) {
-        throw new Error(`GET ${CREDENTIAL_PATH} failed: ${res.status}`);
+        throw new Error(`GET ${credentialPath(kind)} failed: ${res.status}`);
       }
       const parsed = (await res.json()) as { value?: unknown };
       return typeof parsed.value === "string" && parsed.value !== "" ? parsed.value : null;
     },
 
-    async putBedrockKey(value) {
-      const res = await request("PUT", { value });
+    async putCredential(kind, value) {
+      const res = await request(kind, "PUT", { value });
       if (!res.ok) {
-        throw new Error(`PUT ${CREDENTIAL_PATH} failed: ${res.status}`);
+        throw new Error(`PUT ${credentialPath(kind)} failed: ${res.status}`);
       }
     }
   };
 }
 
+export type CredentialKind = (typeof CREDENTIAL_KINDS)[number];
+
 export interface AgentHub {
   baseUrl: string;
-  getBedrockKey(): Promise<string | null>;
-  putBedrockKey(value: string): Promise<void>;
+  getCredential(kind: CredentialKind): Promise<string | null>;
+  putCredential(kind: CredentialKind, value: string): Promise<void>;
 }

@@ -5,6 +5,9 @@ import type { AgentHub } from "./agent-hub.js";
 
 const PROMPT = "Paste your Amazon Bedrock API key (input hidden): ";
 const NO_KEY_HELP = "No Amazon Bedrock API key is stored for you. Ask in the DTSSE channel for one, then run hai again and paste it when prompted.";
+/** Only for a named HAI_ROUTE=bedrock, whose sources are the environment and a paste: "none stored for you" would be a claim nobody checked. */
+const NO_ENV_KEY_HELP =
+  "No Amazon Bedrock API key in AWS_BEARER_TOKEN_BEDROCK, and HAI_ROUTE=bedrock reads no other source. Ask in the DTSSE channel for one, then run hai again and paste it when prompted.";
 
 /** A virtual agent's tmux pane is a terminal nobody watches, so only a person is ever prompted. */
 export function canPrompt(seams: Seams): boolean {
@@ -12,11 +15,28 @@ export function canPrompt(seams: Seams): boolean {
 }
 
 /**
- * Mirrors run.sh's bedrock_key(): environment first, then agent-hub, then a hidden
- * prompt. A key pasted at the prompt is saved back to agent-hub when it can be; when it
- * cannot, it is used for this session only and the user is told so.
+ * How far this may look is the route's own `byName`, not a second decision of its own.
+ *
+ * A named `HAI_ROUTE=bedrock` is one credential from one source — the environment, or a
+ * paste — so agent-hub is not one of them. Reading it anyway broke "no fallbacks" and made
+ * the launch line say `prompt` for a key that had come off the hub.
+ *
+ * The unset path keeps the whole chain, env → agent-hub → prompt, whichever branch of
+ * `resolveRoute` sent it here. `credentialSource` cannot stand in for this: `prompt` is
+ * also what the AI-Gateway downgrade reports, and there a hub read is exactly right —
+ * `gatherSignals`' probe may have thrown (a 5xx, or its 15s timeout) while the Key Vault
+ * failed separately for a VPN that is down, and asking someone to paste a key the hub
+ * already holds both wastes the key and overwrites it on the way back out.
+ *
+ * The hub read and the hub write stand or fall together. A key pasted on the unset path is
+ * saved back when it can be, which is what lets the next run find it; a named route neither
+ * reads nor writes it, because an engineer who pastes a wrong or expired key under
+ * `HAI_ROUTE=bedrock` would otherwise overwrite the working key the hub holds and break
+ * every later unset-path session — the same overwrite hazard that makes the downgrade read
+ * the hub first. When a save is attempted and fails, the key is used for this session only
+ * and the user is told so.
  */
-export async function resolveBedrockKey(deps: { seams: Seams; agentHub: AgentHub; offline: boolean }): Promise<string> {
+export async function resolveBedrockKey(deps: { seams: Seams; agentHub: AgentHub; offline: boolean; byName: boolean }): Promise<string> {
   const { seams, agentHub } = deps;
   const fromEnv = seams.env.AWS_BEARER_TOKEN_BEDROCK;
   if (fromEnv !== undefined && fromEnv !== "") {
@@ -29,9 +49,17 @@ export async function resolveBedrockKey(deps: { seams: Seams; agentHub: AgentHub
     return promptForKey(seams);
   }
 
+  if (deps.byName) {
+    requirePrompt(seams, NO_ENV_KEY_HELP);
+    seams.logger.say(
+      `${NO_ENV_KEY_HELP} It is not saved to agent-hub: HAI_ROUTE=bedrock does not read it either, so a key pasted here must not overwrite the one it holds.`
+    );
+    return promptForKey(seams);
+  }
+
   let stored: string | null = null;
   try {
-    stored = await agentHub.getBedrockKey();
+    stored = await agentHub.getCredential("bedrock");
   } catch (err) {
     requirePrompt(seams, `could not read your Amazon Bedrock API key from agent-hub (${messageOf(err)})`);
     seams.logger.say(`could not read your Amazon Bedrock API key from agent-hub (${messageOf(err)}); it will not be saved this time`);
@@ -41,11 +69,15 @@ export async function resolveBedrockKey(deps: { seams: Seams; agentHub: AgentHub
     return stored;
   }
 
-  requirePrompt(seams, NO_KEY_HELP);
-  seams.logger.say(`${NO_KEY_HELP} It is saved to agent-hub for your next session.`);
+  return await promptAndSave(seams, agentHub, NO_KEY_HELP);
+}
+
+async function promptAndSave(seams: Seams, agentHub: AgentHub, help: string): Promise<string> {
+  requirePrompt(seams, help);
+  seams.logger.say(`${help} It is saved to agent-hub for your next session.`);
   const key = await promptForKey(seams);
   try {
-    await agentHub.putBedrockKey(key);
+    await agentHub.putCredential("bedrock", key);
     seams.logger.say("saved to agent-hub");
   } catch (err) {
     seams.logger.say(`could not save the key to agent-hub (${messageOf(err)}); using it for this session only`);

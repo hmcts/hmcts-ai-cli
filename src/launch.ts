@@ -1,16 +1,18 @@
 import { type AgentHub, createAgentHub } from "./auth/agent-hub.js";
 import { resolveBedrockKey } from "./auth/bedrock-key.js";
-import { buildClaudeEnv } from "./auth/claude-env.js";
+import { buildClaudeEnv, conflictingEnv } from "./auth/claude-env.js";
+import { resolveHubClaudeToken } from "./auth/claude-token.js";
 import type { Gateway } from "./auth/gateway.js";
 import { type AuthResolution, resolveAuth } from "./auth/resolve-auth.js";
+import { billingNote } from "./auth/route.js";
 import { buildClaudeArgs, forwardArgv } from "./claude/args.js";
 import { sessionRegistryHooks } from "./claude/hooks.js";
 import { buildSettings, materialiseSettings } from "./claude/settings.js";
 import { extractUserSettings, mergeSettings, readUserSettings } from "./claude/user-settings.js";
 import { runContainerMode } from "./container/run.js";
-import { describeEnv } from "./log/redact.js";
+import { describeEnv, isSecretEnvKey } from "./log/redact.js";
 import { containerReasons, isInContainer, probeContainer } from "./system/container.js";
-import { asProcessEnv, isEnabled } from "./system/env.js";
+import { asProcessEnv, isEnabled, isSet } from "./system/env.js";
 import type { Seams } from "./system/seams.js";
 import { maybeSelfUpdate, readCurrentVersion } from "./update/self-update.js";
 import { parsePluginNames, resolvePluginDirs } from "./workspace/plugin-dirs.js";
@@ -39,11 +41,31 @@ export async function launch(deps: { seams: Seams; processArgv: string[] }): Pro
   // One client, so the az token behind it is fetched once however many times it is used.
   const agentHub = createAgentHub(seams);
   const auth = envReady ? null : await resolveAuth({ seams, agentHub });
-  const credentials = auth === null ? {} : await collectCredentials({ seams, agentHub }, auth);
-  const added = auth === null ? {} : buildClaudeEnv({ env: seams.env, route: auth.resolution.route, ...credentials });
   if (auth !== null) {
     const { route, credentialSource, reasons } = auth.resolution;
-    seams.logger.verbose(`route ${route} via ${credentialSource}: ${reasons.join("; ")}`);
+    // Unconditional, and before the credential is fetched so it is also the answer to "why
+    // am I being asked to paste a key": two routes bill a personal Claude licence and two
+    // bill HMCTS, and the name does not say which.
+    seams.logger.say(billingNote(route));
+    seams.logger.verbose(`${route} via ${credentialSource}: ${reasons.join("; ")}`);
+  }
+  const credentials = auth === null ? {} : await collectCredentials({ seams, agentHub }, auth);
+  const added = auth === null ? {} : buildClaudeEnv({ env: seams.env, route: auth.resolution.route, ...credentials });
+  // Not setting a variable is not the same as removing one: the handover below is the
+  // process environment with `added` over it, so another payer's credential or switch
+  // would survive and the line just printed would be a lie.
+  const removed = auth === null ? [] : conflictingEnv(auth.resolution.route);
+  const dropped = removed.filter((name) => isSet(seams.env, name));
+  // A credential of the engineer's own that this route will not use is said out loud rather
+  // than left at verbose: without it the only clue is claude's own "invalid API key", with
+  // nothing anywhere saying hai took it away. A switch is not news in the same way.
+  const droppedCredentials = dropped.filter(isSecretEnvKey);
+  if (auth !== null && droppedCredentials.length > 0) {
+    seams.logger.say(`cleared ${droppedCredentials.join(", ")} — a credential the ${auth.resolution.route} route does not use, so claude will not see it`);
+  }
+  const droppedSwitches = dropped.filter((name) => !isSecretEnvKey(name));
+  if (droppedSwitches.length > 0) {
+    seams.logger.verbose(`cleared ${droppedSwitches.join(", ")}, which belong to another route`);
   }
 
   const root = await findWorkspaceRoot(seams);
@@ -54,6 +76,7 @@ export async function launch(deps: { seams: Seams; processArgv: string[] }): Pro
       seams,
       forwarded,
       added,
+      removed,
       hasGateway: credentials.gateway !== undefined,
       workspaceRoot: root,
       pluginDirs
@@ -80,11 +103,17 @@ export async function launch(deps: { seams: Seams; processArgv: string[] }): Pro
   // inherited by every shell in the session and short-circuit each nested hai past the
   // update check for good. Only a container hai starts gets them (src/container/run.ts).
   const env = { ...asProcessEnv(seams.env), ...added };
+  for (const name of removed) {
+    delete env[name];
+  }
 
   if (isEnabled(seams.env, "HAI_DRY_RUN")) {
     seams.stdout(`${argv.join(" ")}\n`);
     for (const line of describeEnv(added)) {
       seams.stdout(`  ${line}\n`);
+    }
+    if (dropped.length > 0) {
+      seams.stdout(`  cleared: ${dropped.join(", ")}\n`);
     }
     seams.exit(0);
   }
@@ -97,14 +126,21 @@ function hostReason(probe: { forcedHost: boolean }): string {
 }
 
 /** The gateway's key is settled by `resolveAuth`, because whether it can be read at all is part of the route decision. */
-async function collectCredentials(deps: { seams: Seams; agentHub: AgentHub }, auth: AuthResolution): Promise<{ bedrockKey?: string; gateway?: Gateway }> {
+async function collectCredentials(deps: { seams: Seams; agentHub: AgentHub }, auth: AuthResolution): Promise<Credentials> {
   const { seams } = deps;
-  if (auth.resolution.route === "gateway") {
+  const offline = isEnabled(seams.env, "HAI_OFFLINE");
+  if (auth.resolution.route === "ai-gateway") {
     return { gateway: auth.gateway };
   }
   if (auth.resolution.route === "bedrock") {
-    return { bedrockKey: await resolveBedrockKey({ seams, agentHub: deps.agentHub, offline: isEnabled(seams.env, "HAI_OFFLINE") }) };
+    // byName decides how far it may look: a named HAI_ROUTE=bedrock reads the environment
+    // or prompts, the unset path keeps env → agent-hub → prompt.
+    return { bedrockKey: await resolveBedrockKey({ seams, agentHub: deps.agentHub, offline, byName: auth.resolution.byName }) };
   }
+  if (auth.resolution.route === "agent-hub") {
+    return { claudeToken: await resolveHubClaudeToken({ seams, agentHub: deps.agentHub, offline }) };
+  }
+  // byol: the credential is already where claude looks for it, so there is nothing to fetch.
   return {};
 }
 
@@ -117,4 +153,10 @@ export async function updatedAndReExeced(deps: { seams: Seams }, userArgs: strin
   }
   await seams.runner.exec([seams.execPath, seams.scriptPath, ...userArgs], { env: { ...asProcessEnv(seams.env), HAI_UPDATED: "1" } });
   return true;
+}
+
+interface Credentials {
+  bedrockKey?: string;
+  claudeToken?: string;
+  gateway?: Gateway;
 }

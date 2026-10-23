@@ -36,6 +36,41 @@ npm i -g @hmcts-cft/hai-cli --registry=https://pkgs.dev.azure.com/hmcts/Artifact
 
 Note: If you are using a HMCTS license via the AI Gateway you will need to connect your VPN.
 
+## Routes
+
+A route is one credential from one source, and `hai` says which one it took and who pays
+for it on every launch:
+
+| `HAI_ROUTE` | Credential | Where it comes from | Who pays |
+|---|---|---|---|
+| `agent-hub` | a long-lived Claude token | agent-hub (its `claude` credential) | that Claude licence, not HMCTS |
+| `byol` | your Claude OAuth credential | `CLAUDE_CODE_OAUTH_TOKEN`, or the claude.ai login in `~/.claude` | your own licence, not HMCTS |
+| `ai-gateway` | the APIM subscription key | a private Key Vault, so `az login` and the F5 VPN | HMCTS |
+| `bedrock` | `AWS_BEARER_TOKEN_BEDROCK` | your environment, or pasted at a hidden prompt | HMCTS |
+
+Setting `HAI_ROUTE` is a choice and `hai` obeys it: that one credential is fetched from
+that one source, and if it cannot be had the launch fails saying so rather than quietly
+using something else. Two of the four bill a personal Claude licence, which is why the
+route and who pays for it are printed whether or not you asked for `HAI_VERBOSE`.
+
+With `HAI_ROUTE` unset, `hai` works it out, in this order:
+
+1. `AWS_BEARER_TOKEN_BEDROCK` is exported — `bedrock`.
+2. agent-hub holds a Bedrock key for you — `bedrock`.
+3. You are in the Bedrock developer group — `ai-gateway`, because HMCTS funds your
+   capacity. This sits ahead of every personal credential deliberately, and if the gateway
+   turns out to be unreachable the fallback is a Bedrock key you paste, never your own
+   subscription.
+4. Your group membership could not be checked — a Bedrock key you paste, or a refusal
+   naming `HAI_ROUTE=byol` if that is genuinely what you want. An unanswered question is
+   not an answer of "not a member".
+5. You are confirmed *not* in that group — `byol`, from `CLAUDE_CODE_OAUTH_TOKEN` or your
+   claude.ai login.
+
+`own-licence` and `gateway` were the old names for `byol` and `ai-gateway`. They are not
+accepted as aliases: `hai` fails and names the replacement. `gateway` in particular had to
+go, because cft-workspace's `AGENT_HUB_MODEL_ROUTE=gateway` means *Bedrock*.
+
 ## `hair`
 
 A reboot ends every Claude Code session at once, and `claude --continue` keys only on the
@@ -78,7 +113,7 @@ a real `sbx`, so treat it as unproven.
 
 | Variable | Effect |
 |---|---|
-| `HAI_ROUTE` | `bedrock` \| `gateway` \| `own-licence`; chooses the route instead of letting `hai` work it out |
+| `HAI_ROUTE` | `agent-hub` \| `byol` \| `ai-gateway` \| `bedrock`; see [Routes](#routes). Obeyed as typed, with no fallbacks |
 | `HAI_DRY_RUN=1` | print the `claude` invocation that would run, then exit 0 |
 | `HAI_VERBOSE=1` | explain what was detected and why |
 | `HAI_OFFLINE=1` | skips the lookups that need the network: no Graph, no agent-hub, no registry. Your local `az` identity and the cached group answer are still read, so a group membership confirmed earlier in the day still decides the route |

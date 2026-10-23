@@ -44,6 +44,7 @@ export async function runContainerMode(input: {
   seams: Seams;
   forwarded: string[];
   added: Record<string, string>;
+  removed: readonly string[];
   hasGateway: boolean;
   workspaceRoot: string | null;
   pluginDirs: string[];
@@ -104,7 +105,7 @@ export async function runContainerMode(input: {
 /** The context plus what only the launch needs: the credentials, which no argv may carry, and HOME. */
 type LaunchContext = ContainerContext & { home: string; secretEnv: Record<string, string> };
 
-async function gatherContext(input: { seams: Seams; added: Record<string, string> }): Promise<LaunchContext> {
+async function gatherContext(input: { seams: Seams; added: Record<string, string>; removed: readonly string[] }): Promise<LaunchContext> {
   const { seams } = input;
   const home = seams.env.HOME;
   if (home === undefined || home === "") {
@@ -151,7 +152,6 @@ async function gatherContext(input: { seams: Seams; added: Record<string, string
     tty: seams.hiddenInput.isTty,
     env: {
       ...passthroughEnv(seams.env),
-      ...open,
       ...(await gitIdentity(seams)),
       HAI_IN_CONTAINER: "1",
       HAI_ENV_READY: "1",
@@ -162,13 +162,24 @@ async function gatherContext(input: { seams: Seams; added: Record<string, string
       HAI_SECRETS_DIR: SECRETS_DIR,
       HAI_NESTED_DNS: dns.servers.join(",")
     },
+    // Per session, not per container: a reattaching terminal must bring its own route with
+    // it rather than inherit whichever one created the container. `docker exec` inherits
+    // the container's environment and these go over the top of it.
+    sessionEnv: {
+      ...open,
+      // Names only, no values, so this is open: the entrypoint unsets each before it
+      // exports the credentials. The devcontainer image is built for Bedrock and may set
+      // CLAUDE_CODE_USE_BEDROCK itself, which would quietly outrank a personal route's
+      // OAuth credential and make the launch line wrong about who pays.
+      HAI_UNSET_ENV: input.removed.join(",")
+    },
     secretEnv: secret,
     home
   };
 }
 
 /**
- * The container's own state directory is not the host's, so the gateway route's
+ * The container's own state directory is not the host's, so the ai-gateway route's
  * apiKeyHelper is named at its container path and installed there by the entrypoint, and
  * the settings go inline rather than as a file the host would have to write inside.
  */

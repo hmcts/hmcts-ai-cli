@@ -14,7 +14,11 @@ export const CACHE_FILE = "auth.json";
  */
 export const CACHE_TTL_MS = 12 * 60 * 60 * 1000;
 
-/** Group membership only, keyed by the signed-in identity. A credential is never written here, or anywhere else on disk. */
+/**
+ * Group membership only, keyed by the signed-in identity. A credential is never written
+ * here, or anywhere else on disk. Only the default path reaches this at all: an explicit
+ * `HAI_ROUTE` resolves no membership, so it asks `az` nothing and has nothing to cache.
+ */
 export async function readAuthCache(deps: { fs: Fs; env: Env; clock: Clock }, key: string): Promise<AuthCacheEntry | null> {
   const path = tryStatePath(deps.env, CACHE_FILE);
   const contents = path === null ? null : await deps.fs.readText(path);

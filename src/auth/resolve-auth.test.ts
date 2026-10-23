@@ -15,10 +15,10 @@ const IDENTITY = "tenant:dev@hmcts.net";
 const CREDENTIALS = `${HOME}/.claude/.credentials.json`;
 const LIVE_LOGIN = JSON.stringify({ claudeAiOauth: { accessToken: "sk-ant-oat01-x", expiresAt: Number.MAX_SAFE_INTEGER } });
 
-const hub = (getBedrockKey: AgentHub["getBedrockKey"] = async () => null): AgentHub => ({
+const hub = (getCredential: AgentHub["getCredential"] = async () => null): AgentHub => ({
   baseUrl: "https://hub.test",
-  getBedrockKey,
-  putBedrockKey: async () => undefined
+  getCredential,
+  putCredential: async () => undefined
 });
 
 function respondAz(argv: string[]) {
@@ -67,7 +67,7 @@ describe("resolveAuth", () => {
     const { resolution } = await resolveAuth({ seams, agentHub: hub() });
 
     // Assert
-    expect(resolution).toMatchObject({ route: "gateway", credentialSource: "gateway-apim" });
+    expect(resolution).toMatchObject({ route: "ai-gateway", credentialSource: "gateway-apim" });
     expect(askedGraph(seams.runner.calls)).toBe(false);
     expect(JSON.parse(seams.fs.store.get(CACHE_PATH) ?? "{}")).toEqual(cache);
   });
@@ -83,7 +83,7 @@ describe("resolveAuth", () => {
     const { resolution } = await resolveAuth({ seams, agentHub: hub() });
 
     // Assert
-    expect(resolution).toMatchObject({ route: "gateway", credentialSource: "gateway-apim" });
+    expect(resolution).toMatchObject({ route: "ai-gateway", credentialSource: "gateway-apim" });
     expect(seams.runner.calls.filter((call) => call.argv[1] === "rest")).toHaveLength(2);
     expect(JSON.parse(seams.fs.store.get(CACHE_PATH) ?? "{}")).toEqual({ [IDENTITY]: { group: { at: now, isMember: true } } });
   });
@@ -134,7 +134,7 @@ describe("resolveAuth", () => {
     const act = resolveAuth({ seams, agentHub: hub() });
 
     // Assert
-    await expect(act).rejects.toThrow(/DTSSE channel[\s\S]*HAI_ROUTE=gateway[\s\S]*claude setup-token/);
+    await expect(act).rejects.toThrow(/DTSSE channel[\s\S]*HAI_ROUTE=ai-gateway[\s\S]*claude setup-token/);
   });
 
   it("should not cache a failure", async () => {
@@ -192,7 +192,7 @@ describe("resolveAuth", () => {
       const auth = await resolveAuth({ seams, agentHub: hub() });
 
       // Assert
-      expect(auth.resolution.route).toBe("gateway");
+      expect(auth.resolution.route).toBe("ai-gateway");
       expect(auth.gateway?.apimKey).toBe(APIM_KEY);
     });
 
@@ -240,7 +240,7 @@ describe("resolveAuth", () => {
 
     it("should fail outright rather than downgrade a gateway asked for by name", async () => {
       // Arrange
-      const seams = createFakeSeams({ env: { HOME, HAI_ROUTE: "gateway" }, respond: respondAz });
+      const seams = createFakeSeams({ env: { HOME, HAI_ROUTE: "ai-gateway" }, respond: respondAz });
 
       // Act
       const act = resolveAuth({ seams, agentHub: hub() });
@@ -259,37 +259,73 @@ describe("resolveAuth", () => {
       const auth = await resolveAuth({ seams, agentHub: hub(), decideOnly: true });
 
       // Assert
-      expect(auth.resolution).toMatchObject({ route: "gateway", credentialSource: "gateway-apim" });
+      expect(auth.resolution).toMatchObject({ route: "ai-gateway", credentialSource: "gateway-apim" });
       expect(auth.gateway).toBeUndefined();
       expect(seams.runner.calls.some((call) => call.argv[1] === "keyvault")).toBe(false);
       expect(seams.fs.store.has(`${HOME}/.local/state/hai/${HELPER_FILE}`)).toBe(false);
       expect(seams.lines).toEqual([]);
     });
 
-    it("should still refuse to report a personal route to a confirmed member", async () => {
+    it("should report an explicit route without asking anything at all", async () => {
       // Arrange
-      const seams = createFakeSeams({ env: { HOME, HAI_ROUTE: "own-licence" }, files: { [CREDENTIALS]: LIVE_LOGIN }, respond: respondAz });
+      const seams = createFakeSeams({ env: { HOME, HAI_ROUTE: "byol" }, files: { [CREDENTIALS]: LIVE_LOGIN }, respond: respondAz });
 
       // Act
-      const act = resolveAuth({ seams, agentHub: hub(), decideOnly: true });
+      const auth = await resolveAuth({ seams, agentHub: hub(), decideOnly: true });
 
       // Assert
-      await expect(act).rejects.toThrow("HMCTS funds your Claude usage");
+      expect(auth.resolution).toMatchObject({ route: "byol", credentialSource: "host-oauth" });
+      expect(seams.runner.calls).toEqual([]);
+      expect(seams.lines).toEqual([]);
     });
   });
 
-  describe("the block on a personal subscription", () => {
-    it("should refuse HAI_ROUTE=own-licence for a confirmed member", async () => {
+  describe("an explicit route, which is obeyed", () => {
+    it.each<[string, string, string]>([
+      ["agent-hub", "agent-hub", "agent-hub"],
+      ["byol", "byol", "host-oauth"],
+      ["bedrock", "bedrock", "prompt"]
+    ])("should obey HAI_ROUTE=%s for a confirmed member, naming no fallback", async (requested, route, credentialSource) => {
+      // Arrange — a member with a live personal login, which the default path refuses.
+      const seams = createFakeSeams({ env: { HOME, HAI_ROUTE: requested }, files: { [CREDENTIALS]: LIVE_LOGIN }, respond: respondAz });
+
+      // Act
+      const { resolution } = await resolveAuth({ seams, agentHub: hub() });
+
+      // Assert
+      expect(resolution).toMatchObject({ route, credentialSource });
+    });
+
+    it("should read neither az nor the cache, which is the round trip a named route drops", async () => {
+      // Arrange — a cached member, and a route that says not to care.
+      const cache = { [IDENTITY]: { group: { at: FIXED_NOW - 1000, isMember: true } } };
+      const seams = createFakeSeams({ env: { HOME, HAI_ROUTE: "byol" }, files: { [CACHE_PATH]: JSON.stringify(cache) }, respond: respondAz });
+
+      // Act
+      const { resolution } = await resolveAuth({ seams, agentHub: hub() });
+
+      // Assert
+      expect(resolution.route).toBe("byol");
+      expect(seams.runner.calls).toEqual([]);
+      expect(JSON.parse(seams.fs.store.get(CACHE_PATH) ?? "{}")).toEqual(cache);
+    });
+
+    it.each([
+      ["own-licence", "byol"],
+      ["gateway", "ai-gateway"]
+    ])("should fail on the old name %s rather than accept it", async (old, replacement) => {
       // Arrange
-      const seams = createFakeSeams({ env: { HOME, HAI_ROUTE: "own-licence" }, files: { [CREDENTIALS]: LIVE_LOGIN }, respond: respondAz });
+      const seams = createFakeSeams({ env: { HOME, HAI_ROUTE: old }, respond: respondAz });
 
       // Act
       const act = resolveAuth({ seams, agentHub: hub() });
 
       // Assert
-      await expect(act).rejects.toThrow("HMCTS funds your Claude usage");
+      await expect(act).rejects.toThrow(`HAI_ROUTE=${replacement}`);
     });
+  });
 
+  describe("the block on a personal subscription", () => {
     it("should refuse a host claude.ai login when membership could not be confirmed", async () => {
       // Arrange — az answers for the identity but Graph refuses, which is the usual VPN-down shape.
       const graphRefused = (argv: string[]) => (argv[1] === "rest" ? { code: 1, stderr: "AADSTS700082" } : respondAz(argv));
@@ -299,21 +335,10 @@ describe("resolveAuth", () => {
       const act = resolveAuth({ seams, agentHub: hub() });
 
       // Assert
-      await expect(act).rejects.toThrow("HAI_ROUTE=own-licence");
+      await expect(act).rejects.toThrow("HAI_ROUTE=byol");
     });
 
-    it("should allow HAI_ROUTE=own-licence when membership could not be confirmed, which is a deliberate choice", async () => {
-      // Arrange
-      const seams = createFakeSeams({ env: { HOME, HAI_ROUTE: "own-licence" }, files: { [CREDENTIALS]: LIVE_LOGIN } });
-
-      // Act
-      const { resolution } = await resolveAuth({ seams, agentHub: hub() });
-
-      // Assert
-      expect(resolution).toMatchObject({ route: "own-licence", credentialSource: "host-oauth" });
-    });
-
-    it("should refuse offline by naming HAI_ROUTE=own-licence, not the az login HAI_OFFLINE opted out of", async () => {
+    it("should refuse offline by naming HAI_ROUTE=byol, not the az login HAI_OFFLINE opted out of", async () => {
       // Arrange — the identity resolves and the cache holds nothing for it, so offline
       // there is still no membership answer to be had and the refusal stands; what it must
       // not do is prescribe the lookups the flag asked it to skip.
@@ -323,7 +348,7 @@ describe("resolveAuth", () => {
       const err = await resolveAuth({ seams, agentHub: hub() }).catch((e: Error) => e);
 
       // Assert
-      expect((err as Error).message).toContain("HAI_ROUTE=own-licence");
+      expect((err as Error).message).toContain("HAI_ROUTE=byol");
       expect((err as Error).message).not.toMatch(/az login|VPN/);
       expect(askedGraph(seams.runner.calls)).toBe(false);
     });
@@ -336,7 +361,7 @@ describe("resolveAuth", () => {
       const { resolution } = await resolveAuth({ seams, agentHub: hub() });
 
       // Assert
-      expect(resolution).toMatchObject({ route: "own-licence", credentialSource: "host-oauth" });
+      expect(resolution).toMatchObject({ route: "byol", credentialSource: "host-oauth" });
     });
   });
 
@@ -354,7 +379,7 @@ describe("resolveAuth", () => {
       const { resolution } = await resolveAuth({ seams, agentHub: hub() });
 
       // Assert — the member goes where HMCTS pays, and a hit has nothing to write.
-      expect(resolution).toMatchObject({ route: "gateway", credentialSource: "gateway-apim" });
+      expect(resolution).toMatchObject({ route: "ai-gateway", credentialSource: "gateway-apim" });
       expect(askedGraph(seams.runner.calls)).toBe(false);
       expect(seams.fs.store.get(CACHE_PATH)).toBe(cached);
     });
@@ -375,20 +400,21 @@ describe("resolveAuth", () => {
       await expect(act).rejects.toThrow("hai will not use a personal claude.ai subscription instead");
     });
 
-    it("should refuse HAI_ROUTE=own-licence for a cached member, which is the bypass the flag used to open", async () => {
-      // Arrange — reproduced on a confirmed member's machine: HAI_OFFLINE=1 with
-      // HAI_ROUTE=own-licence billed their personal subscription.
+    it("should obey HAI_ROUTE=byol for a cached member without reading the cache at all", async () => {
+      // Arrange — a confirmed member who has typed the route by name. The block guards the
+      // accident; offline or not, a named route is not one.
       const seams = createFakeSeams({
-        env: { HOME, HAI_OFFLINE: "1", HAI_ROUTE: "own-licence" },
+        env: { HOME, HAI_OFFLINE: "1", HAI_ROUTE: "byol" },
         files: { [CACHE_PATH]: cacheFor(true), [CREDENTIALS]: LIVE_LOGIN },
         respond: respondAz
       });
 
       // Act
-      const act = resolveAuth({ seams, agentHub: hub() });
+      const { resolution } = await resolveAuth({ seams, agentHub: hub() });
 
       // Assert
-      await expect(act).rejects.toThrow("HMCTS funds your Claude usage");
+      expect(resolution).toMatchObject({ route: "byol", credentialSource: "host-oauth" });
+      expect(seams.runner.calls).toEqual([]);
     });
 
     it("should leave a cached non-member on their own licence with no refusal", async () => {
@@ -404,7 +430,7 @@ describe("resolveAuth", () => {
       const { resolution } = await resolveAuth({ seams, agentHub: hub() });
 
       // Assert
-      expect(resolution).toMatchObject({ route: "own-licence", credentialSource: "host-oauth" });
+      expect(resolution).toMatchObject({ route: "byol", credentialSource: "host-oauth" });
       expect(askedGraph(seams.runner.calls)).toBe(false);
     });
 
@@ -423,7 +449,7 @@ describe("resolveAuth", () => {
       // Assert — one Graph call for two runs is only possible if both keys are the same.
       expect(Object.keys(JSON.parse(written) as Record<string, unknown>)).toEqual([IDENTITY]);
       expect(seams.runner.calls.filter((call) => call.argv[1] === "rest")).toHaveLength(1);
-      expect(resolution).toMatchObject({ route: "gateway", credentialSource: "gateway-apim" });
+      expect(resolution).toMatchObject({ route: "ai-gateway", credentialSource: "gateway-apim" });
     });
   });
 });

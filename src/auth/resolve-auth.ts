@@ -11,9 +11,11 @@ import { gatherSignals, needsMembership, requestedRoute } from "./signals.js";
 
 /**
  * Resolves a route, consulting and refreshing the on-disk cache, and settles the one
- * question `resolveRoute` cannot answer on its own: whether the gateway is usable. The
+ * question `resolveRoute` cannot answer on its own: whether the AI Gateway is usable. The
  * cache only ever holds a group-membership answer, which saves one
- * `az rest checkMemberGroups`; credentials are never cached.
+ * `az rest checkMemberGroups`; credentials are never cached. It is therefore the default
+ * path's cache alone — an explicit `HAI_ROUTE` resolves no membership, so it neither reads
+ * nor writes it.
  *
  * `decideOnly` stops at the decision: no VPN probe, no Key Vault read, no `apiKeyHelper`
  * written and nothing said on the terminal. That is what `sbx-hai` wants, where the route
@@ -52,26 +54,27 @@ export async function resolveAuth(deps: { seams: Seams; agentHub: AgentHub; deci
   if (key !== null && askedGraph && signals.isBedrockGroupMember !== null) {
     await persist(deps, key, signals.isBedrockGroupMember);
   }
-  if (resolution.route === "gateway" && deps.decideOnly !== true) {
-    return await settleGateway(deps, resolution, requested === "gateway");
+  if (resolution.route === "ai-gateway" && deps.decideOnly !== true) {
+    return await settleGateway(deps, resolution);
   }
   return { resolution };
 }
 
 /**
- * The gateway's APIM key lives in a private Key Vault that needs az and the F5 VPN, so
+ * The AI Gateway's APIM key lives in a private Key Vault that needs az and the F5 VPN, so
  * whether the route works at all is I/O rather than a decision. When hai chose the gateway
  * itself and the key cannot be read, the fallback is a Bedrock key pasted by hand and
  * never the engineer's own subscription — that silent fallback is what this order exists
- * to prevent, so every step of it is said out loud. A route asked for by name still fails
- * as it did, because the engineer named it.
+ * to prevent, so every step of it is said out loud. `HAI_ROUTE=ai-gateway` fails outright
+ * instead: an explicit route is one credential from one source, and a downgrade would
+ * silently move who pays.
  */
-async function settleGateway(deps: { seams: Seams }, resolution: RouteResolution, byName: boolean): Promise<AuthResolution> {
+async function settleGateway(deps: { seams: Seams }, resolution: RouteResolution): Promise<AuthResolution> {
   const { seams } = deps;
   try {
     return { resolution, gateway: await prepareGateway({ seams }) };
   } catch (err) {
-    if (byName) {
+    if (resolution.byName) {
       throw err;
     }
     const why = `the AI Gateway was chosen but its APIM key could not be read (${messageOf(err)})`;
@@ -81,7 +84,11 @@ async function settleGateway(deps: { seams: Seams }, resolution: RouteResolution
       );
     }
     seams.logger.say(`${why}; falling back to an Amazon Bedrock API key — hai will not use your personal claude.ai subscription`);
-    return { resolution: { route: "bedrock", credentialSource: "prompt", reasons: [...resolution.reasons, why] } };
+    // `byName: false`, because hai chose this: the key is resolved the way the unset path
+    // resolves one, env → agent-hub → prompt. The two failures are independent — the hub
+    // probe can have thrown while the Key Vault failed for a VPN that is down — so a key
+    // the hub already holds must still be used rather than asked for and overwritten.
+    return { resolution: { route: "bedrock", credentialSource: "prompt", reasons: [...resolution.reasons, why], byName: false } };
   }
 }
 

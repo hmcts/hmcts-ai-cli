@@ -79,13 +79,32 @@ export function buildDockerArgs(ctx: ContainerContext): string[] {
   return [...argv, ctx.image, "bash", SUPERVISOR];
 }
 
-/** The interactive session: a second exec, as the image's user, into the already-running container. */
+/**
+ * The interactive session: a second exec, as the image's user, into the already-running
+ * container.
+ *
+ * The route's own environment goes **here**, not on `docker run`. `--env` on a create is
+ * create-time only, and `lockDecision` reattaches a second session to the container the
+ * first one started — `sessionName` is a hash of the repo path, so two terminals in one
+ * repo share it. A reattaching session would otherwise run under the *previous* session's
+ * payer environment: `HAI_ROUTE=bedrock` reattaching to a `byol` container got its bearer
+ * token (that arrives on this exec's stdin) with no `CLAUDE_CODE_USE_BEDROCK` to switch it
+ * on and the first session's `HAI_UNSET_ENV` still in force, so `claude` fell back to the
+ * bind-mounted `~/.claude` login — a personal session hai had just announced as HMCTS's.
+ *
+ * `ctx.sessionEnv` holds no secret: `splitEnv` keeps those for the exec stdin, and the
+ * unset list is names only.
+ */
 export function buildSessionExecArgs(ctx: ContainerContext, claudeArgv: string[]): string[] {
   const argv = [DOCKER_BIN, "exec", "-i"];
   if (ctx.tty) {
     argv.push("-t");
   }
-  return [...argv, "--user", ctx.containerUser, "-w", ctx.workdir, ctx.sessionName, "bash", ENTRYPOINT, ...claudeArgv];
+  argv.push("--user", ctx.containerUser, "-w", ctx.workdir);
+  for (const [name, value] of Object.entries(ctx.sessionEnv).sort(([a], [b]) => a.localeCompare(b))) {
+    argv.push("--env", `${name}=${value}`);
+  }
+  return [...argv, ctx.sessionName, "bash", ENTRYPOINT, ...claudeArgv];
 }
 
 export function buildSecretExecArgs(ctx: ContainerContext, name: string): string[] {
@@ -116,6 +135,15 @@ export interface ContainerContext {
   publicPorts: boolean;
   mounts: Mount[];
   tty: boolean;
-  /** Everything safe to record in the container config. The secret half never comes here. */
+  /**
+   * Facts about the whole container, safe to record in its config: the markers, the
+   * secrets dir, the nested DNS, the passthrough. The secret half never comes here.
+   */
   env: Record<string, string>;
+  /**
+   * This session's own route environment — the open half of what `buildClaudeEnv` added,
+   * plus `HAI_UNSET_ENV`. On the session exec rather than the create, because a second
+   * terminal reattaches to the same container and must not inherit the first's payer.
+   */
+  sessionEnv: Record<string, string>;
 }

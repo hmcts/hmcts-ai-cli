@@ -10,7 +10,7 @@ const INLINE_PREFIX = `${SETTINGS_FLAG}=`;
 const END_OF_OPTIONS = "--";
 
 export const API_KEY_HELPER_OVERRIDE_WARNING =
-  "your --settings replaces the apiKeyHelper hai generated for the gateway route, so the Entra token will stop being refreshed and the session will start failing authentication a few minutes in";
+  "your --settings replaces the apiKeyHelper hai generated for the ai-gateway route, so the Entra token will stop being refreshed and the session will start failing authentication a few minutes in";
 
 /**
  * claude's `--settings` is last-wins, not merged: a second one discards the first

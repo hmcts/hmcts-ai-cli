@@ -38,6 +38,18 @@ if [[ -f /opt/hai/gateway-token.sh ]]; then
     install -m 0700 /opt/hai/gateway-token.sh "$HOME/.local/state/hai/gateway-token.sh" 2>/dev/null || true
 fi
 
+# The variables belonging to the routes hai did *not* resolve, removed rather than merely
+# left unset: the image is built for Bedrock and may set CLAUDE_CODE_USE_BEDROCK itself,
+# which would outrank a personal route's OAuth credential and make hai's "paid for by"
+# line wrong. Before the credentials below, so one hai delivered is never unset.
+if [[ -n "${HAI_UNSET_ENV:-}" ]]; then
+    IFS=',' read -r -a hai_unset <<<"$HAI_UNSET_ENV"
+    for name in "${hai_unset[@]}"; do
+        [[ -n "$name" ]] && unset "$name"
+    done
+    unset hai_unset name HAI_UNSET_ENV
+fi
+
 # Credentials arrive one per `docker exec -i` stdin and land on a tmpfs, never in the
 # container's config: anything passed to docker run --env is readable afterwards with
 # docker inspect and is written to disk with the container. Each is consumed once.

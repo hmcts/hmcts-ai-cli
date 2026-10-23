@@ -4,7 +4,7 @@ import type { Env } from "../system/env.js";
 import type { Seams } from "../system/seams.js";
 import type { AgentHub } from "./agent-hub.js";
 import { hasHostClaudeCredential } from "./claude-credentials.js";
-import { isRoute, ROUTES, type Route, type Signals } from "./route.js";
+import { badRouteMessage, isRoute, type Route, type Signals } from "./route.js";
 
 export function requestedRoute(env: Env): Route | null {
   const requested = env.HAI_ROUTE;
@@ -12,38 +12,35 @@ export function requestedRoute(env: Env): Route | null {
     return null;
   }
   if (!isRoute(requested)) {
-    throw new Error(`HAI_ROUTE=${requested} is not a route; use one of ${ROUTES.join(", ")}`);
+    throw new Error(badRouteMessage(requested));
   }
   return requested;
 }
 
 /**
- * False when the environment alone already settles both the route and where its
- * credential comes from, in which case there is nothing to look up. The one source of
- * truth for that question, so `resolveAuth` and `gatherSignals` cannot drift apart.
+ * False when nothing a probe could find would change the answer. An explicit route names
+ * one credential and one source, so every signal here is about the *unset* path: hai goes
+ * and gets that one credential when the time comes rather than hunting for evidence of it
+ * first. The one source of truth for the question, so `resolveAuth` and `gatherSignals`
+ * cannot drift apart.
  */
 export function needsProbes(env: Env, requested: Route | null): boolean {
-  if (requested === "gateway" || requested === "own-licence") {
+  if (requested !== null) {
     return false;
   }
   return !hasValue(env.AWS_BEARER_TOKEN_BEDROCK);
 }
 
 /**
- * Membership decides more than the wording of a failure now: it is what puts a member on
- * the gateway and what stops anyone reaching their own subscription unawares, so it is
- * resolved whenever it could change the answer. That includes HAI_ROUTE=own-licence, which
- * a member is refused, and an exported CLAUDE_CODE_OAUTH_TOKEN, which no longer settles
- * anything on its own.
+ * Membership is what puts a member on the AI Gateway and what stops the unset path
+ * reaching a personal subscription unawares — and nothing else, now that an explicit route
+ * is obeyed rather than refused. So an explicit `HAI_ROUTE` resolves no membership at all,
+ * which drops an `az account show` and an `az rest checkMemberGroups` from every run that
+ * names its route. It coincides with `needsProbes` deliberately: both questions are "is
+ * this the unset path, and has the environment not already settled it".
  */
 export function needsMembership(env: Env, requested: Route | null): boolean {
-  if (requested === "own-licence") {
-    return true;
-  }
-  if (requested !== null) {
-    return false;
-  }
-  return !hasValue(env.AWS_BEARER_TOKEN_BEDROCK);
+  return needsProbes(env, requested);
 }
 
 /**
@@ -101,17 +98,23 @@ export async function gatherSignals(deps: {
   }
 
   // Only read when nobody has confirmed membership: a member is never routed to their own
-  // licence, so for them the answer could not change anything.
-  if (probing && base.requestedRoute === null && base.isBedrockGroupMember !== true) {
+  // licence, so for them the answer could not change anything. `probing` is already false
+  // for an explicit route, which is the only other caller this could matter to.
+  if (probing && base.isBedrockGroupMember !== true) {
     base.hasHostClaudeCredential = await hasHostClaudeCredential(seams);
   }
   return { signals: base, askedGraph };
 }
 
-/** A hub that cannot be reached is not evidence of "no key": the key fetch retries and can still prompt. */
+/**
+ * A hub that cannot be reached is not evidence of "no key": it decides nothing and is not
+ * fatal, the remaining signals choose the route, and `resolveBedrockKey` asks the hub again
+ * on any unset-path route that ends at bedrock. That retry is the point — a 5xx or this
+ * probe's 15s timeout must not turn into "paste a key the hub already holds".
+ */
 async function storedBedrockKeyPresent(agentHub: AgentHub, seams: Seams): Promise<boolean> {
   try {
-    return (await agentHub.getBedrockKey()) !== null;
+    return (await agentHub.getCredential("bedrock")) !== null;
   } catch (err) {
     seams.logger.verbose(`could not ask agent-hub for a stored Bedrock key: ${messageOf(err)}`);
     return false;

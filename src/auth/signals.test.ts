@@ -10,15 +10,15 @@ const KEY = "ABSKQmVkcm9jay1mYWtlLWtleS0wMDAwMDAwMDAw";
 const CREDENTIALS = `${HOME}/.claude/.credentials.json`;
 const LIVE_LOGIN = JSON.stringify({ claudeAiOauth: { accessToken: "sk-ant-oat01-x", expiresAt: Number.MAX_SAFE_INTEGER } });
 
-function fakeHub(getBedrockKey: AgentHub["getBedrockKey"] = async () => null): AgentHub & { gets: number } {
+function fakeHub(stored: (kind: string) => Promise<string | null> = async () => null): AgentHub & { gets: string[] } {
   const hub = {
-    gets: 0,
+    gets: [] as string[],
     baseUrl: "https://hub.test",
-    getBedrockKey: async () => {
-      hub.gets += 1;
-      return getBedrockKey();
+    getCredential: async (kind: string) => {
+      hub.gets.push(kind);
+      return stored(kind);
     },
-    putBedrockKey: async () => undefined
+    putCredential: async () => undefined
   };
   return hub;
 }
@@ -30,7 +30,7 @@ const graphRefused = () => ({ code: 1, stderr: "AADSTS700082: the refresh token 
 const askedGraph = (calls: { argv: string[] }[]) => calls.some((call) => call.argv[1] === "rest");
 
 describe("requestedRoute", () => {
-  it.each([["bedrock"], ["gateway"], ["own-licence"]])("should accept HAI_ROUTE=%s", (route) => {
+  it.each([["agent-hub"], ["byol"], ["ai-gateway"], ["bedrock"]])("should accept HAI_ROUTE=%s", (route) => {
     // Act / Assert
     expect(requestedRoute({ HAI_ROUTE: route })).toBe(route);
   });
@@ -45,16 +45,27 @@ describe("requestedRoute", () => {
 
   it("should refuse an unknown route and list the real ones", () => {
     // Act / Assert
-    expect(() => requestedRoute({ HAI_ROUTE: "own_licence" })).toThrow("bedrock, gateway, own-licence");
+    expect(() => requestedRoute({ HAI_ROUTE: "own_licence" })).toThrow("agent-hub, byol, ai-gateway, bedrock");
+  });
+
+  it.each([
+    ["own-licence", "byol"],
+    ["gateway", "ai-gateway"]
+  ])("should refuse the old %s by name rather than accept or ignore it", (old, replacement) => {
+    // Act / Assert — `gateway` is the one that bites: in cft-workspace
+    // AGENT_HUB_MODEL_ROUTE=gateway means Bedrock, so an alias would keep two opposite
+    // meanings of the word alive in files read together.
+    expect(() => requestedRoute({ HAI_ROUTE: old })).toThrow(`HAI_ROUTE=${replacement}`);
   });
 });
 
 describe("needsProbes", () => {
   it.each<[string, Record<string, string>, Route | null, boolean]>([
-    ["HAI_ROUTE=gateway settles it", {}, "gateway", false],
-    ["HAI_ROUTE=own-licence settles it", {}, "own-licence", false],
+    ["HAI_ROUTE=ai-gateway settles it", {}, "ai-gateway", false],
+    ["HAI_ROUTE=byol settles it", {}, "byol", false],
+    ["HAI_ROUTE=agent-hub settles it", {}, "agent-hub", false],
+    ["HAI_ROUTE=bedrock settles it, the hub no longer being one of its sources", {}, "bedrock", false],
     ["a key in the environment settles it", { AWS_BEARER_TOKEN_BEDROCK: KEY }, null, false],
-    ["HAI_ROUTE=bedrock still wants a stored key", {}, "bedrock", true],
     ["an exported OAuth token no longer settles anything", { CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-x" }, null, true],
     ["nothing settles it", {}, null, true]
   ])("should report that %s", (_name, env, requested, expected) => {
@@ -65,11 +76,11 @@ describe("needsProbes", () => {
 
 describe("needsMembership", () => {
   it.each<[string, Record<string, string>, Route | null, boolean]>([
-    ["HAI_ROUTE=own-licence, which a member is refused", {}, "own-licence", true],
-    ["HAI_ROUTE=own-licence even with a Bedrock key to hand", { AWS_BEARER_TOKEN_BEDROCK: KEY }, "own-licence", true],
     ["an exported OAuth token, which no longer settles the route", { CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-x" }, null, true],
     ["no signal at all", {}, null, true],
-    ["HAI_ROUTE=gateway, where membership changes nothing", {}, "gateway", false],
+    ["HAI_ROUTE=byol, which is obeyed rather than refused", {}, "byol", false],
+    ["HAI_ROUTE=agent-hub, where membership changes nothing", {}, "agent-hub", false],
+    ["HAI_ROUTE=ai-gateway, where membership changes nothing", {}, "ai-gateway", false],
     ["HAI_ROUTE=bedrock, where membership changes nothing", {}, "bedrock", false],
     ["a key in the environment, which is decided before membership", { AWS_BEARER_TOKEN_BEDROCK: KEY }, null, false]
   ])("should want the group answer for %s", (_name, env, requested, expected) => {
@@ -79,42 +90,18 @@ describe("needsMembership", () => {
 });
 
 describe("gatherSignals", () => {
-  it("should skip every probe for HAI_ROUTE=gateway", async () => {
-    // Arrange
-    const seams = createFakeSeams({ env: { HAI_ROUTE: "gateway" } });
-    const agentHub = fakeHub();
+  it.each([["agent-hub"], ["byol"], ["ai-gateway"], ["bedrock"]])("should look nothing up at all for HAI_ROUTE=%s", async (route) => {
+    // Arrange — an explicit route names one credential and one source, so no signal a
+    // probe could find would change the answer: no agent-hub call and no az.
+    const seams = createFakeSeams({ env: { HOME, HAI_ROUTE: route }, respond: memberResponse });
+    const agentHub = fakeHub(async () => KEY);
 
     // Act
     const { signals } = await gatherSignals({ seams, agentHub, offline: false, cachedGroupMembership: null });
 
     // Assert
-    expect(signals.requestedRoute).toBe("gateway");
-    expect(agentHub.gets).toBe(0);
-    expect(seams.runner.calls).toHaveLength(0);
-  });
-
-  it("should still check the group for HAI_ROUTE=own-licence, which a member is refused", async () => {
-    // Arrange
-    const seams = createFakeSeams({ env: { HAI_ROUTE: "own-licence" }, respond: memberResponse });
-    const agentHub = fakeHub();
-
-    // Act
-    const { signals } = await gatherSignals({ seams, agentHub, offline: false, cachedGroupMembership: null });
-
-    // Assert
-    expect(signals.isBedrockGroupMember).toBe(true);
-    expect(agentHub.gets).toBe(0);
-  });
-
-  it("should ask Graph nothing for HAI_ROUTE=own-licence when the answer is already cached", async () => {
-    // Arrange
-    const seams = createFakeSeams({ env: { HAI_ROUTE: "own-licence" }, respond: memberResponse });
-
-    // Act
-    const { signals } = await gatherSignals({ seams, agentHub: fakeHub(), offline: false, cachedGroupMembership: true });
-
-    // Assert
-    expect(signals.isBedrockGroupMember).toBe(true);
+    expect(signals.requestedRoute).toBe(route);
+    expect(agentHub.gets).toEqual([]);
     expect(seams.runner.calls).toHaveLength(0);
   });
 
@@ -128,7 +115,7 @@ describe("gatherSignals", () => {
 
     // Assert
     expect(signals.hasBedrockEnvKey).toBe(true);
-    expect(agentHub.gets).toBe(0);
+    expect(agentHub.gets).toEqual([]);
     expect(seams.runner.calls).toHaveLength(0);
   });
 
@@ -142,20 +129,7 @@ describe("gatherSignals", () => {
 
     // Assert
     expect(signals).toMatchObject({ hasOauthEnvToken: true, isBedrockGroupMember: true });
-    expect(agentHub.gets).toBe(1);
-  });
-
-  it("should still ask the hub for HAI_ROUTE=bedrock even with an OAuth token present", async () => {
-    // Arrange
-    const agentHub = fakeHub(async () => KEY);
-    const seams = createFakeSeams({ env: { HAI_ROUTE: "bedrock", CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-x" } });
-
-    // Act
-    const { signals } = await gatherSignals({ seams, agentHub, offline: false, cachedGroupMembership: null });
-
-    // Assert
-    expect(agentHub.gets).toBe(1);
-    expect(signals.hasStoredBedrockKey).toBe(true);
+    expect(agentHub.gets).toEqual(["bedrock"]);
   });
 
   it("should stop once the hub reports a stored key", async () => {
@@ -220,7 +194,7 @@ describe("gatherSignals", () => {
     ["a call it made itself", {}, null, memberResponse, true],
     ["a call Graph refused, which is still a call", {}, null, graphRefused, true],
     ["a cached answer, which the caller must not restamp", {}, true, memberResponse, false],
-    ["HAI_ROUTE=gateway, where the group is never asked", { HAI_ROUTE: "gateway" }, null, memberResponse, false]
+    ["HAI_ROUTE=ai-gateway, where the group is never asked", { HAI_ROUTE: "ai-gateway" }, null, memberResponse, false]
   ])("should report the group answer as coming from %s", async (_name, env, cachedGroupMembership, respond, expected) => {
     // Arrange
     const seams = createFakeSeams({ env: { HOME, ...env }, respond });
@@ -230,17 +204,6 @@ describe("gatherSignals", () => {
 
     // Assert
     expect(askedGraph).toBe(expected);
-  });
-
-  it("should not look for a host claude.ai login when bedrock was asked for by name", async () => {
-    // Arrange
-    const seams = createFakeSeams({ env: { HOME, HAI_ROUTE: "bedrock" }, files: { [CREDENTIALS]: LIVE_LOGIN }, respond: memberResponse });
-
-    // Act
-    const { signals } = await gatherSignals({ seams, agentHub: fakeHub(), offline: false, cachedGroupMembership: null });
-
-    // Assert
-    expect(signals.hasHostClaudeCredential).toBe(false);
   });
 
   it("should treat a hub it cannot reach as no evidence either way", async () => {
@@ -268,7 +231,7 @@ describe("gatherSignals", () => {
       const { signals } = await gatherSignals({ seams, agentHub, offline: true, cachedGroupMembership: null });
 
       // Assert
-      expect(agentHub.gets).toBe(0);
+      expect(agentHub.gets).toEqual([]);
       expect(seams.runner.calls).toHaveLength(0);
       expect(signals).toMatchObject({ hasStoredBedrockKey: false, isBedrockGroupMember: null });
       expect(seams.lines.join("")).toContain("HAI_OFFLINE=1");
