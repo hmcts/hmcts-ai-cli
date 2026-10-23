@@ -80,7 +80,11 @@ jobs:
       - name: Publish
         run: npm publish
 
-      # Publish first: a tag with no package behind it is worse than an unbumped master.
+      # Publish first: a tag with no package behind it is a cosmetic gap, since the next run
+      # bumps past it. The opposite — a published version master does not know about — is not
+      # recoverable on its own: every later run bumps to that same number and npm answers 403
+      # "the feed already contains" for good. That is what happened to 0.0.14, so the push
+      # below has to survive a merge landing while the gates ran.
       - name: Commit the bump and tag the release
         env:
           VERSION: ${{ steps.bump.outputs.version }}
@@ -91,5 +95,19 @@ jobs:
           # This cannot loop: pushes made with GITHUB_TOKEN do not trigger workflows.
           git commit -m "chore: release v${VERSION} [skip ci]"
           git tag "v${VERSION}"
-          git push origin "HEAD:${GITHUB_REF_NAME}"
+          # A merge during the gates leaves this push non-fast-forward. Rebase onto it and try
+          # again: the commit touches package.json alone, and the concurrency group means no
+          # other release can be moving that file underneath us.
+          for attempt in 1 2 3; do
+              if git push origin "HEAD:${GITHUB_REF_NAME}"; then
+                  break
+              fi
+              if [ "$attempt" = 3 ]; then
+                  echo "::error::published v${VERSION} but could not record it on ${GITHUB_REF_NAME}. Set version to ${VERSION} in package.json by hand, or the next release will retry a version the feed already has." >&2
+                  exit 1
+              fi
+              git fetch origin "${GITHUB_REF_NAME}"
+              git rebase "origin/${GITHUB_REF_NAME}"
+              git tag -f "v${VERSION}"
+          done
           git push origin "v${VERSION}"
