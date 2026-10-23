@@ -1,29 +1,64 @@
-export const ROUTES = ["bedrock", "gateway", "own-licence"] as const;
+/**
+ * One credential from one source each, which is what makes "an explicit HAI_ROUTE is
+ * obeyed" expressible at all: `bedrock` used to mean an environment key *or* a key
+ * agent-hub holds *or* a key pasted at a prompt, so there was no way to name a single
+ * thing for hai to go and get.
+ */
+export const ROUTES = ["agent-hub", "byol", "ai-gateway", "bedrock"] as const;
+
+/**
+ * The names these two replaced, kept only to fail by name. No aliases: `gateway` is the
+ * worse of the two, because cft-workspace's `AGENT_HUB_MODEL_ROUTE=gateway` is a legacy
+ * alias for **Bedrock** while hai's `gateway` meant the AI Gateway — the same word with
+ * opposite meanings in two files that are read together.
+ */
+export const RENAMED_ROUTES: Record<string, Route> = {
+  "own-licence": "byol",
+  gateway: "ai-gateway"
+};
+
+/**
+ * Said on every launch, not under `HAI_VERBOSE`. Two routes bill a personal Claude licence
+ * and two bill HMCTS, and the name does not say which; now that an explicit `HAI_ROUTE` is
+ * obeyed with no fallbacks, this line is the only thing left that catches an `HAI_ROUTE`
+ * typed deliberately on day one and forgotten in a shell profile by day ten.
+ */
+export const BILLED_TO: Record<Route, string> = {
+  "agent-hub": "the personal Claude licence agent-hub holds a token for, not HMCTS",
+  byol: "your own Claude licence, not HMCTS",
+  "ai-gateway": "HMCTS, through the AI Gateway",
+  bedrock: "HMCTS, through Amazon Bedrock"
+};
 
 export const REMEDIES = [
   "ask in the DTSSE channel for an Amazon Bedrock API key, then run hai again and paste it when prompted",
-  "run hai with HAI_ROUTE=gateway to go through the HMCTS AI Gateway instead (needs az login and the F5 VPN)",
-  "run `claude setup-token` on your own Claude licence and export the result as CLAUDE_CODE_OAUTH_TOKEN, or run HAI_ROUTE=own-licence"
+  "run hai with HAI_ROUTE=ai-gateway to go through the HMCTS AI Gateway instead (needs az login and the F5 VPN)",
+  "run `claude setup-token` on your own Claude licence and export the result as CLAUDE_CODE_OAUTH_TOKEN, or run HAI_ROUTE=byol"
 ];
 
-/**
- * Why a member of the Bedrock developer group is never put on their own licence: HMCTS
- * already funds their capacity, so personal spend is both unnecessary and invisible — a
- * single session burned millions of tokens of someone's own claude.ai subscription before
- * anybody noticed.
- */
-export const MEMBER_REFUSAL =
-  "you are in the Bedrock developer group, so HMCTS funds your Claude usage and hai will not bill your personal claude.ai subscription, which is spend nobody sees. Run hai with no HAI_ROUTE to use the AI Gateway, or HAI_ROUTE=bedrock to paste a Bedrock API key.";
-
 export const UNKNOWN_MEMBERSHIP_REFUSAL =
-  "your Bedrock developer group membership could not be confirmed, so hai will not spend your personal claude.ai subscription by accident. Run az login with the F5 VPN up and try again, or set HAI_ROUTE=own-licence if billing your own subscription is genuinely what you want.";
+  "your Bedrock developer group membership could not be confirmed, so hai will not spend your personal claude.ai subscription by accident. Run az login with the F5 VPN up and try again, or set HAI_ROUTE=byol if billing your own subscription is genuinely what you want.";
 
 /** Offline there is nothing to retry: az and Graph were skipped because that is what the flag asks for. */
 export const OFFLINE_MEMBERSHIP_REFUSAL =
-  "HAI_OFFLINE=1, so your Bedrock developer group membership could not be checked and hai will not spend your personal claude.ai subscription by accident. Set HAI_ROUTE=own-licence if billing your own subscription is genuinely what you want, or drop HAI_OFFLINE to let hai check the group.";
+  "HAI_OFFLINE=1, so your Bedrock developer group membership could not be checked and hai will not spend your personal claude.ai subscription by accident. Set HAI_ROUTE=byol if billing your own subscription is genuinely what you want, or drop HAI_OFFLINE to let hai check the group.";
 
 export function isRoute(value: string): value is Route {
   return (ROUTES as readonly string[]).includes(value);
+}
+
+/** What to say about an `HAI_ROUTE` that is not a route, naming the replacement when there is one. */
+export function badRouteMessage(value: string): string {
+  const replacement = RENAMED_ROUTES[value];
+  if (replacement !== undefined) {
+    return `HAI_ROUTE=${value} no longer exists; it is now HAI_ROUTE=${replacement}`;
+  }
+  return `HAI_ROUTE=${value} is not a route; use one of ${ROUTES.join(", ")}`;
+}
+
+/** The line every launch prints, so nobody has to remember which routes HMCTS pays for. */
+export function billingNote(route: Route): string {
+  return `route ${route} — paid for by ${BILLED_TO[route]}`;
 }
 
 /**
@@ -44,17 +79,17 @@ export function resolveRoute(signals: Signals): RouteResolution {
     // Ahead of every personal-credential branch and unconditional: each Claude Code user
     // has a live claude.ai login, so testing for one first made this unreachable and a
     // missing Bedrock key quietly became "bill it to them".
-    return { route: "gateway", credentialSource: "gateway-apim", reasons: ["you are in the Bedrock developer group, so HMCTS pays for this session"] };
+    return { route: "ai-gateway", credentialSource: "gateway-apim", reasons: ["you are in the Bedrock developer group, so HMCTS pays for this session"] };
   }
   if (signals.isBedrockGroupMember === null) {
     return unknownMembership(signals);
   }
   if (signals.hasOauthEnvToken) {
-    return { route: "own-licence", credentialSource: "env", reasons: ["you are not in the Bedrock developer group, and CLAUDE_CODE_OAUTH_TOKEN is set"] };
+    return { route: "byol", credentialSource: "env", reasons: ["you are not in the Bedrock developer group, and CLAUDE_CODE_OAUTH_TOKEN is set"] };
   }
   if (signals.hasHostClaudeCredential) {
     return {
-      route: "own-licence",
+      route: "byol",
       credentialSource: "host-oauth",
       reasons: ["you are not in the Bedrock developer group, and this machine has a live claude.ai login"]
     };
@@ -72,35 +107,37 @@ function unknownMembership(signals: Signals): RouteResolution {
     // The refusal stands offline, but telling someone who asked for no lookups to go and
     // run az login is advice against their own flag.
     const refusal = signals.offline ? OFFLINE_MEMBERSHIP_REFUSAL : UNKNOWN_MEMBERSHIP_REFUSAL;
-    return { route: "own-licence", credentialSource: "refused", reasons: [refusal] };
+    return { route: "byol", credentialSource: "refused", reasons: [refusal] };
   }
   // Nothing personal to fall back to, so the only thing left is a key pasted by hand,
   // and offering that spends nobody's own subscription.
   return { route: "bedrock", credentialSource: "prompt", reasons: ["no stored Bedrock key, and Bedrock group membership could not be checked"] };
 }
 
+/**
+ * A typed `HAI_ROUTE` is a choice, so it is obeyed: one credential, one source, and a
+ * failure naming that source when it cannot be had. Nothing here refuses and nothing here
+ * falls through to a second source — the group check above guards the *accident*, which is
+ * the unset path, and refusing a deliberate act only taught people to go round it.
+ */
 function explicit(signals: Signals, route: Route): RouteResolution {
   const reasons = [`HAI_ROUTE=${route}`];
-  if (route === "own-licence") {
-    // Asking for it by name is refused rather than ignored, so the engineer is told why.
-    if (signals.isBedrockGroupMember === true) {
-      return { route, credentialSource: "refused", reasons: [...reasons, MEMBER_REFUSAL] };
-    }
+  if (route === "agent-hub") {
+    return { route, credentialSource: "agent-hub", reasons: [...reasons, "the Claude token agent-hub holds for you"] };
+  }
+  if (route === "byol") {
     if (signals.hasOauthEnvToken) {
       return { route, credentialSource: "env", reasons: [...reasons, "CLAUDE_CODE_OAUTH_TOKEN is set"] };
     }
-    return { route, credentialSource: "host-oauth", reasons };
+    return { route, credentialSource: "host-oauth", reasons: [...reasons, "the claude.ai login on this machine"] };
   }
-  if (route === "gateway") {
+  if (route === "ai-gateway") {
     return { route, credentialSource: "gateway-apim", reasons };
   }
   if (signals.hasBedrockEnvKey) {
     return { route, credentialSource: "env", reasons: [...reasons, "AWS_BEARER_TOKEN_BEDROCK is set"] };
   }
-  if (signals.hasStoredBedrockKey) {
-    return { route, credentialSource: "agent-hub", reasons: [...reasons, "agent-hub holds a Bedrock API key for you"] };
-  }
-  return { route, credentialSource: "prompt", reasons: [...reasons, "no Bedrock key in the environment or on agent-hub"] };
+  return { route, credentialSource: "prompt", reasons: [...reasons, "no AWS_BEARER_TOKEN_BEDROCK in the environment, so hai asks for one"] };
 }
 
 export type Route = (typeof ROUTES)[number];
@@ -108,7 +145,7 @@ export type Route = (typeof ROUTES)[number];
 /**
  * "unavailable" is the no-signal case: the caller fails and prints every remedy.
  * "refused" names a route hai will not take at all; the caller fails with the reasons,
- * which already say what to do instead.
+ * which already say what to do instead. Only the unset path can produce either.
  */
 export type CredentialSource = "env" | "agent-hub" | "host-oauth" | "prompt" | "gateway-apim" | "unavailable" | "refused";
 

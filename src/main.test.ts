@@ -20,7 +20,7 @@ describe("main", () => {
     // Assert
     expect(seams.runner.execCalls[0]?.argv.at(-1)).toBe("-c");
     expect(seams.runner.execCalls[0]?.argv[0]).toBe("claude");
-    expect(seams.lines).toEqual([]);
+    expect(seams.lines).toEqual(["hai: route bedrock — paid for by HMCTS, through Amazon Bedrock\n"]);
   });
 
   it("should report a failure on stderr and exit 1", async () => {
@@ -41,7 +41,7 @@ describe("main", () => {
   it("should redact a secret that reached an error message", async () => {
     // Arrange
     const seams = createFakeSeams({
-      env: { HOME, HAI_NO_UPDATE: "1", HAI_ROUTE: "gateway" },
+      env: { HOME, HAI_NO_UPDATE: "1", HAI_ROUTE: "ai-gateway" },
       files: { "/.dockerenv": "" },
       respond: (argv) => (argv[1] === "keyvault" ? { code: 1, stderr: `rejected ${KEY}` } : { code: 0 })
     });

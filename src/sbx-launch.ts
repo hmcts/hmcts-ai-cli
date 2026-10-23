@@ -14,8 +14,8 @@ import { findWorkspaceRoot } from "./workspace/workspace-root.js";
  * Docker Sandboxes microVM instead of a container hai starts itself.
  *
  * The claude argv is *not* built here, unlike the other two backends: the kit's own launch
- * script decides between `claude --dangerously-skip-permissions` and `.claude/run.sh`
- * depending on which credential sbx bound, so hai forwards the arguments and nothing else.
+ * script execs `hai` with the arguments after the `--` and lets that resolve the route
+ * inside the sandbox, so hai forwards the arguments and nothing else.
  */
 export async function launchSbx(deps: { seams: Seams; processArgv: string[] }): Promise<void> {
   const { seams } = deps;

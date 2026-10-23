@@ -31,7 +31,7 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
 - **`hair` delegates to `launch()`; it never spawns `claude`.** Its job ends at claiming a
   session id, after which it hands `["-r", id, ...rest]` to hai's own entrypoint.
   Spawning `claude` from `hair` would bypass `resolveRoute` and `resolveAuth` — including
-  the unconditional Bedrock-developer-group check, which exists because one session
+  the Bedrock-developer-group check on the default path, which exists because one session
   silently billed roughly 3.3M tokens to an engineer's personal claude.ai subscription.
   Delegating also inherits container mode, the port publishing and the self-update for
   free. The handover swaps `scriptPath` for `haiScriptPath()`, because a self-update inside
@@ -120,7 +120,7 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
   fallback safe to degrade.
 - **`--settings` is the one deliberate exception, and it stays.** `claude`'s `--settings`
   is last-wins rather than merged, so passing it twice discards hai's own settings
-  silently — on the gateway route that drops the `apiKeyHelper` and the session starts
+  silently — on the ai-gateway route that drops the `apiKeyHelper` and the session starts
   failing auth a few minutes in. `src/claude/user-settings.ts` therefore lifts a
   user-supplied `--settings` out of the forwarded argv, merges it over hai's with the
   user's keys winning, and emits exactly one. This is not a violation of the rule above
@@ -132,38 +132,86 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
   host's real `~/.claude.json`, so seeding it recorded an acceptance of risk in the
   engineer's own config for a prompt hai can no longer raise. Someone who types the flag on
   a host that has never accepted sees that screen once, which is the point.
-- **A member of the Bedrock developer group can never reach `own-licence`.** HMCTS funds
-  their capacity, so billing a personal claude.ai subscription is always the wrong outcome,
-  and it is invisible while it happens — one session put roughly 3.3M tokens across 20
-  subagents on an engineer's own account while everybody believed it was on Bedrock. The
-  group check therefore sits in `resolveRoute` **ahead of** every personal-credential
-  branch and is unconditional: `hasHostClaudeCredential` used to be tested first, and since
-  every Claude Code user has a live claude.ai login that made the membership branch
-  unreachable, so a missing Bedrock key quietly became "use their own subscription". An
-  explicit `HAI_ROUTE=own-licence` from a member is refused rather than ignored, so the
-  engineer is told why. Membership that could not be confirmed refuses the personal routes
-  too, naming `HAI_ROUTE=own-licence` as the way to say that is genuinely what you want.
+- **A route is one credential from one source.** `agent-hub` is the Claude token the hub
+  holds (its `claude` kind), `byol` is a Claude OAuth credential on this machine,
+  `ai-gateway` is the APIM key in the private Key Vault, `bedrock` is
+  `AWS_BEARER_TOKEN_BEDROCK` from the environment or a paste. That is what makes "an
+  explicit route is obeyed" expressible at all: `bedrock` used to mean an environment key
+  *or* a hub-stored key *or* a prompt, three sources behind one name, so there was no
+  single thing to go and get and no way to say "no fallbacks".
+- **An explicit `HAI_ROUTE` is obeyed: no refusals, no fallbacks, no second source.**
+  `explicit()` is a straight mapping, and every way of not having that one credential is a
+  failure naming it. Refusing a typed route taught people to go round the refusal; the
+  group check below guards the *accident*, which is the unset path. The refusal was also
+  wrong on its own terms: agent-hub assigns a virtual agent's route from whether its owner
+  holds the `AIGateway.User` **app role**, while the refusal tested membership of an Entra
+  **group**, and those two populations need not be the same — so an owner in the group whose
+  pod is assigned the personal route had that pod's explicit request refused before anything
+  looked at the `CLAUDE_CODE_OAUTH_TOKEN` the pod had already exported. A consequence worth
+  knowing: a named route resolves no membership at all, so `src/auth/signals.ts` makes no
+  `az account show` and no `az rest checkMemberGroups`, and `src/auth/auth-cache.ts` is
+  the default path's alone.
+- **The credential fetch honours the resolved source rather than deciding again.**
+  `resolveBedrockKey` takes the resolution's `credentialSource` and reads agent-hub only
+  when that source *is* `agent-hub`. The asymmetry is the point: on the unset path a
+  hub-stored key is the **signal** that chose the bedrock route (`hasStoredBedrockKey`), so
+  reading the hub there is not a fallback, it is the reason we are there — while a named
+  `HAI_ROUTE=bedrock` is the environment or a paste, full stop. Deciding twice meant a named
+  route silently reached the hub *and* that the launch line said `prompt` for a key that had
+  come off the hub. A hub that failed during `gatherSignals` is therefore no longer re-asked
+  here; it decides nothing either way and a key can still be pasted.
+- **`own-licence` and `gateway` are gone, and they fail by name rather than aliasing.**
+  `badRouteMessage` names the replacement. `gateway` is the one that had to go: in
+  cft-workspace `AGENT_HUB_MODEL_ROUTE=gateway` is a legacy alias meaning **Bedrock** while
+  hai's `gateway` meant the AI Gateway — the same word with opposite meanings in two files
+  read together. An alias would have kept both alive.
+- **The launch line says who pays, unconditionally.** `billingNote` goes through
+  `logger.say`, not `logger.verbose`, and is printed before any credential is fetched so it
+  is also the answer to "why am I being asked to paste a key". Two routes bill a personal
+  Claude licence (`agent-hub`, `byol`) and two bill HMCTS (`ai-gateway`, `bedrock`), and the
+  name does not say which. Now that a typed route is obeyed, this is the only thing left
+  that catches an `HAI_ROUTE` set deliberately on day one and forgotten in a shell profile
+  by day ten.
+- **A member of the Bedrock developer group never reaches a personal licence by accident.**
+  HMCTS funds their capacity, so billing a personal claude.ai subscription is always the
+  wrong outcome, and it is invisible while it happens — one session put roughly 3.3M tokens
+  across 20 subagents on an engineer's own account while everybody believed it was on
+  Bedrock. The group check therefore sits in `resolveRoute`'s unset path **ahead of** every
+  personal-credential branch and is unconditional there: `hasHostClaudeCredential` used to
+  be tested first, and since every Claude Code user has a live claude.ai login that made the
+  membership branch unreachable, so a missing Bedrock key quietly became "use their own
+  subscription". **Do not move that ordering**, and note that a hub-stored Bedrock key is
+  one of the signals ahead of it. Membership that could not be confirmed refuses the
+  personal branch too, naming `HAI_ROUTE=byol` as the way to say that is genuinely what you
+  want — because an unanswered question is not an answer of "not a member".
 - **`needsMembership` is what keeps that signal resolved.** The block is only as good as
-  `isBedrockGroupMember`, so `src/auth/signals.ts` resolves it on the ordinary path and for
-  `HAI_ROUTE=own-licence`, and no longer lets an exported `CLAUDE_CODE_OAUTH_TOKEN` or a
-  host claude.ai login short-circuit past it. The only things that still skip it are a
-  Bedrock key in the environment, `HAI_ROUTE=bedrock`, `HAI_ROUTE=gateway` and a cached
-  answer — none of which can lead anywhere personal. The host credential is read *after*
-  the group check and only when membership is not confirmed, because for a member the
-  answer could not change anything.
-- **The gateway's fallback chain never ends at a personal subscription.** Whether the
+  `isBedrockGroupMember`, so `src/auth/signals.ts` resolves it for the unset path and no
+  longer lets an exported `CLAUDE_CODE_OAUTH_TOKEN` or a host claude.ai login short-circuit
+  past it. The things that skip it are a Bedrock key in the environment, any explicit
+  `HAI_ROUTE` and a cached answer. The host credential is read *after* the group check and
+  only when membership is not confirmed, because for a member the answer could not change
+  anything.
+- **The AI Gateway's fallback chain never ends at a personal subscription.** Whether the
   gateway works is I/O, not a decision — the APIM key is in a private Key Vault behind the
-  F5 VPN — so `resolveRoute` returns `gateway` and `resolveAuth` settles it, downgrading to
-  a pasted Bedrock key when the key cannot be read and failing when there is no TTY to
+  F5 VPN — so `resolveRoute` returns `ai-gateway` and `resolveAuth` settles it, downgrading
+  to a pasted Bedrock key when the key cannot be read and failing when there is no TTY to
   paste into. Every step of that says out loud which fallback happened and why; silence is
-  what let the incident run. A `HAI_ROUTE=gateway` asked for by name still fails outright
-  rather than downgrade, because the engineer named it.
+  what let the incident run. `HAI_ROUTE=ai-gateway` fails outright instead of downgrading:
+  a named route is one source, and a downgrade would move who pays without being asked.
+- **The `agent-hub` route is plumbing the hub does not serve yet.** Its credential is the
+  hub's `claude` kind — `claude setup-token` output, which cft-workspace's virtual-agent
+  entrypoint exports as `CLAUDE_CODE_OAUTH_TOKEN`, and the one variable `buildClaudeEnv`
+  sets for this route. The hub's `OWNER_READABLE` is
+  `["bedrock", "claude_md", "git_identity"]`, so today an owner asking for `claude` gets a
+  403 and `resolveHubClaudeToken` fails naming the hub. Failing is deliberate: injecting
+  nothing would have `claude` fall back to whatever login is in `~/.claude`, which is a
+  different licence and a different bill. Widening the hub is a change to the hub.
 - **Only a group answer that was freshly fetched is stamped in the cache.** `gatherSignals`
   reports `askedGraph` so `resolveAuth` can tell a Graph answer from a cache hit, and a hit
   writes nothing at all. Persisting whenever `isBedrockGroupMember` was non-null re-stamped
   `at` with the clock on every run, and since `isFresh` is `now - at < 12h` the TTL slid
   forward each launch: anyone running hai at least daily was checked against Graph once,
-  ever. A cached `{isMember: false}` then went on routing them to `own-licence` after they
+  ever. A cached `{isMember: false}` then went on routing them to a personal licence after they
   were added to the group — the exact invisible personal spend the group check exists to
   stop. Do not "fix" that by preserving the old `at` on a write: a hit has nothing to write.
   The 12h TTL is deliberate now that it expires, and is discussed next to `CACHE_TTL_MS`.
@@ -173,21 +221,20 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
   `logger.verbose` line, so settling the gateway for it put real I/O behind a line most runs
   never print, and when the Key Vault read failed (off the VPN, the common case for
   `sbx-hai`) it announced a Bedrock fallback that is untrue there: `sbx-hai` forwards no
-  credential and no route environment, sbx injecting its own. The refusals still apply, so
-  the note can never name a route that would bill a member's own subscription. Container
-  mode and the in-place path keep the full behaviour.
+  credential and no route environment, sbx injecting its own. The unset path's refusals
+  still apply, so a note hai arrived at by itself can never name a route that would bill a
+  member's own subscription. Container mode and the in-place path keep the full behaviour.
 - **`HAI_OFFLINE=1` skips what goes over the network, not what is on the machine.** Graph
   and agent-hub are not consulted; `az account show`, the group cache and a claude.ai login
   in `~/.claude` are all read, because none of them is a call out — `az account show` reads
   `~/.azure/azureProfile.json`, which is why it still answers after the refresh token has
-  expired. So offline a membership confirmed earlier in the day still decides: a cached
-  member is refused the personal routes, `HAI_ROUTE=own-licence` included, and a cached
-  non-member reaches their own licence with no refusal at all. Skipping the identity call
-  was the last way to bill a confirmed member's own subscription —
-  `HAI_OFFLINE=1 HAI_ROUTE=own-licence` left `isBedrockGroupMember` null, and an unconfirmed
-  membership permits a route asked for by name. With nothing cached, membership is genuinely
-  unknown and the refusal stands, naming `HAI_ROUTE=own-licence`
-  (`OFFLINE_MEMBERSHIP_REFUSAL`) rather than the `az login` or VPN the flag opted out of.
+  expired. So offline a membership confirmed earlier in the day still decides the unset
+  path: a cached member goes to the AI Gateway and a cached non-member reaches their own
+  licence with no refusal at all. With nothing cached, membership is genuinely unknown and
+  the refusal stands, naming `HAI_ROUTE=byol` (`OFFLINE_MEMBERSHIP_REFUSAL`) rather than the
+  `az login` or VPN the flag opted out of. `HAI_OFFLINE=1 HAI_ROUTE=byol` is obeyed, as every
+  typed route is; what it costs is `HAI_ROUTE=agent-hub`, whose one source is a call out, so
+  that combination fails rather than falling back to the login on this machine.
 - **The offline cache lookup goes through `readAzAccount`, and that is the whole point.**
   The key has to be byte-identical online and offline or an answer written online is never
   found offline, which is the bug class that made the old route cache dead. Parsing
@@ -226,6 +273,16 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
   the entrypoint exports and deletes each one. `ContainerContext` holds only the open half,
   so no argv builder can reach a secret even by mistake; the secret half is `LaunchContext`'s
   and only `deliverSecrets` sees it.
+- **`buildClaudeEnv` is the only way a credential reaches a container session.**
+  `passthroughEnv` carries no credential-bearing name by design, so whatever
+  `buildClaudeEnv` leaves out simply is not there inside. That is why `byol` returns an
+  exported `CLAUDE_CODE_OAUTH_TOKEN` rather than `{}`: with `{}` a container session on
+  `byol` fell back to the bind-mounted `~/.claude` login, which is a different licence and a
+  different bill — the same class of mistake as discarding the `agent-hub` token. Both names
+  are in `isSecretEnvKey`, so both travel on the `docker exec` stdin and neither appears in
+  `docker run` argv. In place the value is the one the process already had, so repeating it
+  changes nothing. A `byol` session whose credential genuinely *is* the `~/.claude` login
+  needs nothing injected: that directory is bind-mounted.
 - **The container never gets host networking.** A second `dockerd` sharing the host's
   network namespace reconfigures the host's `docker0` and flushes the host daemon's
   iptables chains, breaking every container on the machine. `--network=host` is therefore
@@ -271,7 +328,8 @@ table-testable:
 
 | Pure | I/O that feeds it |
 |---|---|
-| `resolveRoute(signals)` | `gatherSignals` |
+| `resolveRoute(signals)`, `billingNote`, `badRouteMessage` | `gatherSignals` |
+| `buildClaudeEnv(input)` | `resolveBedrockKey`, `resolveHubClaudeToken`, `prepareGateway` |
 | `isInContainer(probe)` | `probeContainer` |
 | `skipUpdateCheck(input)` | `maybeSelfUpdate` |
 | `detectPackageManager(input)` | `maybeSelfUpdate` |
@@ -533,9 +591,10 @@ behaviour:
   records the digest of the one architecture it pulled, so a difference from the tag's
   digest is only stale if the recorded digest is *not* a child of the published multi-arch
   index. Every path that cannot tell reports not stale.
-- **The claude argv is not built here.** The kit's own launch script chooses between
-  `claude --dangerously-skip-permissions` and `.claude/run.sh` depending on which credential
-  sbx bound, so `sbx-hai` forwards the arguments after a `--` and nothing else.
+- **The claude argv is not built here.** The kit's own launch script execs `hai` with the
+  arguments after the `--`, so the route is resolved inside the sandbox and `sbx-hai`
+  forwards those arguments and nothing else. (`.claude/run.sh` is being deleted from
+  cft-workspace; the kit launcher no longer branches on which credential sbx bound.)
 - **No credential and no route environment is forwarded.** sbx injects the Anthropic
   credential from its own secret store (`scripts/sbx-setup` puts it there), and the kit owns
   the Bedrock environment, so forwarding hai's would fight it. The route is still resolved

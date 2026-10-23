@@ -168,7 +168,7 @@ async function gatherContext(input: { seams: Seams; added: Record<string, string
 }
 
 /**
- * The container's own state directory is not the host's, so the gateway route's
+ * The container's own state directory is not the host's, so the ai-gateway route's
  * apiKeyHelper is named at its container path and installed there by the entrypoint, and
  * the settings go inline rather than as a file the host would have to write inside.
  */

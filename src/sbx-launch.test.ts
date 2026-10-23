@@ -149,7 +149,7 @@ describe("launchSbx", () => {
 
     // Assert
     const said = seams.lines.join("");
-    expect(said).toContain("route gateway via gateway-apim would apply on this host");
+    expect(said).toContain("route ai-gateway via gateway-apim would apply on this host");
     expect(said).not.toContain("APIM key could not be read");
     expect(seams.runner.calls.some((call) => call.argv[1] === "keyvault")).toBe(false);
     expect(seams.fs.store.has(`${HOME}/.local/state/hai/${HELPER_FILE}`)).toBe(false);

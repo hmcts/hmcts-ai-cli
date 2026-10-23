@@ -5,15 +5,18 @@ import { PASSTHROUGH, passthroughEnv, splitEnv } from "./container-env.js";
 
 const BEDROCK_KEY = "ABSKQmVkcm9jay1mYWtlLWtleS0wMDAwMDAwMDAw";
 const APIM_KEY = "fake-apim-subscription-key";
+const CLAUDE_TOKEN = "sk-ant-oat01-from-the-hub";
 
 describe("splitEnv", () => {
   it.each(ROUTES)("should put every credential the %s route injects on the secret side", (route) => {
     // Arrange
     const env = buildClaudeEnv({
-      env: {},
+      // byol injects nothing but an exported token, so without one its row proves nothing.
+      env: { CLAUDE_CODE_OAUTH_TOKEN: CLAUDE_TOKEN },
       route,
       bedrockKey: BEDROCK_KEY,
-      gateway: route === "gateway" ? { apimKey: APIM_KEY, helperPath: "/state/gateway-token.sh" } : undefined
+      claudeToken: CLAUDE_TOKEN,
+      gateway: route === "ai-gateway" ? { apimKey: APIM_KEY, helperPath: "/state/gateway-token.sh" } : undefined
     });
 
     // Act
@@ -22,6 +25,7 @@ describe("splitEnv", () => {
     // Assert
     expect(Object.values(open).join(" ")).not.toContain(BEDROCK_KEY);
     expect(Object.values(open).join(" ")).not.toContain(APIM_KEY);
+    expect(Object.values(open).join(" ")).not.toContain(CLAUDE_TOKEN);
     expect({ ...open, ...secret }).toEqual(env);
   });
 

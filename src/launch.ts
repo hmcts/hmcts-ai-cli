@@ -1,8 +1,10 @@
 import { type AgentHub, createAgentHub } from "./auth/agent-hub.js";
 import { resolveBedrockKey } from "./auth/bedrock-key.js";
 import { buildClaudeEnv } from "./auth/claude-env.js";
+import { resolveHubClaudeToken } from "./auth/claude-token.js";
 import type { Gateway } from "./auth/gateway.js";
 import { type AuthResolution, resolveAuth } from "./auth/resolve-auth.js";
+import { billingNote } from "./auth/route.js";
 import { buildClaudeArgs, forwardArgv } from "./claude/args.js";
 import { sessionRegistryHooks } from "./claude/hooks.js";
 import { buildSettings, materialiseSettings } from "./claude/settings.js";
@@ -39,12 +41,16 @@ export async function launch(deps: { seams: Seams; processArgv: string[] }): Pro
   // One client, so the az token behind it is fetched once however many times it is used.
   const agentHub = createAgentHub(seams);
   const auth = envReady ? null : await resolveAuth({ seams, agentHub });
-  const credentials = auth === null ? {} : await collectCredentials({ seams, agentHub }, auth);
-  const added = auth === null ? {} : buildClaudeEnv({ env: seams.env, route: auth.resolution.route, ...credentials });
   if (auth !== null) {
     const { route, credentialSource, reasons } = auth.resolution;
-    seams.logger.verbose(`route ${route} via ${credentialSource}: ${reasons.join("; ")}`);
+    // Unconditional, and before the credential is fetched so it is also the answer to "why
+    // am I being asked to paste a key": two routes bill a personal Claude licence and two
+    // bill HMCTS, and the name does not say which.
+    seams.logger.say(billingNote(route));
+    seams.logger.verbose(`${route} via ${credentialSource}: ${reasons.join("; ")}`);
   }
+  const credentials = auth === null ? {} : await collectCredentials({ seams, agentHub }, auth);
+  const added = auth === null ? {} : buildClaudeEnv({ env: seams.env, route: auth.resolution.route, ...credentials });
 
   const root = await findWorkspaceRoot(seams);
   const pluginDirs = root === null ? [] : await resolvePluginDirs({ ...seams, root, names: parsePluginNames(seams.env.AGENT_HUB_PLUGINS) });
@@ -97,14 +103,21 @@ function hostReason(probe: { forcedHost: boolean }): string {
 }
 
 /** The gateway's key is settled by `resolveAuth`, because whether it can be read at all is part of the route decision. */
-async function collectCredentials(deps: { seams: Seams; agentHub: AgentHub }, auth: AuthResolution): Promise<{ bedrockKey?: string; gateway?: Gateway }> {
+async function collectCredentials(deps: { seams: Seams; agentHub: AgentHub }, auth: AuthResolution): Promise<Credentials> {
   const { seams } = deps;
-  if (auth.resolution.route === "gateway") {
+  const offline = isEnabled(seams.env, "HAI_OFFLINE");
+  if (auth.resolution.route === "ai-gateway") {
     return { gateway: auth.gateway };
   }
   if (auth.resolution.route === "bedrock") {
-    return { bedrockKey: await resolveBedrockKey({ seams, agentHub: deps.agentHub, offline: isEnabled(seams.env, "HAI_OFFLINE") }) };
+    // The resolution's own source, so the hub is read only where it is one — never for a
+    // named HAI_ROUTE=bedrock, whose sources are the environment and a paste.
+    return { bedrockKey: await resolveBedrockKey({ seams, agentHub: deps.agentHub, offline, source: auth.resolution.credentialSource }) };
   }
+  if (auth.resolution.route === "agent-hub") {
+    return { claudeToken: await resolveHubClaudeToken({ seams, agentHub: deps.agentHub, offline }) };
+  }
+  // byol: the credential is already where claude looks for it, so there is nothing to fetch.
   return {};
 }
 
@@ -117,4 +130,10 @@ export async function updatedAndReExeced(deps: { seams: Seams }, userArgs: strin
   }
   await seams.runner.exec([seams.execPath, seams.scriptPath, ...userArgs], { env: { ...asProcessEnv(seams.env), HAI_UPDATED: "1" } });
   return true;
+}
+
+interface Credentials {
+  bedrockKey?: string;
+  claudeToken?: string;
+  gateway?: Gateway;
 }

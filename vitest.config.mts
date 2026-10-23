@@ -6,6 +6,7 @@ import { defineConfig } from "vitest/config";
  * fully covered; the plumbing around them does not have to be.
  */
 const PURE_DECISION_MODULES = [
+  "src/auth/claude-env.ts",
   "src/auth/route.ts",
   "src/claude/hooks.ts",
   "src/claude/user-settings.ts",

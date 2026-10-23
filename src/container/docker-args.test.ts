@@ -20,7 +20,7 @@ const SESSION = sessionName({ repoPath: REPO });
 
 const BEDROCK_KEY = "ABSKQmVkcm9jay1mYWtlLWtleS0wMDAwMDAwMDAw";
 const APIM_KEY = "fake-apim-subscription-key";
-const OAUTH_TOKEN = "sk-ant-oat01-fake-own-licence-token";
+const OAUTH_TOKEN = "sk-ant-oat01-fake-byol-token";
 
 function context(overrides: Partial<ContainerContext> = {}): ContainerContext {
   const spec = defaultSpec({ env: { HOME }, workspaceFolder: REPO });
@@ -48,10 +48,12 @@ function context(overrides: Partial<ContainerContext> = {}): ContainerContext {
 /** The environment each route injects, with a credential in it, as launch would hand it over. */
 function routeEnv(route: (typeof ROUTES)[number]): Record<string, string> {
   return buildClaudeEnv({
-    env: {},
+    // byol injects nothing but an exported token, so without one its rows prove nothing.
+    env: { CLAUDE_CODE_OAUTH_TOKEN: OAUTH_TOKEN },
     route,
     bedrockKey: BEDROCK_KEY,
-    gateway: route === "gateway" ? { apimKey: APIM_KEY, helperPath: "/home/linus/.local/state/hai/gateway-token.sh" } : undefined
+    claudeToken: OAUTH_TOKEN,
+    gateway: route === "ai-gateway" ? { apimKey: APIM_KEY, helperPath: "/home/linus/.local/state/hai/gateway-token.sh" } : undefined
   });
 }
 

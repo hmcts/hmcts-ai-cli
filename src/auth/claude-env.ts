@@ -19,11 +19,29 @@ const API_KEY_HELPER_TTL_MS = "300000";
  * environment, so a test can assert exactly what a route injects. Anything the engineer
  * already set wins, matching run.sh's `${VAR:-default}` form.
  */
-export function buildClaudeEnv(input: { env: Env; route: Route; bedrockKey?: string; gateway?: Gateway }): Record<string, string> {
-  if (input.route === "own-licence") {
-    // Deliberately empty: CLAUDE_CODE_USE_BEDROCK and friends would override the OAuth
-    // credential the licence depends on.
-    return {};
+export function buildClaudeEnv(input: { env: Env; route: Route; bedrockKey?: string; claudeToken?: string; gateway?: Gateway }): Record<string, string> {
+  if (input.route === "byol") {
+    // Deliberately no Bedrock variables: CLAUDE_CODE_USE_BEDROCK and friends would
+    // override the OAuth credential the licence depends on. An exported token is carried
+    // over explicitly, though, because container mode hands `claude` only what this
+    // function returns: `{}` left a container session on byol using the bind-mounted
+    // ~/.claude login instead of the token the engineer exported — a different licence and
+    // a different bill. `isSecretEnvKey` holds this name, so it travels on the
+    // `docker exec` stdin and never reaches `docker run --env`. In place it is the value
+    // the process already had, so repeating it changes nothing.
+    const exported = input.env.CLAUDE_CODE_OAUTH_TOKEN;
+    return exported === undefined || exported === "" ? {} : { CLAUDE_CODE_OAUTH_TOKEN: exported };
+  }
+
+  if (input.route === "agent-hub") {
+    // The hub's claude kind is `claude setup-token` output, so it goes in the one variable
+    // claude reads a long-lived token from and nowhere else: the Bedrock variables would
+    // override it, which is why byol adds none either. Same shape cft-workspace's
+    // virtual-agent entrypoint uses.
+    if (input.claudeToken === undefined) {
+      throw new Error("the agent-hub route needs the Claude token agent-hub holds for you");
+    }
+    return { CLAUDE_CODE_OAUTH_TOKEN: input.claudeToken };
   }
 
   const added: Record<string, string> = {
@@ -43,7 +61,7 @@ export function buildClaudeEnv(input: { env: Env; route: Route; bedrockKey?: str
   }
 
   if (input.gateway === undefined) {
-    throw new Error("the gateway route needs an APIM subscription key");
+    throw new Error("the ai-gateway route needs an APIM subscription key");
   }
   added.CLAUDE_CODE_SKIP_BEDROCK_AUTH = "1";
   added.CLAUDE_CODE_API_KEY_HELPER_TTL_MS = API_KEY_HELPER_TTL_MS;
