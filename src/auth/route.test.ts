@@ -153,6 +153,17 @@ describe("resolveRoute", () => {
       expect(results.filter((result) => result.credentialSource === "refused" || result.credentialSource === "unavailable")).toEqual([]);
     });
 
+    it.each(ROUTES)("should stamp byName on %s, which is what decides how far the credential fetch looks", (route) => {
+      // Act
+      const named = resolveRoute(signals({ requestedRoute: route }));
+      const unset = resolveRoute(signals({ ...UNKNOWN }));
+
+      // Assert — distinct from credentialSource: both of these report `prompt` for bedrock,
+      // and only the unset one may walk env → agent-hub → prompt.
+      expect(named.byName).toBe(true);
+      expect(unset.byName).toBe(false);
+    });
+
     it("should ignore a Bedrock key on agent-hub, which is no longer one of bedrock's sources", () => {
       // Act
       const result = resolveRoute(signals({ requestedRoute: "bedrock", hasStoredBedrockKey: true }));

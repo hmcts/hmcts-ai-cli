@@ -44,6 +44,7 @@ export async function runContainerMode(input: {
   seams: Seams;
   forwarded: string[];
   added: Record<string, string>;
+  removed: readonly string[];
   hasGateway: boolean;
   workspaceRoot: string | null;
   pluginDirs: string[];
@@ -104,7 +105,7 @@ export async function runContainerMode(input: {
 /** The context plus what only the launch needs: the credentials, which no argv may carry, and HOME. */
 type LaunchContext = ContainerContext & { home: string; secretEnv: Record<string, string> };
 
-async function gatherContext(input: { seams: Seams; added: Record<string, string> }): Promise<LaunchContext> {
+async function gatherContext(input: { seams: Seams; added: Record<string, string>; removed: readonly string[] }): Promise<LaunchContext> {
   const { seams } = input;
   const home = seams.env.HOME;
   if (home === undefined || home === "") {
@@ -160,7 +161,13 @@ async function gatherContext(input: { seams: Seams; added: Record<string, string
       // but whether this container is still running does.
       [CONTAINER_ENV]: session,
       HAI_SECRETS_DIR: SECRETS_DIR,
-      HAI_NESTED_DNS: dns.servers.join(",")
+      HAI_NESTED_DNS: dns.servers.join(","),
+      // Names only, no values, so this is open: the entrypoint unsets each before it
+      // exports the credentials. `passthroughEnv` carries no credential name, so nothing
+      // here comes off the host — but the devcontainer image is built for Bedrock and may
+      // set CLAUDE_CODE_USE_BEDROCK itself, which would quietly outrank a personal route's
+      // OAuth credential and make the launch line wrong about who pays.
+      HAI_UNSET_ENV: input.removed.join(",")
     },
     secretEnv: secret,
     home

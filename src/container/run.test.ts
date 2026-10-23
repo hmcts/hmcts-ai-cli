@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createFakeSeams, exitCodeOf, type FakeSeams, packagedRuntime, type RunResponder } from "../__fixtures__/fake-seams.js";
+import { conflictingEnv } from "../auth/claude-env.js";
 import { DEFAULT_IMAGE } from "./docker-args.js";
 import { CONCURRENT_REFUSAL } from "./lock.js";
 import { runContainerMode } from "./run.js";
@@ -55,6 +56,7 @@ const input = (seams: FakeSeams, over: Partial<Parameters<typeof runContainerMod
   seams,
   forwarded: [] as string[],
   added: { CLAUDE_CODE_USE_BEDROCK: "1", AWS_REGION: "eu-west-2", AWS_BEARER_TOKEN_BEDROCK: BEDROCK_KEY },
+  removed: conflictingEnv("bedrock"),
   hasGateway: false,
   workspaceRoot: null as string | null,
   pluginDirs: [] as string[],
@@ -76,6 +78,21 @@ describe("runContainerMode", () => {
     expect(argvOf(seams, ["docker", "run"])).toContain(DEFAULT_IMAGE);
     expect(argvOf(seams, ["docker", "exec", "-i", "--user", "hmcts", SESSION, "bash", "/opt/hai/receive-secret.sh"])).toContain("AWS_BEARER_TOKEN_BEDROCK");
     expect(seams.runner.interactiveCalls[0]?.argv.slice(-4)).toEqual(["/opt/hai/entrypoint.sh", "claude", "--settings", `{${HOOKS}}`]);
+  });
+
+  it("should tell the entrypoint which variables to unset, because the image may set another route's", async () => {
+    // Arrange — nothing on the host reaches the container uninvited, but the devcontainer
+    // image is built for Bedrock and could set CLAUDE_CODE_USE_BEDROCK itself, which would
+    // outrank a personal route's OAuth credential.
+    const seams = seamsIn();
+
+    // Act
+    await runContainerMode(input(seams)).catch(() => undefined);
+
+    // Assert — names only, so this is open rather than a secret, and the entrypoint unsets
+    // them before it exports anything hai delivered.
+    expect(argvOf(seams, ["docker", "run"])).toContain(`HAI_UNSET_ENV=${conflictingEnv("bedrock").join(",")}`);
+    expect(conflictingEnv("bedrock")).toContain("CLAUDE_CODE_OAUTH_TOKEN");
   });
 
   it("should default to the published image with no HAI_IMAGE set", async () => {

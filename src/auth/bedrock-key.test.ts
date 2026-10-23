@@ -53,7 +53,7 @@ describe("resolveBedrockKey", () => {
     });
 
     // Act / Assert
-    expect(await resolveBedrockKey({ seams, agentHub, offline: false, source: "env" })).toBe(KEY);
+    expect(await resolveBedrockKey({ seams, agentHub, offline: false, byName: false })).toBe(KEY);
   });
 
   it("should use the key agent-hub holds", async () => {
@@ -62,7 +62,7 @@ describe("resolveBedrockKey", () => {
     const agentHub = fakeHub({ getCredential: async () => KEY });
 
     // Act / Assert
-    expect(await resolveBedrockKey({ seams, agentHub, offline: false, source: "agent-hub" })).toBe(KEY);
+    expect(await resolveBedrockKey({ seams, agentHub, offline: false, byName: false })).toBe(KEY);
   });
 
   describe("no key stored", () => {
@@ -72,7 +72,7 @@ describe("resolveBedrockKey", () => {
       const agentHub = fakeHub();
 
       // Act
-      const key = await resolveBedrockKey({ seams, agentHub, offline: false, source: "agent-hub" });
+      const key = await resolveBedrockKey({ seams, agentHub, offline: false, byName: false });
 
       // Assert
       expect(key).toBe(TYPED);
@@ -85,7 +85,7 @@ describe("resolveBedrockKey", () => {
       const seams = createFakeSeams({ hiddenInput: createFakeHiddenInput([TYPED]) });
 
       // Act
-      await resolveBedrockKey({ seams, agentHub: fakeHub(), offline: false, source: "agent-hub" });
+      await resolveBedrockKey({ seams, agentHub: fakeHub(), offline: false, byName: false });
 
       // Assert
       const said = seams.lines.join("");
@@ -103,7 +103,7 @@ describe("resolveBedrockKey", () => {
       });
 
       // Act
-      const key = await resolveBedrockKey({ seams, agentHub, offline: false, source: "agent-hub" });
+      const key = await resolveBedrockKey({ seams, agentHub, offline: false, byName: false });
 
       // Assert
       expect(key).toBe(TYPED);
@@ -115,7 +115,7 @@ describe("resolveBedrockKey", () => {
       const seams = createFakeSeams({ hiddenInput: createFakeHiddenInput([], false) });
 
       // Act / Assert
-      await expect(resolveBedrockKey({ seams, agentHub: fakeHub(), offline: false, source: "agent-hub" })).rejects.toThrow("stdin is not a terminal");
+      await expect(resolveBedrockKey({ seams, agentHub: fakeHub(), offline: false, byName: false })).rejects.toThrow("stdin is not a terminal");
     });
 
     it("should refuse an empty key", async () => {
@@ -123,7 +123,7 @@ describe("resolveBedrockKey", () => {
       const seams = createFakeSeams({ hiddenInput: createFakeHiddenInput(["   "]) });
 
       // Act / Assert
-      await expect(resolveBedrockKey({ seams, agentHub: fakeHub(), offline: false, source: "agent-hub" })).rejects.toThrow("no Amazon Bedrock API key entered");
+      await expect(resolveBedrockKey({ seams, agentHub: fakeHub(), offline: false, byName: false })).rejects.toThrow("no Amazon Bedrock API key entered");
     });
 
     it("should trim what was pasted", async () => {
@@ -131,7 +131,7 @@ describe("resolveBedrockKey", () => {
       const seams = createFakeSeams({ hiddenInput: createFakeHiddenInput([` ${TYPED} \n`]) });
 
       // Act / Assert
-      expect(await resolveBedrockKey({ seams, agentHub: fakeHub(), offline: false, source: "agent-hub" })).toBe(TYPED);
+      expect(await resolveBedrockKey({ seams, agentHub: fakeHub(), offline: false, byName: false })).toBe(TYPED);
     });
   });
 
@@ -147,7 +147,7 @@ describe("resolveBedrockKey", () => {
       });
 
       // Act
-      const key = await resolveBedrockKey({ seams, agentHub, offline: false, source: "prompt" });
+      const key = await resolveBedrockKey({ seams, agentHub, offline: false, byName: true });
 
       // Assert
       expect(key).toBe(TYPED);
@@ -159,7 +159,7 @@ describe("resolveBedrockKey", () => {
       const seams = createFakeSeams({ hiddenInput: createFakeHiddenInput([TYPED]) });
 
       // Act
-      await resolveBedrockKey({ seams, agentHub: fakeHub(), offline: false, source: "prompt" });
+      await resolveBedrockKey({ seams, agentHub: fakeHub(), offline: false, byName: true });
 
       // Assert
       const said = seams.lines.join("");
@@ -173,7 +173,7 @@ describe("resolveBedrockKey", () => {
       const seams = createFakeSeams({ env: { AWS_BEARER_TOKEN_BEDROCK: KEY } });
 
       // Act / Assert
-      expect(await resolveBedrockKey({ seams, agentHub: fakeHub(), offline: false, source: "prompt" })).toBe(KEY);
+      expect(await resolveBedrockKey({ seams, agentHub: fakeHub(), offline: false, byName: true })).toBe(KEY);
     });
   });
 
@@ -188,7 +188,7 @@ describe("resolveBedrockKey", () => {
       });
 
       // Act
-      const key = await resolveBedrockKey({ seams, agentHub, offline: false, source: "agent-hub" });
+      const key = await resolveBedrockKey({ seams, agentHub, offline: false, byName: false });
 
       // Assert
       expect(key).toBe(TYPED);
@@ -206,7 +206,7 @@ describe("resolveBedrockKey", () => {
       });
 
       // Act / Assert
-      await expect(resolveBedrockKey({ seams, agentHub, offline: false, source: "agent-hub" })).rejects.toThrow(
+      await expect(resolveBedrockKey({ seams, agentHub, offline: false, byName: false })).rejects.toThrow(
         "could not read your Amazon Bedrock API key from agent-hub"
       );
     });
@@ -223,7 +223,7 @@ describe("resolveBedrockKey", () => {
       });
 
       // Act
-      const key = await resolveBedrockKey({ seams, agentHub, offline: true, source: "agent-hub" });
+      const key = await resolveBedrockKey({ seams, agentHub, offline: true, byName: false });
 
       // Assert
       expect(key).toBe(TYPED);
@@ -235,7 +235,7 @@ describe("resolveBedrockKey", () => {
       const seams = createFakeSeams({ hiddenInput: createFakeHiddenInput([], false) });
 
       // Act / Assert
-      await expect(resolveBedrockKey({ seams, agentHub: fakeHub(), offline: true, source: "agent-hub" })).rejects.toThrow("HAI_OFFLINE=1");
+      await expect(resolveBedrockKey({ seams, agentHub: fakeHub(), offline: true, byName: false })).rejects.toThrow("HAI_OFFLINE=1");
     });
   });
 
@@ -244,7 +244,7 @@ describe("resolveBedrockKey", () => {
     const seams = createFakeSeams({ hiddenInput: createFakeHiddenInput([TYPED]) });
 
     // Act
-    await resolveBedrockKey({ seams, agentHub: fakeHub(), offline: false, source: "agent-hub" });
+    await resolveBedrockKey({ seams, agentHub: fakeHub(), offline: false, byName: false });
 
     // Assert
     expect(seams.lines.join("")).not.toContain(TYPED);

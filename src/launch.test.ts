@@ -450,6 +450,81 @@ describe("launch", () => {
       expect(seams.runner.execCalls).toEqual([]);
     });
 
+    it("should clear an inherited CLAUDE_CODE_USE_BEDROCK on byol, so the line about who pays cannot be a lie", async () => {
+      // Arrange — the bug: the handover is the process environment with `added` over it, so
+      // a CLAUDE_CODE_USE_BEDROCK left in a shell profile survived and hai printed "paid
+      // for by your own Claude licence" while running the session on Bedrock.
+      const seams = createFakeSeams({
+        env: {
+          HOME,
+          HAI_NO_UPDATE: "1",
+          HAI_ROUTE: "byol",
+          CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-x",
+          CLAUDE_CODE_USE_BEDROCK: "1",
+          AWS_BEARER_TOKEN_BEDROCK: KEY,
+          ANTHROPIC_API_KEY: "sk-ant-api03-stale",
+          ANTHROPIC_CUSTOM_HEADERS: `Ocp-Apim-Subscription-Key: ${APIM_KEY}`
+        },
+        files: IN_CONTAINER,
+        respond: notAMember
+      });
+
+      // Act
+      await launch({ seams, processArgv: ["node", "hai"] });
+
+      // Assert
+      expect(execEnv(seams).CLAUDE_CODE_USE_BEDROCK).toBeUndefined();
+      expect(execEnv(seams).AWS_BEARER_TOKEN_BEDROCK).toBeUndefined();
+      expect(execEnv(seams).ANTHROPIC_API_KEY).toBeUndefined();
+      expect(execEnv(seams).ANTHROPIC_CUSTOM_HEADERS).toBeUndefined();
+      expect(execEnv(seams).CLAUDE_CODE_OAUTH_TOKEN).toBe("sk-ant-oat01-x");
+    });
+
+    it("should clear an inherited CLAUDE_CODE_OAUTH_TOKEN on bedrock, the same rule the other way round", async () => {
+      // Arrange
+      const seams = seamsIn({ CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-x" });
+
+      // Act
+      await launch({ seams, processArgv: ["node", "hai"] });
+
+      // Assert
+      expect(execEnv(seams).CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+      expect(execEnv(seams).AWS_BEARER_TOKEN_BEDROCK).toBe(KEY);
+    });
+
+    it("should use the key agent-hub holds when the AI Gateway downgrades, rather than ask for one it already has", async () => {
+      // Arrange — the two failures are independent: the hub probe in gatherSignals throws
+      // (a 5xx, or its 15s timeout) and the Key Vault read then fails because the VPN is
+      // down. hiddenInput has no answer queued, so any prompt throws rather than passing.
+      let gets = 0;
+      const seams = createFakeSeams({
+        env: { HOME, HAI_NO_UPDATE: "1" },
+        files: IN_CONTAINER,
+        respond: (argv) => {
+          if (argv[2] === "get-access-token") {
+            return { stdout: JSON.stringify({ accessToken: "eyJhbGciOiJSUzI1NiJ9.e30.c2ln", expires_on: 1800000000 }) };
+          }
+          if (argv[1] === "keyvault") {
+            return { code: 1, stderr: "could not resolve the vault" };
+          }
+          return respond(argv);
+        },
+        fetch: async () => {
+          gets += 1;
+          return gets === 1 ? new Response("", { status: 503 }) : new Response(JSON.stringify({ value: KEY }));
+        },
+        hiddenInput: createFakeHiddenInput([])
+      });
+
+      // Act
+      await launch({ seams, processArgv: ["node", "hai"] });
+
+      // Assert — the downgrade is the unset path, so it reads the hub; pasting would both
+      // waste the key the hub holds and overwrite it on the way back out.
+      expect(execEnv(seams).AWS_BEARER_TOKEN_BEDROCK).toBe(KEY);
+      expect(gets).toBe(2);
+    });
+
     it("should prompt a group member for a Bedrock key rather than bill their own subscription when the gateway is unreachable", async () => {
       // Arrange — the incident: a member with a live personal login and no Bedrock key,
       // on a host where the private Key Vault cannot be reached.
@@ -573,6 +648,19 @@ describe("launch", () => {
       expect(exitCodeOf(err)).toBe(0);
       expect(seams.out[0]).toBe(`claude --settings {${HOOKS}} -c\n`);
       expect(seams.runner.execCalls).toHaveLength(0);
+    });
+
+    it("should name what it cleared as well as what it added", async () => {
+      // Arrange — a stale personal token with the bedrock route, which is the shape the
+      // dry run exists to let someone check.
+      const seams = seamsIn({ HAI_DRY_RUN: "1", CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-x" });
+
+      // Act
+      await launch({ seams, processArgv: ["node", "hai"] }).catch(() => undefined);
+
+      // Assert
+      expect(seams.out.join("")).toContain("cleared: ");
+      expect(seams.out.join("")).toContain("CLAUDE_CODE_OAUTH_TOKEN");
     });
 
     it("should redact the secrets it prints", async () => {

@@ -1,6 +1,6 @@
 import { type AgentHub, createAgentHub } from "./auth/agent-hub.js";
 import { resolveBedrockKey } from "./auth/bedrock-key.js";
-import { buildClaudeEnv } from "./auth/claude-env.js";
+import { buildClaudeEnv, conflictingEnv } from "./auth/claude-env.js";
 import { resolveHubClaudeToken } from "./auth/claude-token.js";
 import type { Gateway } from "./auth/gateway.js";
 import { type AuthResolution, resolveAuth } from "./auth/resolve-auth.js";
@@ -51,6 +51,10 @@ export async function launch(deps: { seams: Seams; processArgv: string[] }): Pro
   }
   const credentials = auth === null ? {} : await collectCredentials({ seams, agentHub }, auth);
   const added = auth === null ? {} : buildClaudeEnv({ env: seams.env, route: auth.resolution.route, ...credentials });
+  // Not setting a variable is not the same as removing one: the handover below is the
+  // process environment with `added` over it, so another payer's credential or switch
+  // would survive and the line just printed would be a lie.
+  const removed = auth === null ? [] : conflictingEnv(auth.resolution.route);
 
   const root = await findWorkspaceRoot(seams);
   const pluginDirs = root === null ? [] : await resolvePluginDirs({ ...seams, root, names: parsePluginNames(seams.env.AGENT_HUB_PLUGINS) });
@@ -60,6 +64,7 @@ export async function launch(deps: { seams: Seams; processArgv: string[] }): Pro
       seams,
       forwarded,
       added,
+      removed,
       hasGateway: credentials.gateway !== undefined,
       workspaceRoot: root,
       pluginDirs
@@ -86,11 +91,21 @@ export async function launch(deps: { seams: Seams; processArgv: string[] }): Pro
   // inherited by every shell in the session and short-circuit each nested hai past the
   // update check for good. Only a container hai starts gets them (src/container/run.ts).
   const env = { ...asProcessEnv(seams.env), ...added };
+  const cleared = removed.filter((name) => name in env);
+  for (const name of cleared) {
+    delete env[name];
+  }
+  if (cleared.length > 0) {
+    seams.logger.verbose(`cleared ${cleared.join(", ")}, which belong to another route`);
+  }
 
   if (isEnabled(seams.env, "HAI_DRY_RUN")) {
     seams.stdout(`${argv.join(" ")}\n`);
     for (const line of describeEnv(added)) {
       seams.stdout(`  ${line}\n`);
+    }
+    if (cleared.length > 0) {
+      seams.stdout(`  cleared: ${cleared.join(", ")}\n`);
     }
     seams.exit(0);
   }
@@ -110,9 +125,9 @@ async function collectCredentials(deps: { seams: Seams; agentHub: AgentHub }, au
     return { gateway: auth.gateway };
   }
   if (auth.resolution.route === "bedrock") {
-    // The resolution's own source, so the hub is read only where it is one — never for a
-    // named HAI_ROUTE=bedrock, whose sources are the environment and a paste.
-    return { bedrockKey: await resolveBedrockKey({ seams, agentHub: deps.agentHub, offline, source: auth.resolution.credentialSource }) };
+    // byName decides how far it may look: a named HAI_ROUTE=bedrock reads the environment
+    // or prompts, the unset path keeps env → agent-hub → prompt.
+    return { bedrockKey: await resolveBedrockKey({ seams, agentHub: deps.agentHub, offline, byName: auth.resolution.byName }) };
   }
   if (auth.resolution.route === "agent-hub") {
     return { claudeToken: await resolveHubClaudeToken({ seams, agentHub: deps.agentHub, offline }) };

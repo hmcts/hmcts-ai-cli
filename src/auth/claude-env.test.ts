@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { buildClaudeEnv, DEFAULT_AWS_REGION, DEFAULT_MODELS, GATEWAY_BEDROCK_BASE_URL } from "./claude-env.js";
-import type { Route } from "./route.js";
+import { buildClaudeEnv, conflictingEnv, DEFAULT_AWS_REGION, DEFAULT_MODELS, GATEWAY_BEDROCK_BASE_URL } from "./claude-env.js";
+import { ROUTES, type Route } from "./route.js";
 
 const BEDROCK_KEY = "ABSKQmVkcm9jay1mYWtlLWtleS0wMDAwMDAwMDAw";
 const APIM_KEY = "fake-apim-subscription-key";
@@ -126,6 +126,49 @@ describe("buildClaudeEnv", () => {
       // Act / Assert — one credential from one source: no silent fall back to the login on
       // this machine, which is a different licence and a different bill.
       expect(() => buildClaudeEnv({ env: {}, route: "agent-hub" })).toThrow("needs the Claude token agent-hub holds for you");
+    });
+  });
+
+  describe("conflictingEnv", () => {
+    it.each<[Route, string[]]>([
+      ["byol", ["AWS_BEARER_TOKEN_BEDROCK", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_SKIP_BEDROCK_AUTH", "ANTHROPIC_CUSTOM_HEADERS"]],
+      ["agent-hub", ["AWS_BEARER_TOKEN_BEDROCK", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_SKIP_BEDROCK_AUTH", "ANTHROPIC_CUSTOM_HEADERS"]],
+      ["ai-gateway", ["CLAUDE_CODE_OAUTH_TOKEN", "AWS_BEARER_TOKEN_BEDROCK"]],
+      ["bedrock", ["CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_SKIP_BEDROCK_AUTH", "ANTHROPIC_CUSTOM_HEADERS"]]
+    ])("should remove the other payers' variables on %s", (route, expected) => {
+      // Act
+      const removed = conflictingEnv(route);
+
+      // Assert
+      expect([...removed]).toEqual(expect.arrayContaining(expected));
+    });
+
+    it.each(ROUTES)("should remove ANTHROPIC_API_KEY and ANTHROPIC_AUTH_TOKEN on %s, which no route of ours uses", (route) => {
+      // Assert — either would quietly take precedence over the credential that pays.
+      expect([...conflictingEnv(route)]).toEqual(expect.arrayContaining(["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"]));
+    });
+
+    it.each(ROUTES)("should never remove what the %s route sets", (route) => {
+      // Arrange — every credential to hand, so each route injects its full set.
+      const added = buildClaudeEnv({
+        env: { CLAUDE_CODE_OAUTH_TOKEN: CLAUDE_TOKEN },
+        route,
+        bedrockKey: BEDROCK_KEY,
+        claudeToken: CLAUDE_TOKEN,
+        gateway: GATEWAY
+      });
+
+      // Act
+      const clash = Object.keys(added).filter((name) => conflictingEnv(route).includes(name));
+
+      // Assert
+      expect(clash).toEqual([]);
+    });
+
+    it.each(ROUTES)("should leave the tuning variables the engineer is allowed to win on alone, on %s", (route) => {
+      // Assert — AWS_REGION, the model names and the base url are deliberately not payer
+      // facts; `existingOr` exists to let an engineer override them.
+      expect([...conflictingEnv(route)]).not.toEqual(expect.arrayContaining(["AWS_REGION", "ANTHROPIC_BEDROCK_BASE_URL", ...Object.keys(DEFAULT_MODELS)]));
     });
   });
 

@@ -66,6 +66,14 @@ export function billingNote(route: Route): string {
  * First match wins, in the order of the table in the README.
  */
 export function resolveRoute(signals: Signals): RouteResolution {
+  // `byName` is stamped once here rather than woven through every branch. It is not the
+  // same question as `credentialSource`, which says what the signals concluded: a named
+  // route may only read its one source, while the unset path may walk env → agent-hub →
+  // prompt for a Bedrock key however it got here, the AI-Gateway downgrade included.
+  return { ...decided(signals), byName: signals.requestedRoute !== null };
+}
+
+function decided(signals: Signals): Omit<RouteResolution, "byName"> {
   if (signals.requestedRoute !== null) {
     return explicit(signals, signals.requestedRoute);
   }
@@ -102,7 +110,7 @@ export function resolveRoute(signals: Signals): RouteResolution {
 }
 
 /** Never an implicit personal fallback: an unchecked membership is not evidence of a non-member. */
-function unknownMembership(signals: Signals): RouteResolution {
+function unknownMembership(signals: Signals): Omit<RouteResolution, "byName"> {
   if (signals.hasOauthEnvToken || signals.hasHostClaudeCredential) {
     // The refusal stands offline, but telling someone who asked for no lookups to go and
     // run az login is advice against their own flag.
@@ -120,7 +128,7 @@ function unknownMembership(signals: Signals): RouteResolution {
  * falls through to a second source — the group check above guards the *accident*, which is
  * the unset path, and refusing a deliberate act only taught people to go round it.
  */
-function explicit(signals: Signals, route: Route): RouteResolution {
+function explicit(signals: Signals, route: Route): Omit<RouteResolution, "byName"> {
   const reasons = [`HAI_ROUTE=${route}`];
   if (route === "agent-hub") {
     return { route, credentialSource: "agent-hub", reasons: [...reasons, "the Claude token agent-hub holds for you"] };
@@ -164,4 +172,10 @@ export interface RouteResolution {
   route: Route;
   credentialSource: CredentialSource;
   reasons: string[];
+  /**
+   * True when `HAI_ROUTE` asked for this route by name, which is what decides how far the
+   * credential fetch may look: a named route reads its one source, the unset path reads the
+   * chain. Distinct from `credentialSource`, which only reports what the signals concluded.
+   */
+  byName: boolean;
 }

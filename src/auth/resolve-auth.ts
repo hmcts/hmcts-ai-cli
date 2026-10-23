@@ -55,7 +55,7 @@ export async function resolveAuth(deps: { seams: Seams; agentHub: AgentHub; deci
     await persist(deps, key, signals.isBedrockGroupMember);
   }
   if (resolution.route === "ai-gateway" && deps.decideOnly !== true) {
-    return await settleGateway(deps, resolution, requested === "ai-gateway");
+    return await settleGateway(deps, resolution);
   }
   return { resolution };
 }
@@ -69,12 +69,12 @@ export async function resolveAuth(deps: { seams: Seams; agentHub: AgentHub; deci
  * instead: an explicit route is one credential from one source, and a downgrade would
  * silently move who pays.
  */
-async function settleGateway(deps: { seams: Seams }, resolution: RouteResolution, byName: boolean): Promise<AuthResolution> {
+async function settleGateway(deps: { seams: Seams }, resolution: RouteResolution): Promise<AuthResolution> {
   const { seams } = deps;
   try {
     return { resolution, gateway: await prepareGateway({ seams }) };
   } catch (err) {
-    if (byName) {
+    if (resolution.byName) {
       throw err;
     }
     const why = `the AI Gateway was chosen but its APIM key could not be read (${messageOf(err)})`;
@@ -84,7 +84,11 @@ async function settleGateway(deps: { seams: Seams }, resolution: RouteResolution
       );
     }
     seams.logger.say(`${why}; falling back to an Amazon Bedrock API key — hai will not use your personal claude.ai subscription`);
-    return { resolution: { route: "bedrock", credentialSource: "prompt", reasons: [...resolution.reasons, why] } };
+    // `byName: false`, because hai chose this: the key is resolved the way the unset path
+    // resolves one, env → agent-hub → prompt. The two failures are independent — the hub
+    // probe can have thrown while the Key Vault failed for a VPN that is down — so a key
+    // the hub already holds must still be used rather than asked for and overwritten.
+    return { resolution: { route: "bedrock", credentialSource: "prompt", reasons: [...resolution.reasons, why], byName: false } };
   }
 }
 

@@ -15,6 +15,54 @@ export const GATEWAY_BEDROCK_BASE_URL = "https://ai-gateway.sandbox.platform.hmc
 const API_KEY_HELPER_TTL_MS = "300000";
 
 /**
+ * The variables each route has to *remove* from the environment it hands over, rather than
+ * merely not set. The handover is `{ ...process.env, ...buildClaudeEnv(...) }`, so a
+ * `CLAUDE_CODE_USE_BEDROCK=1` left in a shell profile, or baked into the devcontainer
+ * image, survived into a `byol` session: hai printed "paid for by your own Claude licence"
+ * and ran the session on Bedrock. Now that an explicit route is obeyed and that line is the
+ * only safeguard left, the environment handed over must only be able to mean one payer.
+ *
+ * Each route drops the credential and transport variables belonging to the *other* payers,
+ * and never one it sets itself — `conflictingEnv` and `buildClaudeEnv` are disjoint per
+ * route, which is asserted. Tuning variables the engineer is allowed to win on
+ * (`AWS_REGION`, the model names, `ANTHROPIC_BEDROCK_BASE_URL`) are deliberately not here.
+ * `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` go on every route: no route of hai's uses
+ * them, and either would quietly take precedence over the one that pays. cft-workspace's
+ * virtual-agent entrypoint unsets the same two on both of its branches.
+ */
+export const CONFLICTING_ENV: Record<Route, readonly string[]> = {
+  // The Bedrock switch, key and gateway transport: all four would override the OAuth
+  // credential a personal licence depends on.
+  "agent-hub": [
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_CUSTOM_HEADERS",
+    "AWS_BEARER_TOKEN_BEDROCK",
+    "CLAUDE_CODE_SKIP_BEDROCK_AUTH",
+    "CLAUDE_CODE_USE_BEDROCK"
+  ],
+  byol: [
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_CUSTOM_HEADERS",
+    "AWS_BEARER_TOKEN_BEDROCK",
+    "CLAUDE_CODE_SKIP_BEDROCK_AUTH",
+    "CLAUDE_CODE_USE_BEDROCK"
+  ],
+  // The gateway authenticates for us, so a bearer token is not its credential; a personal
+  // token would be a different payer entirely.
+  "ai-gateway": ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "AWS_BEARER_TOKEN_BEDROCK", "CLAUDE_CODE_OAUTH_TOKEN"],
+  // Skip-bedrock-auth would stop claude signing with the bearer token this route is for,
+  // and a stale APIM header would send a Bedrock-keyed session through the gateway.
+  bedrock: ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_CUSTOM_HEADERS", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_SKIP_BEDROCK_AUTH"]
+};
+
+/** Pure over the route alone, so container mode can forward the names and the entrypoint unset them. */
+export function conflictingEnv(route: Route): readonly string[] {
+  return CONFLICTING_ENV[route];
+}
+
+/**
  * The variables to add to the environment `claude` is launched with, not the whole
  * environment, so a test can assert exactly what a route injects. Anything the engineer
  * already set wins, matching run.sh's `${VAR:-default}` form.

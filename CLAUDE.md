@@ -151,15 +151,28 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
   knowing: a named route resolves no membership at all, so `src/auth/signals.ts` makes no
   `az account show` and no `az rest checkMemberGroups`, and `src/auth/auth-cache.ts` is
   the default path's alone.
-- **The credential fetch honours the resolved source rather than deciding again.**
-  `resolveBedrockKey` takes the resolution's `credentialSource` and reads agent-hub only
-  when that source *is* `agent-hub`. The asymmetry is the point: on the unset path a
-  hub-stored key is the **signal** that chose the bedrock route (`hasStoredBedrockKey`), so
-  reading the hub there is not a fallback, it is the reason we are there — while a named
-  `HAI_ROUTE=bedrock` is the environment or a paste, full stop. Deciding twice meant a named
-  route silently reached the hub *and* that the launch line said `prompt` for a key that had
-  come off the hub. A hub that failed during `gatherSignals` is therefore no longer re-asked
-  here; it decides nothing either way and a key can still be pasted.
+- **How far the credential fetch may look is `resolution.byName`, not `credentialSource`.**
+  `resolveBedrockKey` reads agent-hub only when the route was *not* asked for by name: a
+  named `HAI_ROUTE=bedrock` is the environment or a paste, full stop, and reading the hub
+  anyway both broke "no fallbacks" and made the launch line say `prompt` for a key that had
+  come off the hub. The unset path keeps the whole chain, env → agent-hub → prompt, from
+  **every** branch that lands on bedrock. `credentialSource` cannot stand in for this and
+  keying on it was a bug: `prompt` is also what the AI-Gateway downgrade reports, and there
+  a hub read is exactly right — `gatherSignals`' probe may have thrown (a 5xx, or its 15s
+  timeout) while the Key Vault failed separately for a VPN that is down, and the two are
+  independent. Asking someone to paste a key the hub already holds wastes it and
+  `promptAndSave` then PUTs the pasted value over it.
+- **Not setting a variable is not the same as removing it.** The handover is
+  `{ ...process.env, ...buildClaudeEnv(...) }`, so a `CLAUDE_CODE_USE_BEDROCK=1` in a shell
+  profile survived into a `byol` session: hai printed "paid for by your own Claude licence"
+  and ran on Bedrock. `conflictingEnv(route)` is the pure per-route set of the *other*
+  payers' credential and transport variables, dropped from the in-place handover and passed
+  to the container as `HAI_UNSET_ENV` for the entrypoint to `unset` — before it exports the
+  delivered credentials, so one of ours is never unset. It must stay disjoint from what
+  `buildClaudeEnv` sets for the same route, which is asserted. The tuning variables
+  `existingOr` exists to let an engineer win on (`AWS_REGION`, the model names,
+  `ANTHROPIC_BEDROCK_BASE_URL`) are deliberately not in it. cft-workspace's virtual-agent
+  entrypoint does the same thing with two `unset` lines, and is the precedent.
 - **`own-licence` and `gateway` are gone, and they fail by name rather than aliasing.**
   `badRouteMessage` names the replacement. `gateway` is the one that had to go: in
   cft-workspace `AGENT_HUB_MODEL_ROUTE=gateway` is a legacy alias meaning **Bedrock** while

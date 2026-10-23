@@ -107,10 +107,10 @@ export async function gatherSignals(deps: {
 }
 
 /**
- * A hub that cannot be reached is not evidence of "no key", so it decides nothing and is
- * not fatal: the remaining signals choose the route and a key can still be pasted. It does
- * mean the hub is not asked twice — `resolveBedrockKey` reads it only for the `agent-hub`
- * source, which this failure did not produce.
+ * A hub that cannot be reached is not evidence of "no key": it decides nothing and is not
+ * fatal, the remaining signals choose the route, and `resolveBedrockKey` asks the hub again
+ * on any unset-path route that ends at bedrock. That retry is the point — a 5xx or this
+ * probe's 15s timeout must not turn into "paste a key the hub already holds".
  */
 async function storedBedrockKeyPresent(agentHub: AgentHub, seams: Seams): Promise<boolean> {
   try {
