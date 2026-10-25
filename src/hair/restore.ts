@@ -1,7 +1,9 @@
 import { containerRunning, pidAlive } from "../container/lock.js";
 import type { Fs } from "../system/fs.js";
 import type { Runner } from "../system/runner.js";
-import type { SessionRecord } from "./registry.js";
+import { keptRecords, retired, type SessionRecord } from "./registry.js";
+
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 /**
  * Pure over the three things worth knowing about a registered session: whether anything
@@ -14,9 +16,15 @@ import type { SessionRecord } from "./registry.js";
  * engineer a duplicate instead of the session they lost. An unanswerable pid is left
  * alone too — the same rule the transcript lock follows, for the same reason.
  */
-export function restoreDecision(input: { record: SessionRecord; cwdExists: boolean; alive: boolean | null }): RestoreOutcome {
+export function restoreDecision(input: { record: SessionRecord; now: number; cwdExists: boolean; alive: boolean | null }): RestoreOutcome {
   if (input.record.state !== "open") {
     return { action: "skip", reason: "the session was closed cleanly" };
+  }
+  if (retired(input.record, input.now)) {
+    // Ahead of the probes, and the reason nothing probed it: a retired record costs no
+    // `ps` and no `stat`. `claude -r` still finds the conversation; this only stops `hair`
+    // offering it unasked.
+    return { action: "skip", reason: `nothing has touched it for ${days(input.now - input.record.at)} days, so it is not a conversation to hand back` };
   }
   if (!input.cwdExists) {
     // Decided here, before any claim is taken. `process.chdir` throws on a missing
@@ -52,7 +60,13 @@ export function restoreDecision(input: { record: SessionRecord; cwdExists: boole
  * ones that were on screen, and lets the stale ones sink to the bottom where they cost
  * nothing.
  */
-export function restoreCandidates(input: { records: SessionRecord[]; cwd: string; liveness: Map<string, boolean | null>; existingDirs: Set<string> }): {
+export function restoreCandidates(input: {
+  records: SessionRecord[];
+  cwd: string;
+  now: number;
+  liveness: Map<string, boolean | null>;
+  existingDirs: Set<string>;
+}): {
   candidates: SessionRecord[];
   skipped: Skipped[];
 } {
@@ -61,6 +75,7 @@ export function restoreCandidates(input: { records: SessionRecord[]; cwd: string
   for (const record of input.records) {
     const outcome = restoreDecision({
       record,
+      now: input.now,
       cwdExists: input.existingDirs.has(record.cwd),
       alive: input.liveness.get(record.sessionId) ?? null
     });
@@ -112,16 +127,18 @@ export function livenessPlan(input: { record: SessionRecord; host: string | unde
 }
 
 /**
- * Only the open records: a tombstone's pid is never asked about, and `restoreDecision`
- * discards them first anyway. One sequential `ps` per record adds up — compaction only
- * rewrites the registry at 500 lines — and these are answers that would be thrown away.
+ * Only the records `keptRecords` says are worth anything: a tombstone's pid is never asked
+ * about, nor a retired record's, and `restoreDecision` discards both ahead of liveness
+ * anyway. One sequential `ps` per record adds up, and bounding this list is most of why
+ * open records are retired at all — without it the probe count is every conversation the
+ * engineer has ever had, for ever, on every `hair --list`.
  */
 export async function probeLiveness(
-  deps: { runner: Runner; logger: { verbose(message: string): void }; host: string | undefined },
+  deps: { runner: Runner; logger: { verbose(message: string): void }; host: string | undefined; now: number },
   records: SessionRecord[]
 ): Promise<Map<string, boolean | null>> {
   const liveness = new Map<string, boolean | null>();
-  for (const record of records.filter((candidate) => candidate.state === "open")) {
+  for (const record of keptRecords(records, deps.now)) {
     const plan = livenessPlan({ record, host: deps.host });
     deps.logger.verbose(`${record.sessionId}: ${plan.reason}`);
     liveness.set(record.sessionId, await answer(deps, record, plan));
@@ -129,10 +146,10 @@ export async function probeLiveness(
   return liveness;
 }
 
-/** The distinct directories of the open records, so a deleted one is a skip and not a throw. */
-export async function probeDirs(deps: { fs: Fs }, records: SessionRecord[]): Promise<Set<string>> {
+/** The distinct directories of the kept records, so a deleted one is a skip and not a throw. */
+export async function probeDirs(deps: { fs: Fs; now: number }, records: SessionRecord[]): Promise<Set<string>> {
   const existing = new Set<string>();
-  for (const dir of new Set(records.filter((record) => record.state === "open").map((record) => record.cwd))) {
+  for (const dir of new Set(keptRecords(records, deps.now).map((record) => record.cwd))) {
     if (await deps.fs.exists(dir)) {
       existing.add(dir);
     }
@@ -154,6 +171,11 @@ async function answer(deps: { runner: Runner }, record: SessionRecord, plan: Liv
 
 function rank(record: SessionRecord, cwd: string): number {
   return record.cwd === cwd ? 0 : 1;
+}
+
+/** Whole days, because the window is a week and "7.3" says nothing "7" does not. */
+function days(elapsed: number): number {
+  return Math.floor(elapsed / MS_PER_DAY);
 }
 
 /** Only to break a tie, so two terminals walk the candidates in the same order. */

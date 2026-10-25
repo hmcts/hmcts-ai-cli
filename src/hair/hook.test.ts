@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { createFakeSeams, FIXED_NOW } from "../__fixtures__/fake-seams.js";
 import {
+  ACTIVITY_REFRESH_MS,
   ATTENDED_ENV,
   CONTAINER_ENV,
+  CONVERSATION_OVER_REASONS,
   type HookOutcome,
   type HookPayload,
   hookDecision,
@@ -12,7 +14,7 @@ import {
   SESSION_END,
   USER_PROMPT_SUBMIT
 } from "./hook.js";
-import { COMPACTION_THRESHOLD, claimPath, parseRegistry, recordLine, registryPath, type SessionRecord } from "./registry.js";
+import { COMPACTION_THRESHOLD, claimPath, parseRegistry, RESTORE_WINDOW_MS, recordLine, registryPath, type SessionRecord } from "./registry.js";
 import { restoreDecision } from "./restore.js";
 
 const HOME = "/home/dev";
@@ -26,7 +28,7 @@ const record = (over: Partial<SessionRecord> = {}): SessionRecord => ({
   sessionId: "s1",
   cwd: "/work",
   state: "open",
-  at: 10,
+  at: FIXED_NOW,
   pid: 900,
   host: HOST,
   ...over
@@ -91,7 +93,34 @@ describe("hookDecision", () => {
 
   it("should ignore every prompt after the first, including a subagent handing its report back", () => {
     // Act / Assert
-    expect(decide({ records: [record()] })).toEqual({ action: "ignore", reason: "the session is already registered" });
+    expect(decide({ records: [record()] })).toEqual({ action: "ignore", reason: "the session is already registered and was active recently enough" });
+  });
+
+  /**
+   * `at` is last activity, not registration time, because the candidate order is by
+   * recency: a conversation registered at 09:00 and worked in all day has to outrank one
+   * registered at 16:30 and left idle. Throttled to `ACTIVITY_REFRESH_MS`, because a line
+   * per prompt is what `COMPACTION_THRESHOLD` would have to absorb.
+   */
+  it.each<[string, number, HookOutcome["action"]]>([
+    ["within the interval", ACTIVITY_REFRESH_MS - 1, "ignore"],
+    ["exactly at the interval", ACTIVITY_REFRESH_MS, "register"],
+    ["well past the interval", 4 * ACTIVITY_REFRESH_MS, "register"]
+  ])("should restamp a still-driven session whose last activity was %s", (_name, elapsed, action) => {
+    // Act / Assert
+    expect(decide({ records: [record({ at: FIXED_NOW - elapsed })] })).toMatchObject({ action });
+  });
+
+  it("should move the record's last-active time on and change nothing else about it", () => {
+    // Act
+    const outcome = decide({ name: "pcs", records: [record({ at: FIXED_NOW - ACTIVITY_REFRESH_MS, name: "pcs" })] });
+
+    // Assert
+    expect(outcome).toEqual({
+      action: "register",
+      reason: "the session is still being driven, so when it was last active moves on",
+      record: { sessionId: "s1", cwd: "/work", state: "open", at: FIXED_NOW, pid: 900, name: "pcs", host: HOST }
+    });
   });
 
   it.each<[string, Partial<SessionRecord>]>([
@@ -127,7 +156,7 @@ describe("hookDecision", () => {
   it.each<[string, string | undefined, HookOutcome["action"]]>([
     ["/exit", "prompt_input_exit", "deregister"],
     ["/clear, that id no longer being a conversation to pick up", "clear", "deregister"],
-    ["/logout, signing out being just as deliberate as exiting", "logout", "deregister"],
+    ["/logout, which ends a session over credentials and leaves the conversation resumable", "logout", "interrupted"],
     ["a SIGTERM, which is how closing the editor ends a devcontainer session", "other", "interrupted"],
     ["an interactive /resume, which leaves a conversation rather than ending it", "resume", "interrupted"],
     ["a reason a later claude sent that nobody here has measured", "a-reason-from-a-later-claude", "interrupted"],
@@ -135,6 +164,18 @@ describe("hookDecision", () => {
   ])("should decide a session that ended on %s", (_name, reason, action) => {
     // Act / Assert
     expect(decide({ event: SESSION_END, payload: payload(reason === undefined ? {} : { reason }) })).toMatchObject({ action });
+  });
+
+  /**
+   * The tempting argument, written down so it is not made again: signing out is
+   * deliberate, therefore it must be the person ending the session. It is deliberate about
+   * *credentials*. The conversation is untouched and resumable, so tombstoning it loses it
+   * for someone who logs out and straight back in. Deliberateness is not the test.
+   */
+  it("should keep the entry of a session that ended on /logout, the conversation being untouched by signing out", () => {
+    // Act / Assert
+    expect(CONVERSATION_OVER_REASONS).not.toContain("logout");
+    expect(decide({ event: SESSION_END, payload: payload({ reason: "logout" }) })).toMatchObject({ action: "interrupted" });
   });
 
   it("should carry the session id on an interrupted end, there being no record to write and a claim to release", () => {
@@ -232,7 +273,9 @@ describe("runHook", () => {
 
     // Assert
     expect(seams.fs.store.get(REGISTRY)).toBe(recordLine(record()));
-    expect(restoreDecision({ record: parseRegistry(seams.fs.store.get(REGISTRY)!)[0]!, cwdExists: true, alive: false })).toMatchObject({ action: "restore" });
+    expect(restoreDecision({ record: parseRegistry(seams.fs.store.get(REGISTRY)!)[0]!, now: FIXED_NOW, cwdExists: true, alive: false })).toMatchObject({
+      action: "restore"
+    });
   });
 
   it("should release the claim of a terminated session, so the next terminal needs no pid read to be offered it", async () => {
@@ -265,6 +308,41 @@ describe("runHook", () => {
     // Arrange
     const old = Array.from({ length: COMPACTION_THRESHOLD }, (_, index) => recordLine(record({ sessionId: `old-${index}`, state: "closed" }))).join("");
     const seams = seamsIn({ files: { [REGISTRY]: old } });
+
+    // Act
+    await runHook(seams, { event: USER_PROMPT_SUBMIT });
+
+    // Assert
+    expect(seams.fs.store.get(REGISTRY)).toBe(recordLine({ sessionId: "s1", cwd: "/work", state: "open", at: FIXED_NOW, pid: 900, host: HOST }));
+  });
+
+  /**
+   * The case the length test alone could not see. With open records permanent, a registry
+   * whose *open* set is past the threshold can never be shrunk by a rewrite, so
+   * `lines >= COMPACTION_THRESHOLD` stays true and the one operation that can lose a
+   * concurrent append would fire on every register and every deregister for ever. Here the
+   * registry is long and entirely open and recent: the hook must append its line and leave
+   * the file alone.
+   */
+  it("should not rewrite a long registry whose records are all still open, that being every hook from then on", async () => {
+    // Arrange
+    const open = Array.from({ length: COMPACTION_THRESHOLD }, (_, index) => recordLine(record({ sessionId: `open-${index}`, pid: 100 + index }))).join("");
+    const seams = seamsIn({ files: { [REGISTRY]: open } });
+
+    // Act
+    await runHook(seams, { event: USER_PROMPT_SUBMIT });
+
+    // Assert
+    expect(seams.fs.store.get(REGISTRY)).toBe(`${open}${recordLine({ sessionId: "s1", cwd: "/work", state: "open", at: FIXED_NOW, pid: 900, host: HOST })}`);
+    expect([...seams.fs.store.keys()].filter((key) => key.endsWith(".tmp"))).toEqual([]);
+  });
+
+  it("should drop the records nothing has touched inside the window when it does rewrite", async () => {
+    // Arrange
+    const stale = Array.from({ length: COMPACTION_THRESHOLD }, (_, index) =>
+      recordLine(record({ sessionId: `stale-${index}`, at: FIXED_NOW - RESTORE_WINDOW_MS - 1 }))
+    ).join("");
+    const seams = seamsIn({ files: { [REGISTRY]: stale } });
 
     // Act
     await runHook(seams, { event: USER_PROMPT_SUBMIT });

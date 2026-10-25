@@ -1,12 +1,23 @@
 import { describe, expect, it } from "vitest";
-import { createFakeSeams, type RunResponder } from "../__fixtures__/fake-seams.js";
+import { createFakeSeams, FIXED_NOW, type RunResponder } from "../__fixtures__/fake-seams.js";
 import type { SessionRecord } from "./registry.js";
 import { describeCandidate, livenessPlan, probeDirs, probeLiveness, restoreCandidates, restoreDecision } from "./restore.js";
 
 const HOST = "workstation";
-const record = (over: Partial<SessionRecord> = {}): SessionRecord => ({ sessionId: "a", cwd: "/work", state: "open", at: 10, pid: 100, host: HOST, ...over });
+const MINUTE = 60 * 1000;
+const DAY = 24 * 60 * 60 * 1000;
+const record = (over: Partial<SessionRecord> = {}): SessionRecord => ({
+  sessionId: "a",
+  cwd: "/work",
+  state: "open",
+  at: FIXED_NOW,
+  pid: 100,
+  host: HOST,
+  ...over
+});
 
-const decide = (over: Partial<Parameters<typeof restoreDecision>[0]> = {}) => restoreDecision({ record: record(), cwdExists: true, alive: false, ...over });
+const decide = (over: Partial<Parameters<typeof restoreDecision>[0]> = {}) =>
+  restoreDecision({ record: record(), now: FIXED_NOW, cwdExists: true, alive: false, ...over });
 
 describe("restoreDecision", () => {
   it.each<[string, Partial<Parameters<typeof restoreDecision>[0]>, "restore" | "skip"]>([
@@ -14,7 +25,9 @@ describe("restoreDecision", () => {
     ["an open session whose process is still there", { alive: true }, "skip"],
     ["an open session whose process cannot be asked about", { alive: null }, "skip"],
     ["a session that was closed cleanly", { record: record({ state: "closed" }) }, "skip"],
-    ["a session whose directory has been deleted since", { cwdExists: false }, "skip"]
+    ["a session whose directory has been deleted since", { cwdExists: false }, "skip"],
+    ["an open session still inside the window", { record: record({ at: FIXED_NOW - 6 * DAY }) }, "restore"],
+    ["an open session nothing has touched for longer than the window", { record: record({ at: FIXED_NOW - 8 * DAY }) }, "skip"]
   ])("should %s", (_name, over, action) => {
     // Act / Assert
     expect(decide(over).action).toBe(action);
@@ -28,6 +41,18 @@ describe("restoreDecision", () => {
   it("should refuse to guess about a pid it could not ask about, as the transcript lock does", () => {
     // Act / Assert
     expect(decide({ alive: null }).reason).toContain("cannot be told");
+  });
+
+  /**
+   * Ahead of the probes, because that is the point of it: a retired record costs no `ps`
+   * and no `stat`. It is decided before liveness and before the directory check, so the
+   * `false`/`null` the probes never gathered for it cannot be read as an answer.
+   */
+  it("should retire an untouched record ahead of the probes, saying how long it has been", () => {
+    // Act / Assert
+    expect(decide({ record: record({ at: FIXED_NOW - 21 * DAY }), cwdExists: false, alive: true }).reason).toBe(
+      "nothing has touched it for 21 days, so it is not a conversation to hand back"
+    );
   });
 
   /**
@@ -46,6 +71,7 @@ describe("restoreCandidates", () => {
     restoreCandidates({
       records,
       cwd: "/work",
+      now: FIXED_NOW,
       liveness: new Map(records.map((r) => [r.sessionId, false as boolean | null])),
       existingDirs: new Set(records.map((r) => r.cwd)),
       ...over
@@ -54,10 +80,10 @@ describe("restoreCandidates", () => {
   it("should prefer this directory and then take the most recent, cwd being a preference and not a filter", () => {
     // Arrange
     const records = [
-      record({ sessionId: "elsewhere-new", cwd: "/other", at: 40 }),
-      record({ sessionId: "here-new", cwd: "/work", at: 30 }),
-      record({ sessionId: "elsewhere-old", cwd: "/other", at: 10 }),
-      record({ sessionId: "here-old", cwd: "/work", at: 20 })
+      record({ sessionId: "elsewhere-new", cwd: "/other", at: FIXED_NOW - 10 * MINUTE }),
+      record({ sessionId: "here-new", cwd: "/work", at: FIXED_NOW - 20 * MINUTE }),
+      record({ sessionId: "elsewhere-old", cwd: "/other", at: FIXED_NOW - 40 * MINUTE }),
+      record({ sessionId: "here-old", cwd: "/work", at: FIXED_NOW - 30 * MINUTE })
     ];
 
     // Act
@@ -70,24 +96,23 @@ describe("restoreCandidates", () => {
   /**
    * One directory, so nothing but `at` decides, which is what tells newest-first from the
    * oldest-first this used to do. Nothing retires an open record — a conversation stepped
-   * out of with `/resume` stays open by design, and an abandoned one was never cleanly
-   * ended — so the stale end of the pile grows without limit. Oldest-first handed an
-   * engineer with three tabs the three oldest things in it and left the three they had
-   * actually been in waiting behind them.
+   * out of with `/resume` stays open until `RESTORE_WINDOW_MS` retires it, so the pile
+   * holds a week of them. Oldest-first handed an engineer with three tabs the three oldest
+   * things in it and left the three they had actually been in waiting behind them.
    */
   it("should hand back the conversation that was live most recently, the stale ones sinking to the bottom", () => {
     // Arrange
     const records = [
-      record({ sessionId: "three-weeks-ago", at: 1 }),
-      record({ sessionId: "this-afternoon", at: 300 }),
-      record({ sessionId: "last-tuesday", at: 100 })
+      record({ sessionId: "six-days-ago", at: FIXED_NOW - 6 * DAY }),
+      record({ sessionId: "an-hour-ago", at: FIXED_NOW - 60 * MINUTE }),
+      record({ sessionId: "two-days-ago", at: FIXED_NOW - 2 * DAY })
     ];
 
     // Act
     const { candidates } = all(records);
 
     // Assert
-    expect(candidates.map((r) => r.sessionId)).toEqual(["this-afternoon", "last-tuesday", "three-weeks-ago"]);
+    expect(candidates.map((r) => r.sessionId)).toEqual(["an-hour-ago", "two-days-ago", "six-days-ago"]);
   });
 
   it("should break a tie on the id, so two terminals walk the candidates in the same order", () => {
@@ -179,7 +204,7 @@ describe("probeLiveness", () => {
     const seams = seamsFor((argv) => (argv[0] === "ps" ? { code, stdout } : undefined));
 
     // Act
-    const liveness = await probeLiveness({ ...seams, host: HOST }, [record({ pid: 42 })]);
+    const liveness = await probeLiveness({ ...seams, host: HOST, now: FIXED_NOW }, [record({ pid: 42 })]);
 
     // Assert
     expect(seams.runner.calls[0]?.argv).toEqual(["ps", "-p", "42", "-o", "pid="]);
@@ -196,7 +221,7 @@ describe("probeLiveness", () => {
     const seams = seamsFor(() => undefined);
 
     // Act
-    const liveness = await probeLiveness({ ...seams, host: HOST }, [record({ pid: 0 })]);
+    const liveness = await probeLiveness({ ...seams, host: HOST, now: FIXED_NOW }, [record({ pid: 0 })]);
 
     // Assert
     expect(seams.runner.calls).toEqual([]);
@@ -211,7 +236,7 @@ describe("probeLiveness", () => {
     const seams = seamsFor((argv) => (argv[0] === "docker" ? { code, stderr, stdout: code === 0 ? "true\n" : "" } : undefined));
 
     // Act
-    const liveness = await probeLiveness({ ...seams, host: HOST }, [record({ host: "a1b2c3", container: "hai-pcs-123" })]);
+    const liveness = await probeLiveness({ ...seams, host: HOST, now: FIXED_NOW }, [record({ host: "a1b2c3", container: "hai-pcs-123" })]);
 
     // Assert
     expect(seams.runner.calls[0]?.argv).toEqual(["docker", "inspect", "-f", "{{.State.Running}}", "hai-pcs-123"]);
@@ -223,7 +248,7 @@ describe("probeLiveness", () => {
     const seams = seamsFor((argv) => (argv[0] === "docker" ? { code: 127, stderr: "docker: not found" } : undefined));
 
     // Act
-    const liveness = await probeLiveness({ ...seams, host: HOST }, [record({ host: "a1b2c3", container: "hai-pcs-123" })]);
+    const liveness = await probeLiveness({ ...seams, host: HOST, now: FIXED_NOW }, [record({ host: "a1b2c3", container: "hai-pcs-123" })]);
 
     // Assert
     expect(liveness.get("a")).toBeNull();
@@ -234,26 +259,49 @@ describe("probeLiveness", () => {
     const seams = seamsFor(() => ({ code: 1 }));
 
     // Act
-    const liveness = await probeLiveness({ ...seams, host: HOST }, [record({ sessionId: "closed", state: "closed" })]);
+    const liveness = await probeLiveness({ ...seams, host: HOST, now: FIXED_NOW }, [record({ sessionId: "closed", state: "closed" })]);
 
     // Assert
     expect(seams.runner.calls).toEqual([]);
     expect(liveness.size).toBe(0);
   });
+
+  /**
+   * The cost that made retirement necessary. Only an allow-listed reason writes a
+   * tombstone, so without a window every conversation the engineer has ever had is an open
+   * record and each one is a sequential `ps` on every `hair` and every `hair --list`.
+   */
+  it("should ask nothing about the records the window has retired, which is what bounds the probe", async () => {
+    // Arrange
+    const seams = seamsFor(() => ({ code: 1 }));
+
+    // Act
+    const liveness = await probeLiveness({ ...seams, host: HOST, now: FIXED_NOW }, [
+      record({ sessionId: "recent", at: FIXED_NOW - DAY }),
+      record({ sessionId: "retired", at: FIXED_NOW - 21 * DAY })
+    ]);
+
+    // Assert
+    expect(seams.runner.calls).toHaveLength(1);
+    expect([...liveness.keys()]).toEqual(["recent"]);
+  });
 });
 
 describe("probeDirs", () => {
-  it("should check each open record's directory once and leave the tombstones alone", async () => {
+  it("should check each kept record's directory once and leave the tombstones and the retired alone", async () => {
     // Arrange
     const seams = createFakeSeams();
     await seams.fs.mkdirp("/work");
+    // Present on disk, so being absent from the answer can only be the window.
+    await seams.fs.mkdirp("/retired");
 
     // Act
-    const dirs = await probeDirs(seams, [
+    const dirs = await probeDirs({ ...seams, now: FIXED_NOW }, [
       record({ sessionId: "a", cwd: "/work" }),
       record({ sessionId: "b", cwd: "/work" }),
       record({ sessionId: "c", cwd: "/gone" }),
-      record({ sessionId: "d", cwd: "/also-gone", state: "closed" })
+      record({ sessionId: "d", cwd: "/also-gone", state: "closed" }),
+      record({ sessionId: "e", cwd: "/retired", at: FIXED_NOW - 21 * DAY })
     ]);
 
     // Assert

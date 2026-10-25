@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createFakeSeams, type FakeSeams } from "./__fixtures__/fake-seams.js";
+import { createFakeSeams, type FakeSeams, FIXED_NOW } from "./__fixtures__/fake-seams.js";
 import { DEFAULT_BEDROCK_GROUP_ID } from "./az/group-membership.js";
 import { haiScriptPath } from "./claude/hooks.js";
 import { claimPath, recordLine, registryPath, type SessionRecord } from "./hair/registry.js";
@@ -14,12 +14,14 @@ const IN_CONTAINER = { "/.dockerenv": "" };
 
 /** The fake seams' own hostname, so a recorded pid is one `hair` may ask `ps` about. */
 const HOST = "workstation";
+const MINUTE = 60 * 1000;
+const DAY = 24 * 60 * 60 * 1000;
 
 const record = (over: Partial<SessionRecord> = {}): SessionRecord => ({
   sessionId: "s1",
   cwd: "/work",
   state: "open",
-  at: 10,
+  at: FIXED_NOW,
   pid: 100,
   host: HOST,
   ...over
@@ -167,7 +169,9 @@ describe("launchHair", () => {
 
     it("should give two terminals two different conversations", async () => {
       // Arrange
-      const files = { [REGISTRY]: `${recordLine(record({ sessionId: "s1", at: 10 }))}${recordLine(record({ sessionId: "s2", at: 20 }))}` };
+      const files = {
+        [REGISTRY]: `${recordLine(record({ sessionId: "s1", at: FIXED_NOW - 2 * MINUTE }))}${recordLine(record({ sessionId: "s2", at: FIXED_NOW - MINUTE }))}`
+      };
       const first = seamsIn(files, { pid: 1 });
       // The second terminal reads the registry and the claims the first one left behind.
       const second = seamsIn({ ...files }, { pid: 2 });
@@ -253,7 +257,9 @@ describe("launchHair", () => {
   describe("--list", () => {
     it("should print the candidates without claiming any of them", async () => {
       // Arrange
-      const seams = seamsIn({ [REGISTRY]: `${recordLine(record({ name: "pcs" }))}${recordLine(record({ sessionId: "s2", cwd: "/other", at: 20 }))}` });
+      const seams = seamsIn({
+        [REGISTRY]: `${recordLine(record({ name: "pcs" }))}${recordLine(record({ sessionId: "s2", cwd: "/other", at: FIXED_NOW - MINUTE }))}`
+      });
 
       // Act
       await launchHair({ seams, processArgv: ["node", "/bin/hair", "--list"] });
@@ -273,9 +279,9 @@ describe("launchHair", () => {
     it("should print the candidates in the order it would claim them, the top line being the one hair takes", async () => {
       // Arrange
       const registry = [
-        recordLine(record({ sessionId: "stale", name: "weeks ago", at: 1 })),
-        recordLine(record({ sessionId: "latest", name: "this afternoon", at: 300 })),
-        recordLine(record({ sessionId: "middle", name: "last tuesday", at: 100 }))
+        recordLine(record({ sessionId: "stale", name: "six days ago", at: FIXED_NOW - 6 * DAY })),
+        recordLine(record({ sessionId: "latest", name: "a minute ago", at: FIXED_NOW - MINUTE })),
+        recordLine(record({ sessionId: "middle", name: "two days ago", at: FIXED_NOW - 2 * DAY }))
       ].join("");
 
       // Act
@@ -285,10 +291,8 @@ describe("launchHair", () => {
       await launchHair({ seams: claiming, processArgv: ["node", "/bin/hair"] });
 
       // Assert
-      expect(listing.out.join("")).toBe(
-        "latest  this afternoon  this directory\nmiddle  last tuesday  this directory\nstale  weeks ago  this directory\n"
-      );
-      expect(execArgv(claiming).slice(-2)).toEqual(["--name", "this afternoon"]);
+      expect(listing.out.join("")).toBe("latest  a minute ago  this directory\nmiddle  two days ago  this directory\nstale  six days ago  this directory\n");
+      expect(execArgv(claiming).slice(-2)).toEqual(["--name", "a minute ago"]);
       expect(execArgv(claiming)).toContain("latest");
     });
 

@@ -1,24 +1,30 @@
 import { describe, expect, it } from "vitest";
-import { createFakeSeams } from "../__fixtures__/fake-seams.js";
+import { createFakeSeams, FIXED_NOW } from "../__fixtures__/fake-seams.js";
 import {
   appendRecord,
+  COMPACTION_THRESHOLD,
   claimPath,
   compacted,
   compactRegistry,
   lineCount,
   parseRecord,
   parseRegistry,
+  RESTORE_WINDOW_MS,
   readRegistry,
   recordLine,
   registryDir,
   registryPath,
-  type SessionRecord
+  retired,
+  type SessionRecord,
+  shouldCompact
 } from "./registry.js";
 
 const HOME = "/home/dev";
 const REGISTRY = `${HOME}/.claude/sessions.jsonl`;
 
-const open = (over: Partial<SessionRecord> = {}): SessionRecord => ({ sessionId: "a", cwd: "/work", state: "open", at: 10, pid: 100, ...over });
+const DAY = 24 * 60 * 60 * 1000;
+
+const open = (over: Partial<SessionRecord> = {}): SessionRecord => ({ sessionId: "a", cwd: "/work", state: "open", at: FIXED_NOW, pid: 100, ...over });
 
 describe("registryPath", () => {
   it("should put the registry under ~/.claude, where the container and the host both see it", () => {
@@ -112,7 +118,52 @@ describe("parseRegistry", () => {
 describe("compacted", () => {
   it("should keep only the open records, a tombstone existing to cancel a registration", () => {
     // Act / Assert
-    expect(compacted([open(), open({ sessionId: "b", state: "closed" })])).toBe(recordLine(open()));
+    expect(compacted([open(), open({ sessionId: "b", state: "closed" })], FIXED_NOW)).toBe(recordLine(open()));
+  });
+
+  /**
+   * Only an allow-listed reason writes a tombstone now, so every signal-killed session and
+   * every `/resume` departure is open for ever unless something retires it. Without this
+   * the file never shrinks, `probeLiveness` spawns a `ps` per record on every `hair --list`
+   * for the rest of the engineer's career, and an open set past the threshold makes a
+   * compaction unable to drop anything at all.
+   */
+  it("should drop an open record nothing has touched inside the window, nothing else retiring one", () => {
+    // Arrange
+    const fresh = open({ sessionId: "yesterday", at: FIXED_NOW - DAY });
+    const stale = open({ sessionId: "three-weeks-ago", at: FIXED_NOW - 21 * DAY });
+
+    // Act / Assert
+    expect(compacted([fresh, stale], FIXED_NOW)).toBe(recordLine(fresh));
+  });
+
+  it.each<[string, number, boolean]>([
+    ["inside the window", RESTORE_WINDOW_MS - 1, false],
+    ["exactly at the window, which is still inside it", RESTORE_WINDOW_MS, false],
+    ["one tick past the window", RESTORE_WINDOW_MS + 1, true]
+  ])("should read a record last touched %s as retired=%s", (_name, elapsed, expected) => {
+    // Act / Assert
+    expect(retired(open({ at: FIXED_NOW - elapsed }), FIXED_NOW)).toBe(expected);
+  });
+});
+
+/**
+ * The rewrite is the one operation that can lose a concurrent append, so it has to stay
+ * rare. A length test alone was enough while every conversation ended in a tombstone; with
+ * open records permanent it is not, because an open set bigger than the threshold leaves
+ * `lines >= COMPACTION_THRESHOLD` true while the rewrite drops nothing — and the rewrite
+ * would then run on every single hook.
+ */
+describe("shouldCompact", () => {
+  it.each<[string, number, number, boolean]>([
+    ["a short file, whatever it would keep", COMPACTION_THRESHOLD - 1, 1, false],
+    ["a long file the rewrite would more than halve", COMPACTION_THRESHOLD, 10, true],
+    ["a long file the rewrite would exactly halve", COMPACTION_THRESHOLD, COMPACTION_THRESHOLD / 2, true],
+    ["a long file whose open set is most of it, where the rewrite is not worth its risk", COMPACTION_THRESHOLD, COMPACTION_THRESHOLD / 2 + 1, false],
+    ["a long file that is entirely open records, the case that used to compact on every hook", COMPACTION_THRESHOLD, COMPACTION_THRESHOLD, false]
+  ])("should decide %s", (_name, lines, keeping, expected) => {
+    // Act / Assert
+    expect(shouldCompact({ lines, keeping })).toBe(expected);
   });
 });
 

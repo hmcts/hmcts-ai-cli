@@ -3,7 +3,7 @@ import type { Clock } from "../system/clock.js";
 import type { Env } from "../system/env.js";
 import type { Fs } from "../system/fs.js";
 import { releaseClaim } from "./claim.js";
-import { appendRecord, COMPACTION_THRESHOLD, compactRegistry, readRegistry, type SessionRecord } from "./registry.js";
+import { appendRecord, compactRegistry, keptRecords, readRegistry, type SessionRecord, shouldCompact } from "./registry.js";
 
 export const USER_PROMPT_SUBMIT = "UserPromptSubmit";
 export const SESSION_END = "SessionEnd";
@@ -47,17 +47,22 @@ export const CONTAINER_ENV = "HAI_CONTAINER_NAME";
  * - `prompt_input_exit` (`/exit`) and `clear` (`/clear`) are the person finishing with
  *   that id — `/clear` ends it and starts a new one, so the old id is not a conversation
  *   to hand anyone.
- * - `logout` is as deliberate as either: signing out is not something that happens to you.
  * - `other` is a kill, and also a finished `-p` run and a `claude stop` on a background
  *   one. Ignoring it costs nothing for those two, because neither ever registers — hai
  *   gates registration on `CLAUDE_CODE_SESSION_ATTENDED` — so there is no entry of theirs
  *   to leave behind.
- * - `resume` is the one judgement call. An interactive `/resume` switch is deliberate, but
- *   it does not *end* the conversation it leaves — that conversation is still a real one
- *   worth handing back, and while its process lives `restoreDecision` keeps it out of the
- *   way anyway. What it costs is a candidate per switch that nothing ever retires, which
- *   is why `restoreCandidates` orders newest-first: the stale end of that pile has to sink
- *   rather than be handed out first.
+ * - `logout` is **not** on the list, and the argument that it should be is the one to
+ *   watch for, because it is nearly right: signing out is deliberate, so surely it is the
+ *   person ending the session. It is deliberate about *credentials*. The conversation is
+ *   untouched and entirely resumable, so an engineer who logs out and straight back in
+ *   would find it tombstoned with nothing saying it had ever existed — the exact
+ *   asymmetric loss the allow-list is for. Deliberateness is not the test; "done with this
+ *   id" is, and `/logout` does not mean it.
+ * - `resume` is not on it either, for the same distinction. An interactive `/resume` switch
+ *   is deliberate but does not *end* the conversation it leaves; that conversation is still
+ *   a real one worth handing back, and while its process lives `restoreDecision` keeps it
+ *   out of the way anyway. What it costs is a candidate per switch, which `RESTORE_WINDOW_MS`
+ *   is what retires.
  *
  * It is an allow-list rather than a deny-list of `other` because the two mistakes are not
  * symmetrical. A reason wrongly left open costs one stale line the next `hair` offers and
@@ -65,7 +70,28 @@ export const CONTAINER_ENV = "HAI_CONTAINER_NAME";
  * trace that it ever existed. So a sixth reason a later Claude Code invents stays
  * recoverable until someone measures it.
  */
-export const CONVERSATION_OVER_REASONS: readonly string[] = ["prompt_input_exit", "clear", "logout"];
+export const CONVERSATION_OVER_REASONS: readonly string[] = ["prompt_input_exit", "clear"];
+
+/**
+ * How stale a record's `at` has to be before a prompt restamps it. `at` is *last
+ * activity*, not registration time, and this is the throttle that keeps it affordable.
+ *
+ * It had to become last-activity because the candidate order depends on it. Registration
+ * time ranks the wrong conversation first in the ordinary case: A registered at 09:00 and
+ * worked in all day, B registered at 16:30 with one question and left idle, both killed at
+ * 17:30 — newest-registration-first hands back the one-question conversation and leaves
+ * the day's work second, which is the opposite of handing back what was on screen.
+ *
+ * Restamping on *every* prompt would be a line per prompt, which `COMPACTION_THRESHOLD`
+ * would then have to absorb, so it is throttled. Fifteen minutes is the trade: the
+ * ordering can be wrong by at most the interval, which is far finer than the gaps it
+ * exists to resolve (an hour, in the case above), and a session driven all day costs of
+ * the order of thirty lines instead of one per prompt. Shorter buys precision nobody can
+ * perceive at the price of running the one risky operation here more often; longer starts
+ * losing the idle-versus-active distinction that is the whole point of ordering by
+ * recency.
+ */
+export const ACTIVITY_REFRESH_MS = 15 * 60 * 1000;
 
 /**
  * Pure over the payload, the environment and what the registry already says. First match
@@ -116,25 +142,17 @@ export function hookDecision(input: {
   const existing = input.records.find((record) => record.sessionId === payload.session_id);
   const pid = Number(input.env[OWNER_PID_ENV]) || 0;
   if (existing !== undefined && existing.state === "open" && existing.pid === pid && existing.cwd === payload.cwd) {
-    // Every prompt fires this hook, and a subagent handing its report back fires it too.
-    // The registry only has to hold one line per conversation.
-    return { action: "ignore", reason: "the session is already registered" };
+    if (input.now - existing.at < ACTIVITY_REFRESH_MS) {
+      // Every prompt fires this hook, and a subagent handing its report back fires it too.
+      // The registry only has to hold one line per conversation.
+      return { action: "ignore", reason: "the session is already registered and was active recently enough" };
+    }
+    return { action: "register", reason: "the session is still being driven, so when it was last active moves on", record: registration(input, payload, pid) };
   }
   return {
     action: "register",
     reason: existing === undefined ? "a human drove this session for the first time" : "the session moved to a new process or directory",
-    record: {
-      sessionId: payload.session_id,
-      cwd: payload.cwd,
-      state: "open",
-      at: input.now,
-      pid,
-      // The namespace the pid is meaningful in. Without these, `hair` on the host would
-      // read a container pid as if it were one of its own.
-      ...field("name", input.name),
-      ...field("host", input.host),
-      ...field("container", input.env[CONTAINER_ENV])
-    }
+    record: registration(input, payload, pid)
   };
 }
 
@@ -180,8 +198,9 @@ export async function runHook(
     if (outcome.action === "deregister") {
       await releaseClaim(deps, outcome.record.sessionId);
     }
-    if (lines >= COMPACTION_THRESHOLD) {
-      await compactRegistry(deps, [...records.filter((record) => record.sessionId !== outcome.record.sessionId), outcome.record]);
+    const next = [...records.filter((record) => record.sessionId !== outcome.record.sessionId), outcome.record];
+    if (shouldCompact({ lines, keeping: keptRecords(next, deps.clock.now()).length })) {
+      await compactRegistry(deps, next);
     }
   } catch (err) {
     deps.logger.verbose(`hair hook ${input.event} did nothing: ${err instanceof Error ? err.message : String(err)}`);
@@ -199,6 +218,21 @@ export function parsePayload(text: string): HookPayload | null {
 
 function closed(now: number, payload: HookPayload): SessionRecord {
   return { sessionId: payload.session_id!, cwd: payload.cwd!, state: "closed", at: now, pid: 0 };
+}
+
+function registration(input: { env: Env; name?: string; host: string; now: number }, payload: HookPayload, pid: number): SessionRecord {
+  return {
+    sessionId: payload.session_id!,
+    cwd: payload.cwd!,
+    state: "open",
+    at: input.now,
+    pid,
+    // The namespace the pid is meaningful in. Without these, `hair` on the host would
+    // read a container pid as if it were one of its own.
+    ...field("name", input.name),
+    ...field("host", input.host),
+    ...field("container", input.env[CONTAINER_ENV])
+  };
 }
 
 /** Absent rather than empty, so a record carries no field it could not fill. */

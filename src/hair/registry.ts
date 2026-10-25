@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import type { Clock } from "../system/clock.js";
 import type { Env } from "../system/env.js";
 import type { Fs } from "../system/fs.js";
 
@@ -7,11 +8,46 @@ export const CLAIMS_DIR = "hair-claims";
 export const REGISTRY_FILE_MODE = 0o600;
 
 /**
- * Past this many lines the registry is rewritten to one line per session. It only grows
- * by two lines per conversation — a registration and a tombstone — so this is weeks of
- * work, and the rewrite is the one operation that can lose a concurrent append.
+ * Past this many lines the registry is a candidate for being rewritten to one line per
+ * session. The rewrite is the one operation that can lose a concurrent append, so the
+ * threshold exists to keep it rare, and it has to be sized against how fast the file
+ * actually grows.
+ *
+ * It used to say "two lines per conversation — a registration and a tombstone", which was
+ * true when a registration was stamped once and never moved. It is not any more: `at` is
+ * refreshed as a conversation is driven (`ACTIVITY_REFRESH_MS` in hook.ts), so a session
+ * worked in all day appends of the order of thirty lines rather than one. At 500 that
+ * turned a rewrite every few weeks into one every day or two, which is the wrong direction
+ * for the riskiest operation here, so the threshold moved with the growth rate.
  */
-export const COMPACTION_THRESHOLD = 500;
+export const COMPACTION_THRESHOLD = 2000;
+
+/**
+ * How long after its last activity an open record is still worth offering. Past this it is
+ * retired: dropped by the next compaction, and skipped (unprobed) by `hair` before then.
+ *
+ * Something has to retire open records, because nothing else does any more. Only a reason
+ * in `CONVERSATION_OVER_REASONS` writes a tombstone, so every signal-killed session — the
+ * set this whole mechanism exists to preserve — and every conversation stepped out of with
+ * `/resume` is otherwise permanent. Two things degrade without a bound if they are:
+ * `probeLiveness` spawns one sequential `ps` per open record on every `hair` and every
+ * `hair --list`, and once the open set alone passes `COMPACTION_THRESHOLD` a compaction
+ * can no longer shrink the file, so it would fire on every single hook.
+ *
+ * Seven days, because the longest ordinary gap between closing an editor and reopening it
+ * is a bank-holiday weekend, and this has to cover that: being handed back what was open
+ * is the entire feature. Past a week a conversation is stale enough that offering it is a
+ * nuisance rather than a rescue. What retirement costs is only the *automatic* offer —
+ * Claude Code still holds the transcript, so `claude -r` and its own `/resume` picker find
+ * the conversation whatever this file says. That asymmetry is why a week is safe to pick
+ * rather than a month: nothing is destroyed, only un-offered.
+ */
+export const RESTORE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** Pure: an open record nobody has touched inside the window is not one to hand back. */
+export function retired(record: SessionRecord, now: number): boolean {
+  return now - record.at > RESTORE_WINDOW_MS;
+}
 
 /**
  * The registry lives under `~/.claude`, not in hai's state directory. The hook that
@@ -90,17 +126,39 @@ export function recordLine(record: SessionRecord): string {
   return `${JSON.stringify(record)}\n`;
 }
 
-export function openRecords(records: SessionRecord[]): SessionRecord[] {
-  return records.filter((record) => record.state === "open");
+/**
+ * The records still worth anything: open, and touched inside the window. A tombstone
+ * exists to cancel a registration, and a retired record is one nobody is restoring. This
+ * is the one definition of "worth keeping" — what a compaction writes, what `hair` probes
+ * and what it offers all come from here, so a record cannot be dropped by one and offered
+ * by another.
+ */
+export function keptRecords(records: SessionRecord[], now: number): SessionRecord[] {
+  return records.filter((record) => record.state === "open" && !retired(record, now));
 }
 
 export function lineCount(text: string | null): number {
   return text === null ? 0 : text.split("\n").filter((line) => line.trim() !== "").length;
 }
 
-/** Only the open records are worth keeping: a tombstone exists to cancel a registration. */
-export function compacted(records: SessionRecord[]): string {
-  return openRecords(records).map(recordLine).join("");
+export function compacted(records: SessionRecord[], now: number): string {
+  return keptRecords(records, now).map(recordLine).join("");
+}
+
+/**
+ * Pure: whether a rewrite is worth its risk. Long *and* at least halved by the rewrite.
+ *
+ * The length test alone was enough while every conversation ended in a tombstone, because
+ * the rewrite could then always drop something. It is not now: an open set larger than the
+ * threshold makes `lines >= COMPACTION_THRESHOLD` permanently true while the rewrite
+ * removes nothing, so the one operation that can lose a concurrent append would run on
+ * every register and every deregister instead of once in weeks. Requiring the rewrite to
+ * halve the file bounds that for good — after one, the file has to double before another
+ * can qualify — so the work between compactions is proportional to the file, whatever the
+ * open set does.
+ */
+export function shouldCompact(input: { lines: number; keeping: number }): boolean {
+  return input.lines >= COMPACTION_THRESHOLD && input.keeping * 2 <= input.lines;
 }
 
 export async function readRegistry(deps: { fs: Fs; env: Env }): Promise<{ records: SessionRecord[]; lines: number }> {
@@ -129,13 +187,13 @@ export async function appendRecord(deps: { fs: Fs; env: Env }, record: SessionRe
  * at once write different content to the same path before either renamed it, which is
  * exactly the half-written file the rename is there to rule out.
  */
-export async function compactRegistry(deps: { fs: Fs; env: Env; pid: number }, records: SessionRecord[]): Promise<void> {
+export async function compactRegistry(deps: { fs: Fs; env: Env; pid: number; clock: Clock }, records: SessionRecord[]): Promise<void> {
   const path = registryPath(deps.env);
   if (path === null) {
     return;
   }
   const temp = `${path}.${deps.pid}.tmp`;
-  await deps.fs.writeText(temp, compacted(records), { mode: REGISTRY_FILE_MODE });
+  await deps.fs.writeText(temp, compacted(records, deps.clock.now()), { mode: REGISTRY_FILE_MODE });
   await deps.fs.rename(temp, path);
 }
 
