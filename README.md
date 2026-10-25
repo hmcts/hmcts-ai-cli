@@ -76,8 +76,12 @@ go, because cft-workspace's `AGENT_HUB_MODEL_ROUTE=gateway` means *Bedrock*.
 A reboot ends every Claude Code session at once, and `claude --continue` keys only on the
 directory, so it cannot tell apart the several sessions you had open in one repo. `hair`
 ("hai resume") handles that. Sessions record themselves in `~/.claude/sessions.jsonl` as
-you use them and remove themselves on exit, so anything still marked open was interrupted
-rather than finished.
+you use them and remove themselves when *you* end the conversation: `/exit` and `/clear`,
+and nothing else. A crash, a reboot, closing the editor on a devcontainer, a `kill`,
+`/logout`, switching away with `/resume` — all of those leave the entry in place, so a
+conversation stops being offered only once you are done with that conversation. Entries
+nothing has touched for a week are then dropped; that only stops `hair` offering them, and
+`claude -r` still finds the conversation.
 
 ```bash
 hair          # claim one interrupted conversation and resume it
@@ -85,10 +89,11 @@ hair --list   # show what is waiting, claiming nothing
 ```
 
 Run it in each terminal you reopen and each gets a different conversation. It prefers one
-belonging to the directory you are in, otherwise the oldest waiting, and moves to that
-conversation's directory before resuming. Anything else you pass is forwarded to `hai`, and
-if the arguments already name a conversation — `hair -c`, `hair -r <id>` — nothing is
-claimed and `hair` is simply `hai`.
+belonging to the directory you are in, and then the one you were working in most recently,
+and moves to that conversation's directory before resuming. `hair --list` shows them in
+that same order, so its top line is the one `hair` would take. Anything else you pass is
+forwarded to `hai`, and if the arguments already name a conversation — `hair -c`,
+`hair -r <id>` — nothing is claimed and `hair` is simply `hai`.
 
 A conversation is recorded on the first prompt you type, so `-p` runs and background jobs
 never appear. The registry is written by hooks that run inside the session, so `hai` has to

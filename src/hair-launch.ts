@@ -41,11 +41,16 @@ export async function launchHair(deps: { seams: Seams; processArgv: string[] }):
   }
 
   const { records } = await readRegistry(seams);
+  // One reading of the clock for the whole run: a record that is retired for the probe has
+  // to be retired for the decision too, or `hair` spends a `ps` on something it then skips
+  // — or worse, offers one it did not probe.
+  const now = seams.clock.now();
   const { candidates, skipped } = restoreCandidates({
     records,
     cwd: seams.cwd,
-    liveness: await probeLiveness({ ...seams, host: seams.hostname }, records),
-    existingDirs: await probeDirs(seams, records)
+    now,
+    liveness: await probeLiveness({ ...seams, host: seams.hostname, now }, records),
+    existingDirs: await probeDirs({ ...seams, now }, records)
   });
   for (const { record, reason } of skipped) {
     seams.logger.verbose(`${record.sessionId}: ${reason}`);
