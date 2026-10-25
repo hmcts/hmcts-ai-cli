@@ -29,6 +29,45 @@ export const OWNER_PID_ENV = "CLAUDE_PID";
 export const CONTAINER_ENV = "HAI_CONTAINER_NAME";
 
 /**
+ * The `SessionEnd` reasons that mean the conversation itself is over, so its id is no
+ * longer one to hand a terminal. Every other reason leaves the entry open.
+ *
+ * Measured on Claude Code 2.1.304: `SessionEnd` fires on a kill as well as on an exit,
+ * reporting `other` — the same reason a finished `-p` run gives. Deregistering on every
+ * reason therefore closed the entry of every session that was *killed*, which is exactly
+ * the set the registry exists to hold: closing the editor stops the devcontainer, which
+ * SIGTERMs every session in it, and after a restart `hair --list` reported "the session
+ * was closed cleanly" about every conversation the engineer had had open.
+ *
+ * The reason field is a closed enum in 2.1.304 — `clear`, `resume`, `logout`,
+ * `prompt_input_exit`, `other`, which is both what the hooks reference documents and what
+ * the installed binary validates against. `bypass_permissions_disabled` was a sixth and
+ * was removed in 2.1.234. Of the five:
+ *
+ * - `prompt_input_exit` (`/exit`) and `clear` (`/clear`) are the person finishing with
+ *   that id — `/clear` ends it and starts a new one, so the old id is not a conversation
+ *   to hand anyone.
+ * - `logout` is as deliberate as either: signing out is not something that happens to you.
+ * - `other` is a kill, and also a finished `-p` run and a `claude stop` on a background
+ *   one. Ignoring it costs nothing for those two, because neither ever registers — hai
+ *   gates registration on `CLAUDE_CODE_SESSION_ATTENDED` — so there is no entry of theirs
+ *   to leave behind.
+ * - `resume` is the one judgement call. An interactive `/resume` switch is deliberate, but
+ *   it does not *end* the conversation it leaves — that conversation is still a real one
+ *   worth handing back, and while its process lives `restoreDecision` keeps it out of the
+ *   way anyway. What it costs is a candidate per switch that nothing ever retires, which
+ *   is why `restoreCandidates` orders newest-first: the stale end of that pile has to sink
+ *   rather than be handed out first.
+ *
+ * It is an allow-list rather than a deny-list of `other` because the two mistakes are not
+ * symmetrical. A reason wrongly left open costs one stale line the next `hair` offers and
+ * the engineer passes over; a reason wrongly deregistered costs the conversation, with no
+ * trace that it ever existed. So a sixth reason a later Claude Code invents stays
+ * recoverable until someone measures it.
+ */
+export const CONVERSATION_OVER_REASONS: readonly string[] = ["prompt_input_exit", "clear", "logout"];
+
+/**
  * Pure over the payload, the environment and what the registry already says. First match
  * wins.
  *
@@ -37,9 +76,12 @@ export const CONTAINER_ENV = "HAI_CONTAINER_NAME";
  * a human actually drove — `SessionStart` fires for every subagent sweep, every `-p`
  * script run and every background job, including the one cft-workspace starts from a
  * `SessionStart` hook on every session, and a registry full of those is a registry nobody
- * can restore from. Deregistration is on `SessionEnd`, and the asymmetry is the point: a
- * clean exit removes its own entry, a reboot cannot, so "still marked open" is the crash
- * signal.
+ * can restore from.
+ *
+ * Deregistration is on `SessionEnd` and only for a `CONVERSATION_OVER_REASONS` reason.
+ * The asymmetry is the point — an entry the person closed goes, an entry a kill ended
+ * stays, so "still marked open" is the crash signal — but it only holds for the reasons
+ * that mean the conversation is over, because `SessionEnd` fires on a kill too.
  */
 export function hookDecision(input: {
   event: string;
@@ -55,10 +97,15 @@ export function hookDecision(input: {
     return { action: "ignore", reason: "the payload carried no session" };
   }
   if (input.event === SESSION_END) {
-    // Whatever the reason. `/clear` ends the old id and starts a new one, `/exit` reports
-    // `prompt_input_exit` and a finished `-p` run reports `other` — in every case that id
-    // is not a conversation a terminal should be told to pick up.
-    return { action: "deregister", reason: `the session ended (${payload.reason ?? "no reason given"})`, record: closed(input.now, payload) };
+    const reason = payload.reason ?? "";
+    if (!CONVERSATION_OVER_REASONS.includes(reason)) {
+      return {
+        action: "interrupted",
+        reason: `the session ended with ${reason === "" ? "no reason given" : reason}, which is also what a terminated session reports, so its entry stays restorable`,
+        sessionId: payload.session_id
+      };
+    }
+    return { action: "deregister", reason: `the person ended the conversation (${reason})`, record: closed(input.now, payload) };
   }
   if (input.event !== USER_PROMPT_SUBMIT) {
     return { action: "ignore", reason: `${input.event === "" ? "no event" : input.event} is not an event hair maintains the registry from` };
@@ -117,6 +164,18 @@ export async function runHook(
     if (outcome.action === "ignore") {
       return;
     }
+    if (outcome.action === "interrupted") {
+      // Nothing is written: the entry stays exactly as it was, which is the crash signal.
+      // The claim does go, because the terminal that held it has ended too, and a
+      // conversation nobody is sitting in should not need a pid read to be offered again.
+      // `claimDecision` would reclaim it anyway, but only on `pidAlive` answering false
+      // about the pid `hair` itself had — and a devcontainer's PID namespace starts at 1
+      // again on every restart, so that is one needless draw against a reused number.
+      // Liveness is still the guard that stops a live session being forked: the registry
+      // entry carries the session's own pid and `restoreDecision` reads it.
+      await releaseClaim(deps, outcome.sessionId);
+      return;
+    }
     await appendRecord(deps, outcome.record);
     if (outcome.action === "deregister") {
       await releaseClaim(deps, outcome.record.sessionId);
@@ -158,11 +217,24 @@ export interface HookPayload {
   session_id?: string;
   cwd?: string;
   hook_event_name?: string;
-  /** `prompt_input_exit` on `/exit`, `clear` on `/clear`, `other` otherwise. */
+  /**
+   * One of `prompt_input_exit`, `clear`, `resume`, `logout` and `other` — the whole enum
+   * in 2.1.304. `other` covers a kill as well as a finished `-p` run, which is why
+   * `CONVERSATION_OVER_REASONS` and not "any reason at all" decides a deregistration.
+   * Typed as a plain string because a later version may add to the set, and the point of
+   * the allow-list is that one it has never heard of still parses.
+   */
   reason?: string;
 }
 
+/**
+ * Four verdicts, because `SessionEnd` has two of its own and conflating them is what the
+ * bug was. `interrupted` is "the session is over but the conversation is not": the entry
+ * is left untouched and only the claim is released, so it carries the session id rather
+ * than a record there is nothing to write.
+ */
 export type HookOutcome =
   | { action: "ignore"; reason: string }
   | { action: "register"; reason: string; record: SessionRecord }
-  | { action: "deregister"; reason: string; record: SessionRecord };
+  | { action: "deregister"; reason: string; record: SessionRecord }
+  | { action: "interrupted"; reason: string; sessionId: string };

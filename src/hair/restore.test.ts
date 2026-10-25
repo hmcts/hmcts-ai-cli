@@ -51,7 +51,7 @@ describe("restoreCandidates", () => {
       ...over
     });
 
-  it("should prefer this directory and then take the oldest, cwd being a preference and not a filter", () => {
+  it("should prefer this directory and then take the most recent, cwd being a preference and not a filter", () => {
     // Arrange
     const records = [
       record({ sessionId: "elsewhere-new", cwd: "/other", at: 40 }),
@@ -64,7 +64,30 @@ describe("restoreCandidates", () => {
     const { candidates } = all(records);
 
     // Assert
-    expect(candidates.map((r) => r.sessionId)).toEqual(["here-old", "here-new", "elsewhere-old", "elsewhere-new"]);
+    expect(candidates.map((r) => r.sessionId)).toEqual(["here-new", "here-old", "elsewhere-new", "elsewhere-old"]);
+  });
+
+  /**
+   * One directory, so nothing but `at` decides, which is what tells newest-first from the
+   * oldest-first this used to do. Nothing retires an open record — a conversation stepped
+   * out of with `/resume` stays open by design, and an abandoned one was never cleanly
+   * ended — so the stale end of the pile grows without limit. Oldest-first handed an
+   * engineer with three tabs the three oldest things in it and left the three they had
+   * actually been in waiting behind them.
+   */
+  it("should hand back the conversation that was live most recently, the stale ones sinking to the bottom", () => {
+    // Arrange
+    const records = [
+      record({ sessionId: "three-weeks-ago", at: 1 }),
+      record({ sessionId: "this-afternoon", at: 300 }),
+      record({ sessionId: "last-tuesday", at: 100 })
+    ];
+
+    // Act
+    const { candidates } = all(records);
+
+    // Assert
+    expect(candidates.map((r) => r.sessionId)).toEqual(["this-afternoon", "last-tuesday", "three-weeks-ago"]);
   });
 
   it("should break a tie on the id, so two terminals walk the candidates in the same order", () => {

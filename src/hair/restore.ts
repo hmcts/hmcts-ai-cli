@@ -36,10 +36,21 @@ export function restoreDecision(input: { record: SessionRecord; cwdExists: boole
 }
 
 /**
- * Exact cwd match first, then FIFO. Most of the engineer's terminals share a directory,
- * so cwd is a preference and not a filter: a restored terminal takes the oldest unclaimed
+ * Exact cwd match first, then most recent first. Most of the engineer's terminals share a
+ * directory, so cwd is a preference and not a filter: a restored terminal takes a waiting
  * conversation whatever directory it belongs to, rather than starting a fresh session and
  * leaving one stranded.
+ *
+ * Within that, the newest goes first, because nothing retires an open record. A
+ * conversation stepped out of with an interactive `/resume` stays open by design (see
+ * `CONVERSATION_OVER_REASONS`), and one abandoned three weeks ago was never cleanly ended
+ * either, so the pile of candidates drifts above the number of terminals and never
+ * shrinks. Oldest-first handed each terminal the stalest thing in it — an engineer with
+ * ten tabs got ten conversations from weeks ago while the ten they actually had open sat
+ * unclaimed behind them, which is the opposite of giving back what was open. Newest-first
+ * hands back the conversations that were live most recently, which are overwhelmingly the
+ * ones that were on screen, and lets the stale ones sink to the bottom where they cost
+ * nothing.
  */
 export function restoreCandidates(input: { records: SessionRecord[]; cwd: string; liveness: Map<string, boolean | null>; existingDirs: Set<string> }): {
   candidates: SessionRecord[];
@@ -59,7 +70,7 @@ export function restoreCandidates(input: { records: SessionRecord[]; cwd: string
       skipped.push({ record, reason: outcome.reason });
     }
   }
-  return { candidates: candidates.sort((a, b) => rank(a, input.cwd) - rank(b, input.cwd) || a.at - b.at || compare(a.sessionId, b.sessionId)), skipped };
+  return { candidates: candidates.sort((a, b) => rank(a, input.cwd) - rank(b, input.cwd) || b.at - a.at || compare(a.sessionId, b.sessionId)), skipped };
 }
 
 export function describeCandidate(record: SessionRecord, cwd: string): string {

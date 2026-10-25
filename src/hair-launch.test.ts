@@ -185,8 +185,10 @@ describe("launchHair", () => {
       await launchHair({ seams: second, processArgv: ["node", "/bin/hair"] });
 
       // Assert
-      expect(execArgv(first).slice(-2)).toEqual(["-r", "s1"]);
-      expect(execArgv(second).slice(-2)).toEqual(["-r", "s2"]);
+      // The newer conversation goes to the terminal that asked first, and the older one is
+      // still reached rather than stranded.
+      expect(execArgv(first).slice(-2)).toEqual(["-r", "s2"]);
+      expect(execArgv(second).slice(-2)).toEqual(["-r", "s1"]);
     });
 
     it("should start a fresh session when there is nothing waiting, rather than refuse to run", async () => {
@@ -260,6 +262,34 @@ describe("launchHair", () => {
       expect(seams.out.join("")).toBe("s1  pcs  this directory\ns2  (unnamed)  /other\n");
       expect(seams.fs.store.has(claimPath({ HOME }, "s1")!)).toBe(false);
       expect(seams.runner.execCalls).toEqual([]);
+    });
+
+    /**
+     * The list is what someone eyeballs before deciding whether to run the bare form, so
+     * it has to be in the order the bare form would claim in — newest first, so the top
+     * line is the conversation `hair` is about to hand back. Both read the same
+     * `candidates` array today; this is what would catch a sort added for display alone.
+     */
+    it("should print the candidates in the order it would claim them, the top line being the one hair takes", async () => {
+      // Arrange
+      const registry = [
+        recordLine(record({ sessionId: "stale", name: "weeks ago", at: 1 })),
+        recordLine(record({ sessionId: "latest", name: "this afternoon", at: 300 })),
+        recordLine(record({ sessionId: "middle", name: "last tuesday", at: 100 }))
+      ].join("");
+
+      // Act
+      const listing = seamsIn({ [REGISTRY]: registry });
+      await launchHair({ seams: listing, processArgv: ["node", "/bin/hair", "--list"] });
+      const claiming = seamsIn({ [REGISTRY]: registry });
+      await launchHair({ seams: claiming, processArgv: ["node", "/bin/hair"] });
+
+      // Assert
+      expect(listing.out.join("")).toBe(
+        "latest  this afternoon  this directory\nmiddle  last tuesday  this directory\nstale  weeks ago  this directory\n"
+      );
+      expect(execArgv(claiming).slice(-2)).toEqual(["--name", "this afternoon"]);
+      expect(execArgv(claiming)).toContain("latest");
     });
 
     it("should say so when nothing is waiting", async () => {

@@ -63,10 +63,39 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
   interactive and `0` for both; `CLAUDE_CODE_ENTRYPOINT` is not one, because `--bg` reports
   `cli` just as an attended session does. Filter conservatively: missing a session is a
   nuisance, a registry full of agent runs is useless.
-- **Deregistration is on `SessionEnd`, and the asymmetry is the whole mechanism.** A clean
-  exit removes its own entry; a reboot cannot. "Still marked open" *is* the crash signal.
-  Every reason deregisters, `clear` included — `/clear` ends that id and starts a new one,
-  so the old id is not a conversation to hand anyone.
+- **Deregistration is on `SessionEnd`, and only for the reasons that mean the conversation
+  is over.** The asymmetry is still the whole mechanism — an entry the person closed goes,
+  an entry a kill ended stays, so "still marked open" *is* the crash signal — but it only
+  holds for *those* reasons, because **`SessionEnd` fires on a kill too**. Measured:
+  `kill -TERM` on a running `claude` fires it with `reason: "other"`, the same reason a
+  finished `-p` run gives (the table under "Session restore" has the whole enum). So
+  deregistering on every reason closed the entry of every session that was killed — which
+  is precisely the set the registry exists to hold. Closing VS Code stops the devcontainer,
+  which SIGTERMs every session in it, so after a restart the registry held 125 records and
+  `HAI_VERBOSE=1 hair --list` reported "the session was closed cleanly" about every one of
+  them: there was nothing to resume, ever, for anybody. This rule used to claim that "a
+  clean exit removes its own entry; a reboot cannot". That was never tested and it was
+  false.
+  `CONVERSATION_OVER_REASONS` is therefore an **allow-list**: `prompt_input_exit` (`/exit`),
+  `clear` (`/clear` ends that id and starts a new one, so the old id is not a conversation
+  to hand anyone) and `logout` (signing out is not something that happens to you). It is an
+  allow-list and not a deny-list of `other` because the two mistakes are not symmetrical —
+  a reason wrongly left open costs one stale line the next `hair` offers and the engineer
+  passes over, a reason wrongly deregistered costs the conversation with no trace it ever
+  existed — so a reason a later Claude Code adds stays recoverable until somebody measures
+  it. `resume` is the one judgement call: an interactive `/resume` switch is deliberate, but
+  it does not *end* the conversation it leaves, and that conversation is still worth handing
+  back. What that costs is a candidate per switch that nothing ever retires, which is why
+  the candidate order is newest-first — see step 5 under "Session restore".
+- **An end that was not the person's releases the claim and writes nothing.** That is the
+  fourth `hookDecision` verdict, `interrupted`, and the reason it carries a session id
+  rather than a record. The entry has to be left byte-identical — it *is* the signal — but
+  the claim has to go, because the terminal holding it has ended too and a conversation
+  nobody is sitting in should not need a pid read to be offered again. `claimDecision`
+  would reclaim it anyway, on `pidAlive` answering false about the pid `hair` itself had,
+  and a devcontainer's PID namespace starts at 1 again on every restart: that is one
+  needless draw against a reused number. Liveness is still the guard that stops a live
+  session being forked, the entry carrying the session's own pid for `restoreDecision`.
 - **The claim is atomic and is committed before the handover.** Ten terminals can start at
   once, and the resumed session's own hook re-registers it as open within seconds: a claim
   taken after the exec would let the next terminal pick the same id, and `claude -r` on a
@@ -560,10 +589,22 @@ The shape, all in `src/hair-launch.ts`:
    directory is still there and whose process is **gone** is a candidate; one still
    running is not, one whose directory has been deleted is not, and one that cannot be
    asked about is left alone, the same rule the transcript lock follows.
-5. Exact-cwd records come first and then FIFO. Most of the engineer's terminals share a
-   directory, so cwd is a preference rather than a filter: a restored terminal takes the
-   oldest waiting conversation whatever directory it belongs to, rather than starting
+5. Exact-cwd records come first and then the most recent. Most of the engineer's terminals
+   share a directory, so cwd is a preference rather than a filter: a restored terminal
+   takes a waiting conversation whatever directory it belongs to, rather than starting
    fresh and leaving one stranded.
+   **Newest-first, not FIFO**, because nothing retires an open record. A conversation
+   stepped out of with an interactive `/resume` stays open by design — `resume` is not in
+   `CONVERSATION_OVER_REASONS` — and one abandoned three weeks ago was never cleanly ended
+   either, so the candidate pile drifts above the number of terminals and never shrinks.
+   FIFO handed each terminal the stalest thing in it: an engineer with ten tabs got ten
+   conversations from weeks ago while the ten they actually had open sat unclaimed behind
+   them, which is the opposite of giving back what was open. Newest-first hands back what
+   was live most recently, overwhelmingly what was on screen, and lets the stale ones sink
+   to the bottom where they cost nothing. The session-id tiebreak stays, so two terminals
+   still walk the candidates in the same order. `hair --list` prints the same array
+   `claimFirst` walks, and it has to: the top line is the conversation the bare form is
+   about to take, which is what makes the list worth eyeballing.
 6. `claimFirst` walks the candidates and takes the first it wins with `O_EXCL`, then
    `seams.chdir` moves to the record's own directory, then `launch()` runs with
    `["-r", id, "--name", <the record's name>, ...rest]` — the name goes back on the argv
@@ -608,11 +649,36 @@ and the quoting is what stops a session name with a space in it being read as mo
 
 `UserPromptSubmit` carries `session_id`, `transcript_path`, `cwd`, `prompt_id`,
 `permission_mode`, `hook_event_name` and `prompt`. `SessionEnd` carries the same less
-`permission_mode` and `prompt`, plus `reason`: `prompt_input_exit` for `/exit`, `clear`
-for `/clear`, `other` for a finished `-p` run and for `claude stop` on a background one.
-Neither carries the session's `-n/--name`, which is why hai reads it off the argv and puts
-it on the hook's command line. `CLAUDE_PID` in the hook environment is the owning `claude`
-process, not the hook's own, and is what the registry records.
+`permission_mode` and `prompt`, plus `reason`. Neither carries the session's `-n/--name`,
+which is why hai reads it off the argv and puts it on the hook's command line. `CLAUDE_PID`
+in the hook environment is the owning `claude` process, not the hook's own, and is what the
+registry records.
+
+`reason` is a closed enum of five, and this is the table the whole deregistration rule
+turns on. The enum is both what the hooks reference documents
+(<https://code.claude.com/docs/en/hooks>) and what the installed 2.1.304 binary validates
+against — `grep -a -o '\["clear"[^]]*\]'` over
+`.../@anthropic-ai/claude-code/bin/claude.exe` returns
+`["clear","resume","logout","prompt_input_exit","other"]`, and a sixth,
+`bypass_permissions_disabled`, was removed in 2.1.234 and is no longer in the binary at
+all.
+
+| `reason` | fired by | hai's verdict |
+|---|---|---|
+| `prompt_input_exit` | `/exit` | deregister |
+| `clear` | `/clear` | deregister |
+| `logout` | `/logout` | deregister |
+| `resume` | an interactive `/resume` switch | keep the entry |
+| `other` | **`kill -TERM`**, a finished `-p` run, `claude stop` on a `--bg` one | keep the entry |
+
+The row that matters is `other`, and it is the one measured late. Run
+`claude --settings <a settings with a SessionEnd hook> -p 'write 400 words about rivers' &`
+and then `kill -TERM <pid>`: the hook fires, with `"reason":"other"`. A kill is therefore
+indistinguishable from a clean `-p` finish, so nothing in a `SessionEnd` payload says "this
+session was terminated" — only the absence of an *intentional* reason does. Do not restore
+"every reason deregisters" from first principles; that is the bug, and what it cost was
+every ending that goes through a signal, which is every ordinary one: a SIGKILL or a power
+cut left an entry open, and nothing else did.
 
 Subagents do not register anything of their own: a subagent's work shows up as a
 `UserPromptSubmit` on the **parent** session's id, with the prompt opening

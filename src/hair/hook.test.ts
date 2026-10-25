@@ -1,7 +1,19 @@
 import { describe, expect, it } from "vitest";
 import { createFakeSeams, FIXED_NOW } from "../__fixtures__/fake-seams.js";
-import { ATTENDED_ENV, CONTAINER_ENV, type HookPayload, hookDecision, OWNER_PID_ENV, parsePayload, runHook, SESSION_END, USER_PROMPT_SUBMIT } from "./hook.js";
-import { COMPACTION_THRESHOLD, claimPath, recordLine, registryPath, type SessionRecord } from "./registry.js";
+import {
+  ATTENDED_ENV,
+  CONTAINER_ENV,
+  type HookOutcome,
+  type HookPayload,
+  hookDecision,
+  OWNER_PID_ENV,
+  parsePayload,
+  runHook,
+  SESSION_END,
+  USER_PROMPT_SUBMIT
+} from "./hook.js";
+import { COMPACTION_THRESHOLD, claimPath, parseRegistry, recordLine, registryPath, type SessionRecord } from "./registry.js";
+import { restoreDecision } from "./restore.js";
 
 const HOME = "/home/dev";
 const REGISTRY = registryPath({ HOME })!;
@@ -91,26 +103,51 @@ describe("hookDecision", () => {
     expect(decide({ records: [record(over)] })).toMatchObject({ action: "register" });
   });
 
-  it("should deregister on SessionEnd, which is the half a reboot cannot do", () => {
+  it("should deregister on SessionEnd, which is the half a kill cannot do", () => {
     // Act
     const outcome = decide({ event: SESSION_END, payload: payload({ reason: "prompt_input_exit" }) });
 
     // Assert
     expect(outcome).toEqual({
       action: "deregister",
-      reason: "the session ended (prompt_input_exit)",
+      reason: "the person ended the conversation (prompt_input_exit)",
       record: { sessionId: "s1", cwd: "/work", state: "closed", at: FIXED_NOW, pid: 0 }
     });
   });
 
-  it("should deregister a /clear too, that id no longer being a conversation to pick up", () => {
+  /**
+   * Every reason the enum holds, one row each, because the choice between these verdicts
+   * *is* the mechanism and a single example cannot tell "every reason deregisters" from
+   * "only the ones that mean the conversation is over do". Measured on Claude Code
+   * 2.1.304: `SessionEnd` fires on a SIGTERM too, reporting `other`, so deregistering on
+   * every reason closed the record of every session a devcontainer shutdown killed —
+   * precisely the set `hair` exists to hand back. The sixth row stands in for a reason a
+   * later version adds, which must stay restorable until somebody measures it.
+   */
+  it.each<[string, string | undefined, HookOutcome["action"]]>([
+    ["/exit", "prompt_input_exit", "deregister"],
+    ["/clear, that id no longer being a conversation to pick up", "clear", "deregister"],
+    ["/logout, signing out being just as deliberate as exiting", "logout", "deregister"],
+    ["a SIGTERM, which is how closing the editor ends a devcontainer session", "other", "interrupted"],
+    ["an interactive /resume, which leaves a conversation rather than ending it", "resume", "interrupted"],
+    ["a reason a later claude sent that nobody here has measured", "a-reason-from-a-later-claude", "interrupted"],
+    ["no reason at all", undefined, "interrupted"]
+  ])("should decide a session that ended on %s", (_name, reason, action) => {
     // Act / Assert
-    expect(decide({ event: SESSION_END, payload: payload({ reason: "clear" }) })).toMatchObject({ action: "deregister" });
+    expect(decide({ event: SESSION_END, payload: payload(reason === undefined ? {} : { reason }) })).toMatchObject({ action });
   });
 
-  it("should deregister even when claude sent no reason", () => {
+  it("should carry the session id on an interrupted end, there being no record to write and a claim to release", () => {
     // Act / Assert
-    expect(decide({ event: SESSION_END })).toMatchObject({ action: "deregister", reason: "the session ended (no reason given)" });
+    expect(decide({ event: SESSION_END, payload: payload({ reason: "other" }) })).toMatchObject({ action: "interrupted", sessionId: "s1" });
+  });
+
+  it("should say why a terminated session keeps its entry, that line being the only trace in a hook's log", () => {
+    // Act / Assert
+    expect(decide({ event: SESSION_END, payload: payload({ reason: "other" }) }).reason).toBe(
+      "the session ended with other, which is also what a terminated session reports, so its entry stays restorable"
+    );
+    expect(decide({ event: SESSION_END }).reason).toContain("no reason given");
   });
 
   it.each<[string, HookPayload | null]>([
@@ -178,6 +215,39 @@ describe("runHook", () => {
     // Assert
     expect(seams.fs.store.get(REGISTRY)).toContain('"state":"closed"');
     expect(seams.fs.store.has(claimPath({ HOME }, "s1")!)).toBe(false);
+  });
+
+  /**
+   * The bug this file is the regression test for: closing the editor stops the
+   * devcontainer, every session gets a SIGTERM, each one's `SessionEnd` fires with
+   * `other`, and the tombstone that used to append left `hair --list` reporting "the
+   * session was closed cleanly" about every conversation the engineer had open.
+   */
+  it("should leave the record open when a session was terminated, so hair can still hand it back", async () => {
+    // Arrange
+    const seams = seamsIn({ stdinText: JSON.stringify(payload({ reason: "other" })), files: { [REGISTRY]: recordLine(record()) } });
+
+    // Act
+    await runHook(seams, { event: SESSION_END });
+
+    // Assert
+    expect(seams.fs.store.get(REGISTRY)).toBe(recordLine(record()));
+    expect(restoreDecision({ record: parseRegistry(seams.fs.store.get(REGISTRY)!)[0]!, cwdExists: true, alive: false })).toMatchObject({ action: "restore" });
+  });
+
+  it("should release the claim of a terminated session, so the next terminal needs no pid read to be offered it", async () => {
+    // Arrange
+    const seams = seamsIn({
+      stdinText: JSON.stringify(payload({ reason: "other" })),
+      files: { [REGISTRY]: recordLine(record()), [claimPath({ HOME }, "s1")!]: "{}" }
+    });
+
+    // Act
+    await runHook(seams, { event: SESSION_END });
+
+    // Assert
+    expect(seams.fs.store.has(claimPath({ HOME }, "s1")!)).toBe(false);
+    expect(seams.fs.store.get(REGISTRY)).toBe(recordLine(record()));
   });
 
   it("should write nothing for a decision to ignore", async () => {
