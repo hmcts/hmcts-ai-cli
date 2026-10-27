@@ -33,14 +33,13 @@ export function needsProbes(env: Env, requested: Route | null): boolean {
 
 /**
  * Membership is what puts a member on the AI Gateway and what stops the unset path
- * reaching a personal subscription unawares — and nothing else, now that an explicit route
- * is obeyed rather than refused. So an explicit `HAI_ROUTE` resolves no membership at all,
+ * reaching a personal subscription unawares. An explicit `HAI_ROUTE` resolves none at all,
  * which drops an `az account show` and an `az rest checkMemberGroups` from every run that
- * names its route. It coincides with `needsProbes` deliberately: both questions are "is
- * this the unset path, and has the environment not already settled it".
+ * names its route. Wider than `needsProbes`: membership is the first branch of the unset
+ * path, so a key in the environment does not settle it.
  */
-export function needsMembership(env: Env, requested: Route | null): boolean {
-  return needsProbes(env, requested);
+export function needsMembership(_env: Env, requested: Route | null): boolean {
+  return requested === null;
 }
 
 /**
@@ -83,24 +82,24 @@ export async function gatherSignals(deps: {
     seams.logger.verbose("HAI_OFFLINE=1, so agent-hub and Graph are not consulted");
   }
 
-  if (probing && !offline) {
-    base.hasStoredBedrockKey = await storedBedrockKeyPresent(deps.agentHub, seams);
-    if (base.hasStoredBedrockKey) {
-      // A stored key settles the route on Bedrock whatever the group answer turns out to
-      // be, and it cannot lead anywhere personal, so there is nothing left to ask.
-      return { signals: base, askedGraph };
-    }
-  }
-
+  // Asked first because it is the first branch of the precedence table: a member goes to
+  // the gateway whatever keys exist, so nothing below can change the answer.
   if (checkingGroup && !offline) {
     base.isBedrockGroupMember = await checkBedrockGroupMembership(seams);
     askedGraph = true;
   }
+  if (base.isBedrockGroupMember === true) {
+    return { signals: base, askedGraph };
+  }
 
-  // Only read when nobody has confirmed membership: a member is never routed to their own
-  // licence, so for them the answer could not change anything. `probing` is already false
-  // for an explicit route, which is the only other caller this could matter to.
-  if (probing && base.isBedrockGroupMember !== true) {
+  if (probing && !offline) {
+    base.hasStoredBedrockKey = await storedBedrockKeyPresent(deps.agentHub, seams);
+    if (base.hasStoredBedrockKey) {
+      return { signals: base, askedGraph };
+    }
+  }
+
+  if (probing) {
     base.hasHostClaudeCredential = await hasHostClaudeCredential(seams);
   }
   return { signals: base, askedGraph };

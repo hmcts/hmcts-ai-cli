@@ -46,10 +46,18 @@ jobs:
       - name: Build
         run: yarn build
 
-      - name: Bump the patch version
+      # A version set by hand on master is published as it stands; anything else gets a
+      # patch bump. An existing tag is the test for "already released".
+      - name: Resolve the version to publish
         id: bump
         run: |
-          npm version patch --no-git-tag-version
+          current="$(node -p 'require("./package.json").version')"
+          if git rev-parse -q --verify "refs/tags/v${current}" >/dev/null; then
+            npm version patch --no-git-tag-version
+            echo "v${current} is already released, so this is a patch bump"
+          else
+            echo "publishing v${current}, the version master asks for"
+          fi
           echo "version=$(node -p 'require("./package.json").version')" >> "$GITHUB_OUTPUT"
 
       # Kept line-for-line from cnp-githubactions-library/npm-publish-library so that moving

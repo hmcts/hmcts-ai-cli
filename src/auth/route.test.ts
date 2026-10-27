@@ -179,10 +179,16 @@ describe("resolveRoute", () => {
       ["a live host claude.ai login, which every Claude Code user has", { ...MEMBER, hasHostClaudeCredential: true }, "ai-gateway", "gateway-apim"],
       ["an exported CLAUDE_CODE_OAUTH_TOKEN", { ...MEMBER, hasOauthEnvToken: true }, "ai-gateway", "gateway-apim"],
       ["both personal credentials at once", { ...MEMBER, hasOauthEnvToken: true, hasHostClaudeCredential: true }, "ai-gateway", "gateway-apim"],
-      ["a Bedrock key in the environment", { ...MEMBER, hasBedrockEnvKey: true }, "bedrock", "env"],
-      ["a Bedrock key on agent-hub", { ...MEMBER, hasStoredBedrockKey: true }, "bedrock", "agent-hub"],
-      ["both Bedrock keys", { ...MEMBER, hasBedrockEnvKey: true, hasStoredBedrockKey: true }, "bedrock", "env"],
-      ["a stored key and a host login", { ...MEMBER, hasStoredBedrockKey: true, hasHostClaudeCredential: true }, "bedrock", "agent-hub"]
+      ["a Bedrock key in the environment", { ...MEMBER, hasBedrockEnvKey: true }, "ai-gateway", "gateway-apim"],
+      ["a Bedrock key on agent-hub", { ...MEMBER, hasStoredBedrockKey: true }, "ai-gateway", "gateway-apim"],
+      ["both Bedrock keys", { ...MEMBER, hasBedrockEnvKey: true, hasStoredBedrockKey: true }, "ai-gateway", "gateway-apim"],
+      ["a stored key and a host login", { ...MEMBER, hasStoredBedrockKey: true, hasHostClaudeCredential: true }, "ai-gateway", "gateway-apim"],
+      [
+        "every other credential at once",
+        { ...MEMBER, hasBedrockEnvKey: true, hasStoredBedrockKey: true, hasOauthEnvToken: true, hasHostClaudeCredential: true },
+        "ai-gateway",
+        "gateway-apim"
+      ]
     ])("should resolve %s", (_name, overrides, route, credentialSource) => {
       // Act
       const result = resolveRoute(signals(overrides));

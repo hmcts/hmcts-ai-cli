@@ -52,7 +52,7 @@ function seamsIn(env: Record<string, string> = {}, files: Record<string, string>
   return createFakeSeams({
     env: { HOME, HAI_NO_UPDATE: "1", AWS_BEARER_TOKEN_BEDROCK: KEY, ...env },
     files: { ...IN_CONTAINER, ...files },
-    respond
+    respond: notAMember
   });
 }
 
@@ -67,7 +67,7 @@ describe("launch", () => {
         env: { HOME, HAI_NO_UPDATE: "1", AWS_BEARER_TOKEN_BEDROCK: KEY, ...env },
         cwd: "/work",
         files: packagedRuntime(),
-        respond: (argv) => (argv[0] === "docker" && argv[1] === "inspect" ? { code: 1, stderr: "No such object" } : respond(argv))
+        respond: (argv) => (argv[0] === "docker" && argv[1] === "inspect" ? { code: 1, stderr: "No such object" } : notAMember(argv))
       });
 
     it("should start a container on a bare host", async () => {
@@ -131,7 +131,7 @@ describe("launch", () => {
         env: { HOME, HAI_NO_UPDATE: "1", HAI_FORCE_HOST: "1", HAI_VERBOSE: "1", AWS_BEARER_TOKEN_BEDROCK: KEY },
         cwd: "/work",
         files: { ...IN_CONTAINER, ...packagedRuntime() },
-        respond: (argv) => (argv[0] === "docker" && argv[1] === "inspect" ? { code: 1, stderr: "No such object" } : respond(argv))
+        respond: (argv) => (argv[0] === "docker" && argv[1] === "inspect" ? { code: 1, stderr: "No such object" } : notAMember(argv))
       });
 
       // Act
@@ -523,9 +523,7 @@ describe("launch", () => {
     });
 
     it("should use the key agent-hub holds when the AI Gateway downgrades, rather than ask for one it already has", async () => {
-      // Arrange — the two failures are independent: the hub probe in gatherSignals throws
-      // (a 5xx, or its 15s timeout) and the Key Vault read then fails because the VPN is
-      // down. hiddenInput has no answer queued, so any prompt throws rather than passing.
+      // Arrange
       let gets = 0;
       const seams = createFakeSeams({
         env: { HOME, HAI_NO_UPDATE: "1" },
@@ -541,7 +539,7 @@ describe("launch", () => {
         },
         fetch: async () => {
           gets += 1;
-          return gets === 1 ? new Response("", { status: 503 }) : new Response(JSON.stringify({ value: KEY }));
+          return new Response(JSON.stringify({ value: KEY }));
         },
         hiddenInput: createFakeHiddenInput([])
       });
@@ -552,7 +550,7 @@ describe("launch", () => {
       // Assert — the downgrade is the unset path, so it reads the hub; pasting would both
       // waste the key the hub holds and overwrite it on the way back out.
       expect(execEnv(seams).AWS_BEARER_TOKEN_BEDROCK).toBe(KEY);
-      expect(gets).toBe(2);
+      expect(gets).toBe(1);
     });
 
     it("should prompt a group member for a Bedrock key rather than bill their own subscription when the gateway is unreachable", async () => {
@@ -712,7 +710,7 @@ describe("launch", () => {
     it("should re-exec with HAI_UPDATED=1 after a successful update", async () => {
       // Arrange
       const seams = createFakeSeams({
-        env: { HOME, AWS_BEARER_TOKEN_BEDROCK: KEY },
+        env: { HOME, HAI_ROUTE: "bedrock", AWS_BEARER_TOKEN_BEDROCK: KEY },
         files: { ...IN_CONTAINER, ...PUBLISHED },
         respond,
         fetch: async () => new Response(JSON.stringify({ "dist-tags": { latest: "99.0.0" } }))
@@ -730,7 +728,7 @@ describe("launch", () => {
     it("should carry straight on when there is nothing newer", async () => {
       // Arrange
       const seams = createFakeSeams({
-        env: { HOME, AWS_BEARER_TOKEN_BEDROCK: KEY },
+        env: { HOME, HAI_ROUTE: "bedrock", AWS_BEARER_TOKEN_BEDROCK: KEY },
         files: { ...IN_CONTAINER, ...PUBLISHED },
         respond,
         fetch: async () => new Response(JSON.stringify({ "dist-tags": { latest: "0.1.0" } }))
@@ -747,7 +745,7 @@ describe("launch", () => {
     it("should not update from a working copy, whose version is always behind the feed", async () => {
       // Arrange — no manifest in the fake fs, so the running version reads as 0.0.0.
       const seams = createFakeSeams({
-        env: { HOME, AWS_BEARER_TOKEN_BEDROCK: KEY },
+        env: { HOME, HAI_ROUTE: "bedrock", AWS_BEARER_TOKEN_BEDROCK: KEY },
         files: IN_CONTAINER,
         respond,
         fetch: async () => new Response(JSON.stringify({ "dist-tags": { latest: "99.0.0" } }))
@@ -764,7 +762,7 @@ describe("launch", () => {
     it("should install nothing under HAI_DRY_RUN=1, even with a newer version on the feed", async () => {
       // Arrange
       const seams = createFakeSeams({
-        env: { HOME, HAI_DRY_RUN: "1", AWS_BEARER_TOKEN_BEDROCK: KEY },
+        env: { HOME, HAI_DRY_RUN: "1", HAI_ROUTE: "bedrock", AWS_BEARER_TOKEN_BEDROCK: KEY },
         files: { ...IN_CONTAINER, ...PUBLISHED },
         respond,
         fetch: async () => new Response(JSON.stringify({ "dist-tags": { latest: "99.0.0" } }))
@@ -786,7 +784,7 @@ describe("launch", () => {
       // Arrange
       const order: string[] = [];
       const seams = createFakeSeams({
-        env: { HOME, HAI_NO_UPDATE: "1", AWS_BEARER_TOKEN_BEDROCK: KEY },
+        env: { HOME, HAI_NO_UPDATE: "1", HAI_ROUTE: "bedrock", AWS_BEARER_TOKEN_BEDROCK: KEY },
         files: IN_CONTAINER,
         respond: (argv) => {
           order.push(argv.join(" "));
@@ -802,7 +800,7 @@ describe("launch", () => {
       // Act
       await launch({ seams, processArgv: ["node", "hai"] });
 
-      // Assert — AWS_BEARER_TOKEN_BEDROCK settles the route, so nothing is looked up at all.
+      // Assert
       expect(order).toEqual(["exec"]);
     });
 
@@ -822,10 +820,8 @@ describe("launch", () => {
       // Act
       await launch({ seams, processArgv: ["node", "hai"] });
 
-      // Assert — one az for the identity, one for the agent-hub token, then the group
-      // check, which puts a member on the gateway and sends it after the APIM key. The
-      // second hub call reuses the token the first one fetched.
-      expect(order).toEqual(["az account", "az account", "az rest", "getent hosts", "az keyvault"]);
+      // Assert
+      expect(order).toEqual(["az account", "az rest", "getent hosts", "az keyvault"]);
     });
   });
 });

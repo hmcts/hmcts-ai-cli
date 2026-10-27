@@ -480,17 +480,36 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
   personal-credential branch and is unconditional there: `hasHostClaudeCredential` used to
   be tested first, and since every Claude Code user has a live claude.ai login that made the
   membership branch unreachable, so a missing Bedrock key quietly became "use their own
-  subscription". **Do not move that ordering**, and note that a hub-stored Bedrock key is
-  one of the signals ahead of it. Membership that could not be confirmed refuses the
-  personal branch too, naming `HAI_ROUTE=byol` as the way to say that is genuinely what you
-  want — because an unanswered question is not an answer of "not a member".
-- **`needsMembership` is what keeps that signal resolved.** The block is only as good as
-  `isBedrockGroupMember`, so `src/auth/signals.ts` resolves it for the unset path and no
-  longer lets an exported `CLAUDE_CODE_OAUTH_TOKEN` or a host claude.ai login short-circuit
-  past it. The things that skip it are a Bedrock key in the environment, any explicit
-  `HAI_ROUTE` and a cached answer. The host credential is read *after* the group check and
-  only when membership is not confirmed, because for a member the answer could not change
-  anything.
+  subscription". **Do not move that ordering**, and note that **nothing on the unset path is
+  ahead of it any more**: the group check is the first branch, ahead of the two Bedrock keys
+  as well. Membership that could not be confirmed refuses the personal branch too, naming
+  `HAI_ROUTE=byol` as the way to say that is genuinely what you want — because an unanswered
+  question is not an answer of "not a member".
+- **The gateway is ahead of Bedrock, so a key lying around decides nothing for a member.**
+  Both routes bill HMCTS, so this is not about who pays; it is about which of the two HMCTS
+  manages. The gateway is where the token quota, the model allow-list, content safety and
+  per-service cost attribution live, and a direct Bedrock call with a personal API key is
+  outside all four. An `AWS_BEARER_TOKEN_BEDROCK` left in a shell profile, or a key the hub
+  still holds from before, used to win silently and take a member off the managed path with
+  nothing said. A member who wants Bedrock directly says `HAI_ROUTE=bedrock`, which is
+  obeyed like any other named route. Nothing is lost when the gateway is unreachable:
+  `resolveAuth` downgrades and walks the same env → agent-hub → prompt key chain as before.
+- **`needsMembership` is what keeps that signal resolved, and it no longer coincides with
+  `needsProbes`.** The block is only as good as `isBedrockGroupMember`, so
+  `src/auth/signals.ts` resolves it for the whole unset path and no longer lets an exported
+  `CLAUDE_CODE_OAUTH_TOKEN`, a host claude.ai login *or a Bedrock key in the environment*
+  short-circuit past it — the last of those is what changed when the gateway moved ahead of
+  Bedrock, and it is why the two predicates came apart. `needsProbes` still returns false
+  for an env key, because what *it* gates cannot change the answer once a key is in hand.
+  The only things that skip the membership check are an explicit `HAI_ROUTE` and a cached
+  answer.
+- **`gatherSignals` asks the group before it asks anything else, and returns the moment the
+  answer is yes.** The probe order has to follow the precedence table or it decides the
+  route by itself: asking the hub first and returning on a stored key, which is what this
+  used to do, put a member on Bedrock and never looked at the group at all. Returning early
+  on a confirmed member is the other half — nothing below can change the answer — and it is
+  worth having rather than merely harmless, because it drops an `az account get-access-token`
+  and an agent-hub round trip from every member's launch.
 - **The AI Gateway's fallback chain never ends at a personal subscription.** Whether the
   gateway works is I/O, not a decision — the APIM key is in a private Key Vault behind the
   F5 VPN — so `resolveRoute` returns `ai-gateway` and `resolveAuth` settles it, downgrading

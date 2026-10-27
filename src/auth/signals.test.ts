@@ -82,7 +82,7 @@ describe("needsMembership", () => {
     ["HAI_ROUTE=agent-hub, where membership changes nothing", {}, "agent-hub", false],
     ["HAI_ROUTE=ai-gateway, where membership changes nothing", {}, "ai-gateway", false],
     ["HAI_ROUTE=bedrock, where membership changes nothing", {}, "bedrock", false],
-    ["a key in the environment, which is decided before membership", { AWS_BEARER_TOKEN_BEDROCK: KEY }, null, false]
+    ["a key in the environment, which membership is now decided ahead of", { AWS_BEARER_TOKEN_BEDROCK: KEY }, null, true]
   ])("should want the group answer for %s", (_name, env, requested, expected) => {
     // Act / Assert
     expect(needsMembership(env, requested)).toBe(expected);
@@ -105,7 +105,7 @@ describe("gatherSignals", () => {
     expect(seams.runner.calls).toHaveLength(0);
   });
 
-  it("should stop at a Bedrock key in the environment", async () => {
+  it("should still check the group behind a Bedrock key in the environment, which no longer settles the route", async () => {
     // Arrange
     const seams = createFakeSeams({ env: { AWS_BEARER_TOKEN_BEDROCK: KEY }, respond: memberResponse });
     const agentHub = fakeHub(async () => KEY);
@@ -114,9 +114,9 @@ describe("gatherSignals", () => {
     const { signals } = await gatherSignals({ seams, agentHub, offline: false, cachedGroupMembership: null });
 
     // Assert
-    expect(signals.hasBedrockEnvKey).toBe(true);
+    expect(signals).toMatchObject({ hasBedrockEnvKey: true, isBedrockGroupMember: true });
+    expect(askedGraph(seams.runner.calls)).toBe(true);
     expect(agentHub.gets).toEqual([]);
-    expect(seams.runner.calls).toHaveLength(0);
   });
 
   it("should keep looking past an OAuth token in the environment, which no longer settles the route", async () => {
@@ -129,20 +129,20 @@ describe("gatherSignals", () => {
 
     // Assert
     expect(signals).toMatchObject({ hasOauthEnvToken: true, isBedrockGroupMember: true });
-    expect(agentHub.gets).toEqual(["bedrock"]);
+    expect(agentHub.gets).toEqual([]);
   });
 
-  it("should stop once the hub reports a stored key", async () => {
+  it("should stop once the hub reports a stored key, membership having already come back no", async () => {
     // Arrange
-    const seams = createFakeSeams({ env: { HOME }, respond: memberResponse });
+    const seams = createFakeSeams({ env: { HOME }, respond: nonMemberResponse });
     const agentHub = fakeHub(async () => KEY);
 
     // Act
     const { signals } = await gatherSignals({ seams, agentHub, offline: false, cachedGroupMembership: null });
 
     // Assert
-    expect(signals).toMatchObject({ hasStoredBedrockKey: true, hasHostClaudeCredential: false, isBedrockGroupMember: null });
-    expect(seams.runner.calls).toHaveLength(0);
+    expect(signals).toMatchObject({ hasStoredBedrockKey: true, hasHostClaudeCredential: false, isBedrockGroupMember: false });
+    expect(agentHub.gets).toEqual(["bedrock"]);
   });
 
   it("should check the group before it looks for a host claude.ai login", async () => {
@@ -208,7 +208,7 @@ describe("gatherSignals", () => {
 
   it("should treat a hub it cannot reach as no evidence either way", async () => {
     // Arrange
-    const seams = createFakeSeams({ env: { HOME, HAI_VERBOSE: "1" }, respond: memberResponse });
+    const seams = createFakeSeams({ env: { HOME, HAI_VERBOSE: "1" }, respond: nonMemberResponse });
     const agentHub = fakeHub(async () => {
       throw new Error("fetch failed");
     });
