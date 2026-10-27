@@ -78,12 +78,6 @@ function decided(signals: Signals): Omit<RouteResolution, "byName"> {
     return explicit(signals, signals.requestedRoute);
   }
   if (signals.isBedrockGroupMember === true) {
-    // First on the unset path, ahead of the Bedrock keys as well as every personal
-    // credential. The gateway is the route HMCTS manages — quotas, model allow-lists,
-    // content safety and per-service cost attribution — so for a member it is the answer
-    // whatever keys happen to be lying around. A member whose gateway cannot be reached
-    // still ends up on Bedrock: `resolveAuth` downgrades, and the key chain it walks is
-    // the same env → agent-hub → prompt as before.
     return { route: "ai-gateway", credentialSource: "gateway-apim", reasons: ["you are in the Bedrock developer group, so HMCTS pays for this session"] };
   }
   if (signals.hasBedrockEnvKey) {

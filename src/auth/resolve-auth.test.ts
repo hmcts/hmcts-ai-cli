@@ -114,8 +114,7 @@ describe("resolveAuth", () => {
   });
 
   it("should still check the group for a non-member with a key in the environment, and land on it", async () => {
-    // Arrange — the key no longer settles the route on its own: the gateway is ahead of
-    // it now, so the group has to be asked before the key can be the answer.
+    // Arrange
     const seams = createFakeSeams({ env: { HOME, AWS_BEARER_TOKEN_BEDROCK: KEY }, respond: notAMember });
 
     // Act
@@ -179,9 +178,7 @@ describe("resolveAuth", () => {
     // Act
     await resolveAuth({ seams, agentHub });
 
-    // Assert — the identity first, because the group answer is cached under it, then the
-    // group, and then the gateway. "hub get" never appears: a confirmed member is on the
-    // gateway, so the stored-key probe it used to answer is not reached.
+    // Assert
     expect(order).toEqual(["az account", "az rest", "az hosts", "az keyvault"]);
   });
 

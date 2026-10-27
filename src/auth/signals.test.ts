@@ -106,7 +106,7 @@ describe("gatherSignals", () => {
   });
 
   it("should still check the group behind a Bedrock key in the environment, which no longer settles the route", async () => {
-    // Arrange — the key would have stopped this outright while Bedrock came first.
+    // Arrange
     const seams = createFakeSeams({ env: { AWS_BEARER_TOKEN_BEDROCK: KEY }, respond: memberResponse });
     const agentHub = fakeHub(async () => KEY);
 
@@ -116,7 +116,6 @@ describe("gatherSignals", () => {
     // Assert
     expect(signals).toMatchObject({ hasBedrockEnvKey: true, isBedrockGroupMember: true });
     expect(askedGraph(seams.runner.calls)).toBe(true);
-    // A confirmed member is on the gateway, so the hub has nothing left to answer.
     expect(agentHub.gets).toEqual([]);
   });
 
@@ -130,12 +129,11 @@ describe("gatherSignals", () => {
 
     // Assert
     expect(signals).toMatchObject({ hasOauthEnvToken: true, isBedrockGroupMember: true });
-    // Nothing is asked after a confirmed membership: the gateway is already the answer.
     expect(agentHub.gets).toEqual([]);
   });
 
   it("should stop once the hub reports a stored key, membership having already come back no", async () => {
-    // Arrange — a non-member, because for a member the hub is never reached at all.
+    // Arrange
     const seams = createFakeSeams({ env: { HOME }, respond: nonMemberResponse });
     const agentHub = fakeHub(async () => KEY);
 

@@ -47,13 +47,7 @@ jobs:
         run: yarn build
 
       # A version set by hand on master is published as it stands; anything else gets a
-      # patch bump. The tag is the test for "already released", because every release makes
-      # one and `fetch-depth: 0` means they are all here — asking the feed instead would
-      # make the decision depend on a network call that can fail open.
-      #
-      # Without this the only reachable version was the next patch, so a deliberate major or
-      # minor could not be published at all: setting 1.0.0 in package.json would publish
-      # 1.0.1 and leave 1.0.0 as a version that never existed.
+      # patch bump. An existing tag is the test for "already released".
       - name: Resolve the version to publish
         id: bump
         run: |

@@ -48,11 +48,6 @@ const notAMember = (argv: string[]) => (argv[1] === "rest" ? { stdout: JSON.stri
 const withHubToken = (argv: string[]) =>
   argv[2] === "get-access-token" ? { stdout: JSON.stringify({ accessToken: "eyJhbGciOiJSUzI1NiJ9.e30.c2ln", expires_on: 1800000000 }) } : respond(argv);
 
-/**
- * The default is a non-member with a key in the environment, which is what lands on
- * bedrock now that the gateway comes first: for a member the env key decides nothing.
- * Tests that want the gateway name it with `HAI_ROUTE`, which resolves no membership.
- */
 function seamsIn(env: Record<string, string> = {}, files: Record<string, string> = {}) {
   return createFakeSeams({
     env: { HOME, HAI_NO_UPDATE: "1", AWS_BEARER_TOKEN_BEDROCK: KEY, ...env },
@@ -528,10 +523,7 @@ describe("launch", () => {
     });
 
     it("should use the key agent-hub holds when the AI Gateway downgrades, rather than ask for one it already has", async () => {
-      // Arrange — the Key Vault read fails because the VPN is down. A member is never
-      // probed for a stored key (the gateway is ahead of it), so this one hub read is the
-      // downgrade's own. hiddenInput has no answer queued, so a prompt throws rather than
-      // passing.
+      // Arrange
       let gets = 0;
       const seams = createFakeSeams({
         env: { HOME, HAI_NO_UPDATE: "1" },
@@ -808,8 +800,7 @@ describe("launch", () => {
       // Act
       await launch({ seams, processArgv: ["node", "hai"] });
 
-      // Assert — a named route is one credential from one source, so nothing is looked up
-      // at all. An env key alone no longer gets here: the group is checked ahead of it.
+      // Assert
       expect(order).toEqual(["exec"]);
     });
 
@@ -829,10 +820,7 @@ describe("launch", () => {
       // Act
       await launch({ seams, processArgv: ["node", "hai"] });
 
-      // Assert — one az for the identity, then the group check, which puts a member on the
-      // gateway and sends it after the APIM key. agent-hub is not consulted at all now that
-      // the gateway comes first, which is one az token mint and one hub round trip fewer on
-      // every member's launch.
+      // Assert
       expect(order).toEqual(["az account", "az rest", "getent hosts", "az keyvault"]);
     });
   });
