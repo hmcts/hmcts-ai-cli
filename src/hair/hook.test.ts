@@ -16,14 +16,25 @@ import {
 } from "./hook.js";
 import { COMPACTION_THRESHOLD, claimPath, parseRegistry, RESTORE_WINDOW_MS, recordLine, registryPath, type SessionRecord } from "./registry.js";
 import { restoreDecision } from "./restore.js";
+import { transcriptPath } from "./title.js";
 
 const HOME = "/home/dev";
 const REGISTRY = registryPath({ HOME })!;
 const ATTENDED = { [ATTENDED_ENV]: "1", [OWNER_PID_ENV]: "900" };
+/** Where Claude Code filed this conversation, which is where its name is kept. */
+const SLUG = "-filed-here";
+/** What Claude Code hands every hook, and the only authoritative statement of the slug. */
+const TRANSCRIPT = transcriptPath(`${HOME}/.claude/projects/${SLUG}`, "s1");
+
+/**
+ * A transcript holding a name, laid out for the hook to find and never read: it is there so
+ * the "reads nothing but the registry" test would fail if the hook went looking.
+ */
+const named = (title: string) => `${JSON.stringify({ type: "custom-title", customTitle: title, sessionId: "s1" })}\n`;
 
 const HOST = "workstation";
 
-const payload = (over: Partial<HookPayload> = {}): HookPayload => ({ session_id: "s1", cwd: "/work", ...over });
+const payload = (over: Partial<HookPayload> = {}): HookPayload => ({ session_id: "s1", cwd: "/work", transcript_path: TRANSCRIPT, ...over });
 const record = (over: Partial<SessionRecord> = {}): SessionRecord => ({
   sessionId: "s1",
   cwd: "/work",
@@ -31,6 +42,8 @@ const record = (over: Partial<SessionRecord> = {}): SessionRecord => ({
   at: FIXED_NOW,
   pid: 900,
   host: HOST,
+  // Last, so a `recordLine` of this matches what `registration` serialises byte for byte.
+  slug: SLUG,
   ...over
 });
 
@@ -46,13 +59,65 @@ describe("hookDecision", () => {
     expect(outcome).toEqual({
       action: "register",
       reason: "a human drove this session for the first time",
+      record: { sessionId: "s1", cwd: "/work", state: "open", at: FIXED_NOW, pid: 900, host: HOST, slug: SLUG }
+    });
+  });
+
+  /**
+   * `parsePayload` establishes only that the payload is a non-array object, so every field on
+   * it is unverified — and `path.dirname` throws a `TypeError` on a non-string. A throw here
+   * is a throw inside `hookDecision`, which `runHook`'s catch-all turns into the loss of the
+   * **whole registration** for that session rather than just the slug. `hookDecision` is
+   * non-throwing over any JSON object, and the record comes back without a `slug` the same
+   * way one whose payload carried no `transcript_path` does.
+   */
+  it.each<[string, unknown]>([
+    ["a number", 42],
+    ["a null", null],
+    ["an object", { path: TRANSCRIPT }],
+    ["an array", [TRANSCRIPT]]
+  ])("should register the session, less the slug, when transcript_path is %s", (_name, path) => {
+    // Act
+    const outcome = decide({ payload: { ...payload(), transcript_path: path as string } });
+
+    // Assert
+    expect(outcome).toEqual({
+      action: "register",
+      reason: "a human drove this session for the first time",
       record: { sessionId: "s1", cwd: "/work", state: "open", at: FIXED_NOW, pid: 900, host: HOST }
     });
   });
 
+  /**
+   * The argv is the only name the hook has, and the only one it needs: `resolveName`
+   * re-reads the transcript at restore time and overwrites this, so the record's value is
+   * the fallback for a conversation whose transcript is not there to be read.
+   */
   it("should keep the display name hai read off the argv, no payload carrying it", () => {
     // Act / Assert
     expect(decide({ name: "pcs" })).toMatchObject({ action: "register", record: { name: "pcs" } });
+  });
+
+  /**
+   * Recorded so the restore can find the transcript by one `stat` rather than by scanning
+   * every project directory. Taken out of the payload rather than computed: Claude Code
+   * fixes the slug at startup and `cwd` does not have to agree with it.
+   */
+  it("should record the slug out of the payload's transcript path, not one derived from cwd", () => {
+    // Act
+    const outcome = decide({ payload: payload({ cwd: "/a-worktree-it-cd-ed-into" }) });
+
+    // Assert
+    expect(outcome).toMatchObject({ action: "register", record: { cwd: "/a-worktree-it-cd-ed-into", slug: SLUG } });
+  });
+
+  it("should carry no slug at all when the payload gave no transcript path to take one from", () => {
+    // Act
+    const outcome = decide({ payload: { session_id: "s1", cwd: "/work" } });
+
+    // Assert
+    expect(outcome.action).toBe("register");
+    expect(Object.keys((outcome as { record: SessionRecord }).record)).not.toContain("slug");
   });
 
   it("should register a session whose owning pid it could not read, liveness then refusing to guess", () => {
@@ -119,7 +184,7 @@ describe("hookDecision", () => {
     expect(outcome).toEqual({
       action: "register",
       reason: "the session is still being driven, so when it was last active moves on",
-      record: { sessionId: "s1", cwd: "/work", state: "open", at: FIXED_NOW, pid: 900, name: "pcs", host: HOST }
+      record: { sessionId: "s1", cwd: "/work", state: "open", at: FIXED_NOW, pid: 900, name: "pcs", host: HOST, slug: SLUG }
     });
   });
 
@@ -240,7 +305,9 @@ describe("runHook", () => {
     await runHook(seams, { event: USER_PROMPT_SUBMIT, name: "pcs" });
 
     // Assert
-    expect(seams.fs.store.get(REGISTRY)).toBe(recordLine({ sessionId: "s1", cwd: "/work", state: "open", at: FIXED_NOW, pid: 900, name: "pcs", host: HOST }));
+    expect(seams.fs.store.get(REGISTRY)).toBe(
+      recordLine({ sessionId: "s1", cwd: "/work", state: "open", at: FIXED_NOW, pid: 900, name: "pcs", host: HOST, slug: SLUG })
+    );
   });
 
   it("should append a tombstone and release the claim when the session ends", async () => {
@@ -313,7 +380,7 @@ describe("runHook", () => {
     await runHook(seams, { event: USER_PROMPT_SUBMIT });
 
     // Assert
-    expect(seams.fs.store.get(REGISTRY)).toBe(recordLine({ sessionId: "s1", cwd: "/work", state: "open", at: FIXED_NOW, pid: 900, host: HOST }));
+    expect(seams.fs.store.get(REGISTRY)).toBe(recordLine({ sessionId: "s1", cwd: "/work", state: "open", at: FIXED_NOW, pid: 900, host: HOST, slug: SLUG }));
   });
 
   /**
@@ -333,7 +400,9 @@ describe("runHook", () => {
     await runHook(seams, { event: USER_PROMPT_SUBMIT });
 
     // Assert
-    expect(seams.fs.store.get(REGISTRY)).toBe(`${open}${recordLine({ sessionId: "s1", cwd: "/work", state: "open", at: FIXED_NOW, pid: 900, host: HOST })}`);
+    expect(seams.fs.store.get(REGISTRY)).toBe(
+      `${open}${recordLine({ sessionId: "s1", cwd: "/work", state: "open", at: FIXED_NOW, pid: 900, host: HOST, slug: SLUG })}`
+    );
     expect([...seams.fs.store.keys()].filter((key) => key.endsWith(".tmp"))).toEqual([]);
   });
 
@@ -348,7 +417,7 @@ describe("runHook", () => {
     await runHook(seams, { event: USER_PROMPT_SUBMIT });
 
     // Assert
-    expect(seams.fs.store.get(REGISTRY)).toBe(recordLine({ sessionId: "s1", cwd: "/work", state: "open", at: FIXED_NOW, pid: 900, host: HOST }));
+    expect(seams.fs.store.get(REGISTRY)).toBe(recordLine({ sessionId: "s1", cwd: "/work", state: "open", at: FIXED_NOW, pid: 900, host: HOST, slug: SLUG }));
   });
 
   it("should exit quietly when anything at all goes wrong, a hook never being what breaks a session", async () => {
@@ -361,6 +430,57 @@ describe("runHook", () => {
     // Act / Assert
     await expect(runHook(seams, { event: USER_PROMPT_SUBMIT })).resolves.toBeUndefined();
     expect(seams.lines.join("")).toContain("did nothing: the disk is full");
+  });
+
+  /**
+   * **The registry file is the only thing a hook reads, and this is the test that keeps it
+   * that way.** Reading the conversation's title here cost a full transcript scan on every
+   * prompt — 402 ms measured on a 198 MB conversation, and the fifteen-minute throttle is no
+   * protection because the read happened before the decision that ignores the prompt. It
+   * bought nothing: `resolveName` re-reads the transcript at restore time and overwrites
+   * whatever the registry held. Both rows go through `registration`, so neither the first
+   * prompt nor a later one may touch a transcript.
+   */
+  it.each<[string, Record<string, string>]>([
+    ["a first prompt", {}],
+    ["a prompt in a session already registered and recently active", { [REGISTRY]: recordLine(record()) }]
+  ])("should read nothing but the registry for %s", async (_name, files) => {
+    // Arrange
+    const seams = seamsIn({ files: { ...files, [TRANSCRIPT]: named("hai-resume") } });
+
+    // Act
+    await runHook(seams, { event: USER_PROMPT_SUBMIT, name: "pcs" });
+
+    // Assert
+    expect(seams.fs.reads).toEqual([REGISTRY]);
+  });
+
+  it("should write nothing more for a prompt in a session that is already registered", async () => {
+    // Arrange
+    const unchanged = recordLine(record({ name: "pcs" }));
+    const seams = seamsIn({ files: { [REGISTRY]: unchanged, [TRANSCRIPT]: named("hai-resume") } });
+
+    // Act
+    await runHook(seams, { event: USER_PROMPT_SUBMIT, name: "pcs" });
+
+    // Assert
+    expect(seams.fs.store.get(REGISTRY)).toBe(unchanged);
+  });
+
+  /**
+   * The slug goes in even though no name does: it is `resolveName`'s fast path to the
+   * transcript at restore time, which is why the hook wants the payload's `transcript_path`
+   * at all. The session here has `cd`-ed away from where Claude Code filed it.
+   */
+  it("should record the slug for a session whose cwd has moved away from it", async () => {
+    // Arrange
+    const seams = seamsIn({ stdinText: JSON.stringify(payload({ cwd: "/a-worktree-it-cd-ed-into" })) });
+
+    // Act
+    await runHook(seams, { event: USER_PROMPT_SUBMIT });
+
+    // Assert
+    expect(parseRegistry(seams.fs.store.get(REGISTRY)!)).toEqual([record({ cwd: "/a-worktree-it-cd-ed-into" })]);
   });
 
   it("should survive a stdin that rejects rather than a payload that is wrong", async () => {

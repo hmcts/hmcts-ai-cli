@@ -125,6 +125,205 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
   interactive `/resume` switch is deliberate but does not *end* the conversation it leaves,
   and that conversation is still worth handing back. Do not add either back on the grounds
   that the engineer meant to do it; they did, and it is not the question.
+- **hai writes no terminal title, and must not start. `--name` *is* the title mechanism.**
+  Measured on Claude Code 2.1.304 with the TUI actually mounting (the reproduction is in the
+  measured-behaviour section below, and the `TERM`/`TERM_PROGRAM` part of it is what makes
+  the difference): `claude -n ZZNAMEPROBE` writes `ESC]0;⏳ ZZNAMEPROBE` at byte 142 of 2990
+  — at **startup** — rewrites it as the session's status changes, and clears it on exit. So
+  Claude Code sets the tab title itself, from the name on the argv, which `hair` already
+  passes. Two consequences, and either one on its own kills the idea of writing it from
+  here: anything hai wrote would be overwritten within about a second as the TUI mounts, and
+  there was never anything to add, because `-n` was already doing it. The binary carries
+  `terminalTitle: sessionTitle ?? aiSessionTitle ?? agentTitle ?? haikuTitle ?? "Claude Code"`
+  and a `terminalTitleFromRename` setting — that selector is what an outside write was trying
+  to pre-empt, and it is not ours to pre-empt.
+  **The earlier claim in this file was that Claude Code writes no title at startup, and it
+  was wrong.** It came from captures of `claude -r <id>` in which the TUI never mounted, so
+  the only `OSC 0` in the stream was the clear-on-exit at the very end; the same harness is
+  what produced "`-n` persists/sets nothing". A capture that does not mount the TUI measures
+  nothing about what the TUI does. Do not re-derive either claim without `TERM` and
+  `TERM_PROGRAM` set and the startup bytes in hand.
+  The only thing that was ever missing was a **name to put on the argv**, which is what the
+  two rules below are about.
+- **A conversation's name comes from its own transcript, and it is read at restore, by
+  `resolveName`.** Claude Code appends every name it has for a conversation to the transcript
+  as a record of its own, and those records are the source:
+
+  ```
+  {"type":"ai-title","aiTitle":"VS Code Claude session restore","sessionId":"<id>"}
+  {"type":"custom-title","customTitle":"hai-resume","sessionId":"<id>"}
+  ```
+
+  Measured across the **946** conversations on one machine: 194 carry an `ai-title` record, 66
+  a `custom-title` record, 220 at least one — and 62 have a `custom-title.json` file, every one
+  of them beside the matching `custom-title` record. **Every count in this file excludes the
+  `-tmp-*` project directories**, which are probe artefacts and nothing else; including them
+  gives 1173 / 278 / 68 / 306 / 63, and those were the figures this file used to carry. One of
+  the planted conversations was load-bearing — see the "only source" rule below — so measure
+  with them out.
+  The `ai-title` half is what makes this general rather than a nicety for the renamed few: it
+  is Claude Code's own name for every conversation nobody ran `/rename` on, which is most of
+  them. It is read at all because `-n` is the only other source and almost nobody passes it:
+  the registry's argv-derived name was empty for all 333 of one engineer's records and
+  `hair --list` said "(unnamed)" about every one of them, so every restored session came back
+  with no `--name` and therefore no tab title. hai only ever **reads** the transcripts:
+  writing into Claude Code's own store on its behalf would make a format change hai's bug to
+  own. Every way of not having a name is a silent no-name, because a hook never breaks a
+  session.
+- **The hook reads no title, and the test that says so is load-bearing.** A record's `name`
+  is the argv `-n/--name` and nothing else. The hook *did* read the title on every
+  `UserPromptSubmit`, to keep the registry's copy fresh and to catch a `/rename` the
+  fifteen-minute throttle would otherwise hide — and once the title moved to the transcript
+  that became a full scan per prompt, measured at **402 ms** on a 198 MB conversation. The
+  throttle is no defence, because the read fed `hookDecision`'s input and so happened before
+  the decision to ignore the prompt — the registration path runs on the throttled ignore too,
+  which is most prompts. What killed it is that it bought nothing:
+  `resolveName` re-reads the transcript at restore time and that value is what both the
+  resumed `--name` and `hair --list` use, so a name in the registry is overwritten at the only
+  moment it is read. That leaves `record.name` one job — naming a conversation whose
+  transcript is **not there** to be read, which is one deleted since the registration or one
+  `findProjectDir` cannot find. **Do not reintroduce the read in any form,
+  including a version skipped on the throttled path, and do not bring rename-detection back:
+  there is nothing to detect, because the registry's name is never what a restored tab is
+  titled from.** `hook.test.ts` asserts that a `UserPromptSubmit` reads `sessions.jsonl` and
+  nothing else, through `FakeFs`'s `reads` — an assertion on reads rather than on timing,
+  because the cost of this mistake is invisible to every other kind of test.
+- **The last `custom-title` record beats the last `ai-title` record, and a positional
+  last-of-either rule is a bug.** Measured in one transcript: the last `custom-title` record
+  sits at byte 10,697,664 and the last `ai-title` at 10,697,766 — the generated name is the
+  *later* of the two — and yet the conversation's real name is the custom one, `hai-resume`.
+  Claude Code goes on generating names after a `/rename`, so "whichever came last" hands back
+  the name the engineer has already replaced. `/rename` is a person saying what the
+  conversation is; an `ai-title` is a guess, and it only wins where nobody has said.
+  `pickTitle` is that one line and the scan keeps both so it can be asked.
+- **An empty `custom-title` is "no custom title", not a record to skip.** Claude Code takes
+  the **last** `custom-title` line and reads `""` as the conversation having no chosen name —
+  it deletes `custom-title.json` when it sees one — so a title cleared after a rename has to
+  let the `ai-title` through, which is what Claude Code itself would then show. The bug this
+  replaced was `parseTitleRecord` dropping an empty record, which left the scan holding the
+  last *non-empty* `custom-title`: a cleared conversation came back under its pre-clear name
+  and shadowed the generated name Claude Code was displaying. So the empty record is kept
+  (`titleRecord` guards the *field*, not the value) and `pickTitle` is where the difference is
+  read. Reachable in principle rather than observed: there is no `"customTitle":""` in any of
+  the 946 transcripts here, measured. The asymmetry is what decides it — a cleared title read
+  as "skip this record" hands back a name the engineer deliberately removed, which is the one
+  outcome a person who cleared it has ruled out.
+- **`agent-name` is measured redundant, and that is why nothing reads it.** A transcript
+  carries a third name record — `{"type":"agent-name","agentName":"…","sessionId":"…"}`, and
+  plenty of them: 4156 in the largest conversation here, across three values as that
+  conversation was renamed — so the comparison that matters is the **last** of each type, the
+  same way `pickTitle` reads them. The 2.1.304 binary's own selector is
+  `terminalTitle: sessionTitle ?? aiSessionTitle ?? agentTitle ?? haikuTitle`, which puts the
+  agent name ahead of both of ours. So it looked like a divergence worth closing. It is not,
+  measured over the 946 real transcripts here:
+
+  | over the 946 | transcripts |
+  |---|---|
+  | carry an `agent-name` record | 78 |
+  | last `agent-name` **differs** from the last `custom-title` | **0** |
+  | last `agent-name` equals the last `custom-title` | 64 |
+  | no `custom-title` at all, last `agent-name` equals the last `ai-title` | 14 |
+
+  `agentName || customTitle || aiTitle` and `customTitle || aiTitle` therefore give the same
+  answer for every conversation on this machine. Adding a record type is a third thing to keep
+  in step for a difference nobody can observe, so `pickTitle` stays two records wide. If a
+  real divergence ever turns up, `agent-name` goes at the **front** of the chain to match the
+  binary — but re-measure first, because this table is the reason it is not there.
+- **The transcript is *located*, never derived from `cwd`.** A recorded `slug` names
+  `<registryDir>/projects/<slug>/<session-id>.jsonl` exactly and is tried first, one `stat`
+  and no scan — `transcriptSlug` takes it out of the `transcript_path` the hook payload
+  carries, which is Claude Code's own statement of where it filed the conversation. With no
+  slug recorded, or a recorded one that holds no such file, `findProjectDir` scans the
+  directories under `projects` for `<session-id>.jsonl`. Session ids are unique, so that is
+  exact; a slug derived from `cwd` was a guess, and the measurement is why there is no longer
+  one. Against the five open records in one live registry, the cwd-derived slug named the
+  directory the transcript is actually in for **two**: `058d3464…` had registered under
+  `…/apps/dtsse/.worktrees/dtsse-agent-hub-chatwidth`, `80d1d2d8…` under
+  `…/pcs-api/.claude/worktrees/enf-film` and `9b511157…` under this repo's own worktree, while
+  all three transcripts are filed under `-home-linus-Work-solirius-hmcts` — the directory each
+  session was started from. None of the five carries a `slug` either, because no record
+  written before it was recorded does, so the scan is the path the existing registry actually
+  takes. The scan costs 64 `stat` calls on that machine and only runs when the fast path
+  missed.
+  The **slug** is recorded and not the whole path, because `~/.claude` is bind-mounted into a
+  container session at a *different* absolute path (`$HOME/.claude` on the host,
+  `/home/hmcts/.claude` inside, per `DEFAULT_HOME_BINDS`), so a path written by a hook running
+  inside does not resolve for the `hair` reading it on the host. The slug carries no namespace
+  and the `~/.claude` root is recomposed by whoever reads it, the same way `registryPath` and
+  `claimPath` do. This is the path form of "a pid is never read across a PID namespace".
+- **The transcript is the only source. There is no `custom-title.json` fallback, and the
+  measurement that argued for one was an artefact of the probe that took it.** Claude Code
+  does write that file — 62 of the 946 real conversations here have one — but never without
+  the matching `custom-title` record in the transcript beside it, so as a source it is
+  strictly redundant. What kept it in the code was the claim that "exactly one conversation of
+  the 1171 has the file and no `custom-title` record". That one conversation was
+  `608ade44-dff5-41e8-85ca-0fa845037a8b` in `~/.claude/projects/-tmp-titleprobe/`: a
+  throwaway session an agent created while measuring this, whose first prompt is
+  `say only: hi` and whose title `ZZRESUMETITLE` the same probe planted. A measurement
+  contaminating its own subject. Excluding every `-tmp-*` directory, the count is **zero**.
+  So `readSessionTitle` reads the transcript and nothing else, and `customTitlePath` /
+  `parseCustomTitle` are gone. **Re-adding a second source needs a real conversation the
+  transcript cannot name** — one an engineer actually worked in, not one a probe made — and
+  the synthetic case above is not evidence for it.
+  Worth knowing while weighing that: `claude -n X` writes the `custom-title` *record* and no
+  `custom-title.json` at all (measured, `-p` run), so the file is not even where a named
+  session's title lands.
+- **The scan is one pass that keeps the last of each type, and it does not tail-read.** The
+  title records are append-only and in practice land near the end, but density is an
+  observation and not a rule: a `/rename` early in a long conversation that was never renamed
+  again sits in the first megabyte of a hundred. So `scanTranscriptTitles` reads the whole
+  file through `Fs.readLines`, which streams — the largest transcript on this machine is
+  **198 MB**, and `readText` would make that one string. What a pass costs, measured warm:
+  29 ms for a 10 MB transcript, 137 ms for 68 MB, 402 ms for 198 MB. That is affordable per
+  *restore*, which is a handful of candidates once per terminal, and is exactly why it is not
+  affordable per *prompt* — see the rule above. `parseTitleRecord` rejects a line on a
+  substring test before `JSON.parse` for the same reason; a title record is a handful of lines
+  in tens of thousands.
+- **The registry's `name` is never the answer while a better one exists, and its only real
+  case is a transcript that is gone.** The hook writes only the argv name, and every line
+  written before this feature existed has none at all, so the registry cannot be where a tab
+  title comes from: `resolveName` reads the transcript and the record's value is the fallback.
+  **The fallback is not the `-n/--name` case** — this file used to say it was "the whole of"
+  it, and that was false. Measured: `claude -n X` appends
+  `{"type":"custom-title","customTitle":"X"}` as **line 1** of the transcript, before the
+  first prompt, so `readSessionTitle` answers for a `-n` session like any other. What is left
+  for `record.name` is a transcript that is not there to be read — deleted since the
+  registration, or filed where `findProjectDir` cannot find it. That is still worth having,
+  and it is still what makes a stale registry name harmless and the hook's title read
+  deletable; it is just a narrower case than the old wording claimed.
+- **`hair` resolves the *claimed* record's name, and `hair --list` resolves every
+  candidate's.** Resolving the whole list before the claim was the mistake: each candidate
+  costs a full streamed transcript pass — 402 ms on the 198 MB conversation here, and the
+  three largest are 199 MB, 138 MB and 68 MB — and the bare form uses exactly one name, the
+  claimed record's. After a reboot that made every restoring terminal pay a scan per waiting
+  conversation, all of it before the claim was even taken, to throw all but one answer away.
+  Moving it after the claim is safe because **the candidate order does not depend on a name**:
+  it is `rank(cwd)`, then `at`, then `sessionId`. Do not put a name into that ordering, or
+  this becomes a scan of every candidate again by necessity.
+  The two paths therefore read the same transcript the same way rather than sharing one array.
+  That is what keeps them in step, and they have to be: a conversation that lists under its
+  old name and comes back under the new one is a disagreement nobody would think to check, so
+  `hair --list` pays the per-candidate cost — it has a name to print for each line, which is
+  what makes it the right surface to pay it on. `resolveName` substitutes into the record
+  rather than returning a name beside it, so there is one name downstream and not a record's
+  and a real one; `describeCandidate` stays pure and keeps taking it as data. Both sit beside
+  `probeLiveness` and `probeDirs`, which already do per-candidate I/O over the same list.
+- **The first restore pins a conversation's name, and that is what naming a session means.**
+  `hair` passes the resolved name as `--name`, and `--name` writes a `custom-title` record
+  (line 1 of the transcript, measured). So a conversation that only ever had an `ai-title`
+  acquires a `custom-title` equal to it at the first restore and keeps it from then on: a
+  later regenerated `ai-title` can never win, because custom beats ai. Names do move — 15 of
+  the 194 transcripts carrying an `ai-title` carry more than one distinct value — so this is a
+  real effect and not a hypothetical.
+  **It is not a divergence from Claude Code and must not be "fixed".** Claude Code's own order
+  is `customTitle || aiTitle`, so it shows the same pinned name; a resumed session that had
+  been given a name keeps it, exactly as one the engineer renamed does. Reversing the
+  precedence to let a fresh `ai-title` through would break the `/rename` case, which is the
+  one a person actually asked for.
+  What it does mean is that any promise of Claude Code's *current* generated name is
+  overstated: it is current **as of the first restore**. Say that, in this file and in the
+  README, rather than claiming a conversation always comes back under the name Claude Code
+  would generate for it today.
 - **An end that was not the person's releases the claim and writes nothing.** That is the
   fourth `hookDecision` verdict, `interrupted`, and the reason it carries a session id
   rather than a record. The entry has to be left byte-identical — it *is* the signal — but
@@ -434,7 +633,8 @@ src/az/         az CLI calls: token, account, checkMemberGroups, Key Vault
 src/auth/       route resolution, the agent-hub client, credentials, the env to inject
 src/net/        the VPN probe (informational only, never blocks)
 src/claude/     the claude argv, the settings and the session-registry hooks hai injects
-src/hair/       `hair`: the session registry, the restore candidates, the claim, the hook
+src/hair/       `hair`: the session registry, the restore candidates, the claim, the hook,
+                the terminal tab title
 src/workspace/  cft-workspace detection and plugin-dir resolution
 src/update/     the Azure Artifacts feed and the self-update
 src/container/  container mode: the docker argv, mounts, DNS, ports, the port watch, lock, ACR, staging
@@ -461,7 +661,8 @@ table-testable:
 | `shouldRegisterSession`, `sessionDisplayName`, `hookCommand`, `hairCommand`, `binPath` | `sessionRegistryHooks` |
 | `parseHairArgs`, `forwardsItsOwnSession` | — |
 | `parseRegistry`, `parseRecord`, `retired`, `keptRecords`, `compacted`, `shouldCompact`, `registryPath`, `claimPath` | `readRegistry`, `appendRecord`, `compactRegistry` |
-| `restoreDecision`, `restoreCandidates`, `describeCandidate`, `livenessPlan` | `probeLiveness`, `probeDirs` |
+| `restoreDecision`, `restoreCandidates`, `describeCandidate`, `livenessPlan` | `probeLiveness`, `probeDirs`, `resolveName`, `resolveNames` |
+| `transcriptSlug`, `projectsDir`, `transcriptPath`, `parseTitleRecord`, `pickTitle` | `findProjectDir`, `scanTranscriptTitles`, `readSessionTitle` |
 | `claimDecision`, `parseClaim` | `claimFirst` |
 | `hookDecision`, `parsePayload` | `runHook` |
 | `resolvePluginDirs` is the exception — it reads the marketplace itself | — |
@@ -649,12 +850,22 @@ The shape, all in `src/hair-launch.ts`:
    `hair --list` prints the same array `claimFirst` walks, and it has to: the top line is
    the conversation the bare form is about to take, which is what makes the list worth
    eyeballing.
-6. `claimFirst` walks the candidates and takes the first it wins with `O_EXCL`, then
-   `seams.chdir` moves to the record's own directory, then `launch()` runs with
-   `["-r", id, "--name", <the record's name>, ...rest]` — the name goes back on the argv
-   because that is where the resumed session's own hook reads it from, and without it a
-   session started as `hai -n pcs` comes back nameless and reads as "(unnamed)" in every
-   later `hair --list`.
+6. `hair --list` stops here: `resolveNames` reads every candidate's name and
+   `describeCandidate` prints one line each. The bare form resolves nothing yet — the name is
+   not an input to the ordering, so there is nothing to settle before the claim.
+7. `claimFirst` walks the candidates and takes the first it wins with `O_EXCL`. Then, and only
+   then, `resolveName` reads **that one** record's name from the conversation's own transcript
+   — found by the recorded slug or by scanning the project directories for
+   `<session-id>.jsonl`, taking the last `custom-title` record over the last `ai-title` one,
+   and falling back to the name the record holds only when there is no transcript to read.
+   That is the **only** place a title is read: the hook does not, deliberately. One scan per
+   restore, not one per candidate, which after a reboot is the difference between a pass and a
+   pass per waiting conversation.
+8. `seams.chdir` moves to the record's own directory, then `launch()` runs with
+   `["-r", id, "--name", <the resolved name>, ...rest]`. `--name` is how the tab title comes
+   back: Claude Code sets the title from it as the TUI mounts. The resumed session's own hook
+   reads it from there too, so the registry's copy stays in step — though that copy is only
+   ever the fallback. Nothing here writes a title itself.
 
 The other half is the hook. `sessionRegistryHooks` puts `UserPromptSubmit` and
 `SessionEnd` entries into the settings hai already passes as its single `--settings`, so
@@ -696,7 +907,41 @@ and the quoting is what stops a session name with a space in it being read as mo
 `permission_mode` and `prompt`, plus `reason`. Neither carries the session's `-n/--name`,
 which is why hai reads it off the argv and puts it on the hook's command line. `CLAUDE_PID`
 in the hook environment is the owning `claude` process, not the hook's own, and is what the
-registry records.
+registry records. `transcript_path` is `<…>/projects/<slug>/<session-id>.jsonl` and is the
+only authoritative statement of which project directory the conversation is filed under; the
+registry records the slug out of it rather than deriving one from `cwd`, and the file it
+names is where the conversation's name is read from — the `ai-title` and `custom-title`
+records in the rules above.
+
+#### The terminal tab title: `claude` writes it, hai does not
+
+**The harness matters more than the command.** A capture in which the TUI never mounts shows
+no title at startup, and two claims were wrong because of exactly that. `TERM` and
+`TERM_PROGRAM` have to be set and the session has to be under a pty:
+
+```bash
+TERM=xterm-256color TERM_PROGRAM=vscode script -qc 'claude -n ZZNAMEPROBE' /dev/null > cap.bin
+grep -abo $'\033]0;' cap.bin   # byte offsets of every OSC 0 in the stream
+```
+
+For `claude -n ZZNAMEPROBE`, in a 2990-byte capture:
+
+| byte | sequence | when |
+|---|---|---|
+| 142 | `ESC]0;⏳ ZZNAMEPROBE` | at startup, as the TUI mounts |
+| 2356 | `ESC]0;● ZZNAMEPROBE` | rewritten as the session's status changes |
+| 2913 | `ESC]0;` | cleared on exit |
+
+So **`-n/--name` sets the tab title**, Claude Code owns it for the life of the session, and
+it reasserts it as the status changes. The selector in the binary is
+`terminalTitle: sessionTitle ?? aiSessionTitle ?? agentTitle ?? haikuTitle ?? "Claude Code"`,
+with a `terminalTitleFromRename` setting beside it.
+
+Two earlier entries in this file asserted the opposite — that Claude Code writes no title at
+startup, and that `-n` persists and sets nothing — and both were artefacts of a capture
+taken without those variables, where the only `OSC 0` was the clear-on-exit at the end of
+the stream. An `OSC 0` written from outside before the handover is overwritten within about
+a second. Nothing in hai writes a terminal title; passing `--name` is the whole mechanism.
 
 `reason` is a closed enum of five, and this is the table the whole deregistration rule
 turns on. The enum is both what the hooks reference documents

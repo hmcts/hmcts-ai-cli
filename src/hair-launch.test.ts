@@ -3,6 +3,7 @@ import { createFakeSeams, type FakeSeams, FIXED_NOW } from "./__fixtures__/fake-
 import { DEFAULT_BEDROCK_GROUP_ID } from "./az/group-membership.js";
 import { haiScriptPath } from "./claude/hooks.js";
 import { claimPath, recordLine, registryPath, type SessionRecord } from "./hair/registry.js";
+import { transcriptPath } from "./hair/title.js";
 import { launchHair, NOTHING_TO_RESTORE } from "./hair-launch.js";
 import { packageRoot } from "./update/self-update.js";
 
@@ -11,6 +12,12 @@ const KEY = "ABSKQmVkcm9jay1mYWtlLWtleS0wMDAwMDAwMDAw";
 const REGISTRY = registryPath({ HOME })!;
 /** In a container, so `launch` hands over in place rather than starting one. */
 const IN_CONTAINER = { "/.dockerenv": "" };
+/** Where Claude Code filed the record below, which is where its name is kept. */
+const SLUG = "-work";
+const TRANSCRIPT = transcriptPath(`${HOME}/.claude/projects/${SLUG}`, "s1");
+const TRANSCRIPT_S2 = transcriptPath(`${HOME}/.claude/projects/${SLUG}`, "s2");
+/** One title record, the shape Claude Code appends on a `/rename`. */
+const titled = (name: string) => `${JSON.stringify({ type: "custom-title", customTitle: name })}\n`;
 
 /** The fake seams' own hostname, so a recorded pid is one `hair` may ask `ps` about. */
 const HOST = "workstation";
@@ -75,11 +82,11 @@ describe("launchHair", () => {
     });
 
     /**
-     * The one field that makes `hair --list` usable. The resumed session's own hook reads
-     * the name off the argv, so without this a session started as `hai -n pcs` comes back
-     * nameless and shows as "(unnamed)" for ever after.
+     * `--name` is what Claude Code titles the tab from, and the resumed session's own hook
+     * reads it off the argv too, so the registry's copy stays in step. This record has no
+     * transcript left to read, which is the one case its `name` is the answer for.
      */
-    it("should put the record's name back on the argv, so the re-registration keeps it", async () => {
+    it("should put the record's name back on the argv when no transcript can answer", async () => {
       // Arrange
       const seams = seamsIn({ [REGISTRY]: recordLine(record({ name: "the pcs one" })) });
 
@@ -138,6 +145,119 @@ describe("launchHair", () => {
 
       // Assert
       expect(execArgv(seams).slice(-4)).toEqual(["-r", "s1", "--model", "opus"]);
+    });
+
+    /**
+     * `--name` is the whole of the tab-title mechanism, because Claude Code sets the title
+     * itself from it as the TUI mounts — measured on 2.1.304, see CLAUDE.md. So a record
+     * that resolves to no name at all resumes with no `--name`, and nothing here writes an
+     * escape sequence of its own for any record.
+     */
+    it("should write no escape sequence of its own, the title being Claude Code's to set", async () => {
+      // Arrange
+      const seams = seamsIn({ [REGISTRY]: recordLine(record({ name: "the pcs one" })) });
+
+      // Act
+      await launchHair({ seams, processArgv: ["node", "/bin/hair"] });
+
+      // Assert
+      expect(seams.out).toEqual([]);
+      expect(execArgv(seams).slice(-4)).toEqual(["-r", "s1", "--name", "the pcs one"]);
+    });
+
+    /**
+     * The existing registry is every line of it written before a name was read from
+     * anywhere, and those are killed sessions that will never fire another hook to fill one
+     * in — so without resolving at restore time they would come back nameless for ever, and
+     * with no `--name` there is nothing for Claude Code to title the tab from.
+     */
+    it("should name a conversation the registry has no name for, its transcript having one", async () => {
+      // Arrange
+      const seams = seamsIn({ [REGISTRY]: recordLine(record()), [TRANSCRIPT]: titled("hai-resume") });
+
+      // Act
+      await launchHair({ seams, processArgv: ["node", "/bin/hair"] });
+
+      // Assert
+      expect(execArgv(seams).slice(-4)).toEqual(["-r", "s1", "--name", "hai-resume"]);
+    });
+
+    /**
+     * The registry's name is a cache of something Claude Code owns and can be up to
+     * `ACTIVITY_REFRESH_MS` behind it — `/rename` at 16:55 and the container lost at 17:00.
+     * The transcript wins, and it has to win for both consumers at once or `hair --list`
+     * disagrees with the name the conversation then comes back under.
+     */
+    it("should take the transcript's title over a stale record name, for the argv and the log line alike", async () => {
+      // Arrange
+      const seams = seamsIn({ [REGISTRY]: recordLine(record({ name: "the old one" })), [TRANSCRIPT]: titled("the renamed one") });
+
+      // Act
+      await launchHair({ seams, processArgv: ["node", "/bin/hair"] });
+
+      // Assert
+      expect(execArgv(seams).slice(-4)).toEqual(["-r", "s1", "--name", "the renamed one"]);
+      expect(seams.lines.join("")).toContain("restoring the renamed one in /work");
+    });
+
+    /**
+     * One transcript scan per restore, not one per candidate. A scan is a full streamed pass
+     * — 402 ms on the 198 MB conversation measured here — and the bare form uses exactly one
+     * name: the claimed record's. Resolving the whole list first made every restoring
+     * terminal after a reboot pay a pass per waiting conversation, before the claim was even
+     * taken, to throw all but one of the answers away.
+     *
+     * Safe because the candidate order is `rank(cwd)`, then `at`, then `sessionId` — the
+     * name is not an input to it, so resolving after the claim cannot change what is
+     * claimed. Asserted on reads rather than on timing, because the cost is invisible to
+     * every other kind of test.
+     */
+    it("should read only the claimed conversation's transcript, not every candidate's", async () => {
+      // Arrange
+      const seams = seamsIn({
+        [REGISTRY]: `${recordLine(record({ sessionId: "s1" }))}${recordLine(record({ sessionId: "s2", at: FIXED_NOW - MINUTE }))}`,
+        [TRANSCRIPT]: titled("the one it takes"),
+        [TRANSCRIPT_S2]: titled("the one it leaves")
+      });
+
+      // Act
+      await launchHair({ seams, processArgv: ["node", "/bin/hair"] });
+
+      // Assert
+      expect(execArgv(seams).slice(-4)).toEqual(["-r", "s1", "--name", "the one it takes"]);
+      expect(seams.fs.reads.filter((path) => path.endsWith(".jsonl") && path.includes("/projects/"))).toEqual([TRANSCRIPT]);
+    });
+
+    it("should keep the name the record holds when there is no transcript left to read", async () => {
+      // Arrange
+      const seams = seamsIn({ [REGISTRY]: recordLine(record({ name: "the pcs one" })) });
+
+      // Act
+      await launchHair({ seams, processArgv: ["node", "/bin/hair"] });
+
+      // Assert
+      expect(execArgv(seams).slice(-4)).toEqual(["-r", "s1", "--name", "the pcs one"]);
+    });
+
+    /**
+     * A record's `cwd` says nothing about where its transcript is filed: Claude Code fixes
+     * the project slug when the session starts, and of the five open records in one live
+     * registry a slug derived from `cwd` named the right directory for two. This record
+     * carries no slug either — none written before the slug was recorded does — so the
+     * session-id scan is what finds it.
+     */
+    it("should find the name of a conversation filed nowhere near its cwd, with no slug recorded", async () => {
+      // Arrange
+      const seams = seamsIn({
+        [REGISTRY]: recordLine(record({ cwd: "/elsewhere" })),
+        [TRANSCRIPT]: titled("filed under the workspace root")
+      });
+
+      // Act
+      await launchHair({ seams, processArgv: ["node", "/bin/hair"] });
+
+      // Assert
+      expect(execArgv(seams).slice(-2)).toEqual(["--name", "filed under the workspace root"]);
     });
 
     it("should move to the record's directory, resume-by-id not being cwd-scoped", async () => {
@@ -273,8 +393,10 @@ describe("launchHair", () => {
     /**
      * The list is what someone eyeballs before deciding whether to run the bare form, so
      * it has to be in the order the bare form would claim in — newest first, so the top
-     * line is the conversation `hair` is about to hand back. Both read the same
-     * `candidates` array today; this is what would catch a sort added for display alone.
+     * line is the conversation `hair` is about to hand back. The two walk the same ordered
+     * array out of `restoreCandidates` — only the name resolution differs between them, and
+     * the order does not depend on a name — so this is what would catch a sort added for
+     * display alone.
      */
     it("should print the candidates in the order it would claim them, the top line being the one hair takes", async () => {
       // Arrange
@@ -294,6 +416,60 @@ describe("launchHair", () => {
       expect(listing.out.join("")).toBe("latest  a minute ago  this directory\nmiddle  two days ago  this directory\nstale  six days ago  this directory\n");
       expect(execArgv(claiming).slice(-2)).toEqual(["--name", "a minute ago"]);
       expect(execArgv(claiming)).toContain("latest");
+    });
+
+    /**
+     * The listing is what someone reads before running the bare form, so it has to agree
+     * with what the bare form would do about the same conversation. It reads the same
+     * transcript the same way rather than sharing an array with it: a list showing the old
+     * name while `hair` sets a tab title with the new one is the kind of disagreement nobody
+     * would think to look for.
+     */
+    it("should list a conversation under the transcript's title, not the stale name in the registry", async () => {
+      // Arrange
+      const seams = seamsIn({ [REGISTRY]: recordLine(record({ name: "the old one" })), [TRANSCRIPT]: titled("the renamed one") });
+
+      // Act
+      await launchHair({ seams, processArgv: ["node", "/bin/hair", "--list"] });
+
+      // Assert
+      expect(seams.out.join("")).toBe("s1  the renamed one  this directory\n");
+    });
+
+    /**
+     * Where `--list` does pay a scan per candidate, and the reason that is right here: every
+     * line it prints carries a name, so every candidate's transcript has something to show
+     * for having been read. The bare form reads one — see the assertion on reads above.
+     */
+    it("should read every candidate's transcript, having a name to print for each of them", async () => {
+      // Arrange
+      const seams = seamsIn({
+        [REGISTRY]: `${recordLine(record({ sessionId: "s1" }))}${recordLine(record({ sessionId: "s2", at: FIXED_NOW - MINUTE }))}`,
+        [TRANSCRIPT]: titled("the first one"),
+        [TRANSCRIPT_S2]: titled("the second one")
+      });
+
+      // Act
+      await launchHair({ seams, processArgv: ["node", "/bin/hair", "--list"] });
+
+      // Assert
+      expect(seams.out.join("")).toBe("s1  the first one  this directory\ns2  the second one  this directory\n");
+      expect(seams.fs.reads.filter((path) => path.endsWith(".jsonl") && path.includes("/projects/"))).toEqual([TRANSCRIPT, TRANSCRIPT_S2]);
+    });
+
+    /**
+     * A transcript deleted since the registration degrades to the last name the registry
+     * saw, rather than throwing or going back to "(unnamed)".
+     */
+    it("should list a conversation by the name the registry holds when no transcript is there", async () => {
+      // Arrange
+      const seams = seamsIn({ [REGISTRY]: recordLine(record({ name: "the pcs one" })) });
+
+      // Act
+      await launchHair({ seams, processArgv: ["node", "/bin/hair", "--list"] });
+
+      // Assert
+      expect(seams.out.join("")).toBe("s1  the pcs one  this directory\n");
     });
 
     it("should say so when nothing is waiting", async () => {

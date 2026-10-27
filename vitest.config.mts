@@ -28,6 +28,7 @@ const PURE_DECISION_MODULES = [
   "src/hair/hook.ts",
   "src/hair/registry.ts",
   "src/hair/restore.ts",
+  "src/hair/title.ts",
   "src/sbx/kit.ts",
   "src/sbx/sbx-args.ts",
   "src/system/container.ts",

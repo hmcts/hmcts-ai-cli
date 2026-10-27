@@ -1,7 +1,9 @@
 import { containerRunning, pidAlive } from "../container/lock.js";
+import type { Env } from "../system/env.js";
 import type { Fs } from "../system/fs.js";
 import type { Runner } from "../system/runner.js";
 import { keptRecords, retired, type SessionRecord } from "./registry.js";
+import { readSessionTitle } from "./title.js";
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
@@ -88,9 +90,56 @@ export function restoreCandidates(input: {
   return { candidates: candidates.sort((a, b) => rank(a, input.cwd) - rank(b, input.cwd) || b.at - a.at || compare(a.sessionId, b.sessionId)), skipped };
 }
 
+/** Pure, and the name is data: `resolveName` has already settled which one it is. */
 export function describeCandidate(record: SessionRecord, cwd: string): string {
   const here = record.cwd === cwd ? "this directory" : record.cwd;
   return `${record.sessionId}  ${record.name ?? "(unnamed)"}  ${here}`;
+}
+
+/**
+ * One record with its name read from the conversation's own transcript, which is where
+ * Claude Code keeps it. **This is the only read of a title anywhere**: the hook writes
+ * nothing but the argv `-n`, because a scan here is one conversation per terminal while a
+ * scan in the hook was one per prompt — 402 ms of it on a 198 MB conversation.
+ *
+ * So the transcript wins and the record's `name` is the fallback. That fallback's only real
+ * case is a transcript that is **not there** — deleted since the registration, or filed
+ * where `findProjectDir` cannot find it. It is *not* the `-n/--name` case: measured, a
+ * session started as `claude -n X` has `{"type":"custom-title","customTitle":"X"}` as line 1
+ * of its transcript, written before the first prompt, so `readSessionTitle` answers for it.
+ *
+ * Keyed on the `slug` the record carries, and otherwise on a scan of the project directories
+ * for the session's own transcript — which is every record written before the slug was
+ * recorded. Read-only: the transcripts are Claude Code's own store and hai never writes
+ * them.
+ */
+export async function resolveName(deps: { fs: Fs; env: Env }, record: SessionRecord): Promise<SessionRecord> {
+  const name = (await readSessionTitle(deps, { slug: record.slug, sessionId: record.sessionId })) ?? record.name;
+  // Left byte-identical when nothing resolved, rather than given a `name: undefined` the
+  // record never carried — the same "absent rather than empty" rule `parseRecord` follows.
+  return name === undefined ? record : { ...record, name };
+}
+
+/**
+ * Every candidate's name, which is what `hair --list` needs and only `hair --list`. The bare
+ * form resolves the **claimed** record alone, because that is the only name it uses: each
+ * candidate costs a full streamed transcript pass — 402 ms on the 199 MB conversation here —
+ * and after a reboot every restoring terminal was paying one per candidate, before the claim
+ * was even taken, to use exactly one of the answers.
+ *
+ * Moving the resolution after the claim cannot change which conversation is claimed: the
+ * candidate order is `rank(cwd)`, then `at`, then `sessionId`, and the name is not an input
+ * to any of them. What it does mean is that the list and the bare form read the same
+ * transcript the same way rather than sharing one array, so `describeCandidate` still
+ * renders a name `resolveName` has already settled and the top line of `hair --list` is
+ * still the conversation `hair` would take, under the name it would take it under.
+ */
+export async function resolveNames(deps: { fs: Fs; env: Env }, candidates: SessionRecord[]): Promise<SessionRecord[]> {
+  const resolved: SessionRecord[] = [];
+  for (const record of candidates) {
+    resolved.push(await resolveName(deps, record));
+  }
+  return resolved;
 }
 
 /**

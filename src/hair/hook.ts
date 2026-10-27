@@ -4,6 +4,7 @@ import type { Env } from "../system/env.js";
 import type { Fs } from "../system/fs.js";
 import { releaseClaim } from "./claim.js";
 import { appendRecord, compactRegistry, keptRecords, readRegistry, type SessionRecord, shouldCompact } from "./registry.js";
+import { transcriptSlug } from "./title.js";
 
 export const USER_PROMPT_SUBMIT = "UserPromptSubmit";
 export const SESSION_END = "SessionEnd";
@@ -108,6 +109,21 @@ export const ACTIVITY_REFRESH_MS = 15 * 60 * 1000;
  * The asymmetry is the point — an entry the person closed goes, an entry a kill ended
  * stays, so "still marked open" is the crash signal — but it only holds for the reasons
  * that mean the conversation is over, because `SessionEnd` fires on a kill too.
+ *
+ * **The hook reads no title.** What a record carries as `name` is the `-n/--name` hai read
+ * off the argv and nothing else, because `resolveName` re-reads the conversation's own
+ * transcript at restore time — transcript first, its last `custom-title` record over its
+ * last `ai-title` one, the record's `name` only as the fallback — and that read is the one
+ * the resumed `--name` and `hair --list` both come from. So a name in the registry is
+ * overwritten at the only moment it is used, which leaves the record's value doing one job:
+ * naming a conversation whose transcript is **not there** to be read. Not the `-n/--name`
+ * case — measured, `claude -n X` writes a `custom-title` record as line 1 of the transcript
+ * before the first prompt, so the transcript answers for that too. Reading a title here
+ * bought nothing at the price of a full transcript scan on **every prompt** — 402 ms
+ * measured on a 198 MB conversation, and on the throttled ignore path as well, the read
+ * feeding the decision that then ignores the prompt. Do not put it back, and do not
+ * reintroduce rename-detection in any form: there is nothing to detect, because the
+ * registry's name is never what a restored tab is titled from.
  */
 export function hookDecision(input: {
   event: string;
@@ -141,18 +157,19 @@ export function hookDecision(input: {
   }
   const existing = input.records.find((record) => record.sessionId === payload.session_id);
   const pid = Number(input.env[OWNER_PID_ENV]) || 0;
+  const record = registration(input, payload, pid);
   if (existing !== undefined && existing.state === "open" && existing.pid === pid && existing.cwd === payload.cwd) {
     if (input.now - existing.at < ACTIVITY_REFRESH_MS) {
       // Every prompt fires this hook, and a subagent handing its report back fires it too.
       // The registry only has to hold one line per conversation.
       return { action: "ignore", reason: "the session is already registered and was active recently enough" };
     }
-    return { action: "register", reason: "the session is still being driven, so when it was last active moves on", record: registration(input, payload, pid) };
+    return { action: "register", reason: "the session is still being driven, so when it was last active moves on", record };
   }
   return {
     action: "register",
     reason: existing === undefined ? "a human drove this session for the first time" : "the session moved to a new process or directory",
-    record: registration(input, payload, pid)
+    record
   };
 }
 
@@ -231,7 +248,12 @@ function registration(input: { env: Env; name?: string; host: string; now: numbe
     // read a container pid as if it were one of its own.
     ...field("name", input.name),
     ...field("host", input.host),
-    ...field("container", input.env[CONTAINER_ENV])
+    ...field("container", input.env[CONTAINER_ENV]),
+    // Recorded so `resolveName` can find the transcript at restore time without deriving
+    // the slug from a `cwd` that may have moved since. Pure: the payload hands it over, and
+    // `transcriptSlug` guards the type, so a payload whose `transcript_path` is not a string
+    // costs the slug rather than the whole registration.
+    ...field("slug", transcriptSlug(payload.transcript_path))
   };
 }
 
@@ -241,7 +263,10 @@ function field<K extends string>(key: K, value: string | undefined): Record<K, s
 }
 
 /**
- * The fields Claude Code 2.1.304 actually sends, measured. `UserPromptSubmit` carries
+ * The fields Claude Code 2.1.304 actually sends, measured — and a *description* of them
+ * rather than a check on them: `parsePayload` casts, having established only that the JSON
+ * was a non-array object, so anything reading a field here has to guard its own type.
+ * `UserPromptSubmit` carries
  * `session_id`, `transcript_path`, `cwd`, `prompt_id`, `permission_mode`,
  * `hook_event_name` and `prompt`; `SessionEnd` carries `session_id`, `transcript_path`,
  * `cwd`, `prompt_id`, `hook_event_name` and `reason`. Neither carries the session's
@@ -250,6 +275,12 @@ function field<K extends string>(key: K, value: string | undefined): Record<K, s
 export interface HookPayload {
   session_id?: string;
   cwd?: string;
+  /**
+   * `<…>/projects/<slug>/<session-id>.jsonl`, and so the one authoritative statement of
+   * which project directory Claude Code filed this conversation under. `transcriptSlug`
+   * takes the slug out of it; nothing here reads the file.
+   */
+  transcript_path?: string;
   hook_event_name?: string;
   /**
    * One of `prompt_input_exit`, `clear`, `resume`, `logout` and `other` — the whole enum

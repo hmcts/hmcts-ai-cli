@@ -44,13 +44,29 @@ export function createFakeFs(files: Record<string, string> = {}): FakeFs {
   const modes = new Map<string, number>();
   const dirs = new Set<string>();
   const unwritable = new Set<string>();
+  const reads: string[] = [];
   return {
     store,
     modes,
     dirs,
     unwritable,
+    reads,
     async readText(path) {
+      reads.push(path);
       return store.get(path) ?? null;
+    },
+    async *readLines(path) {
+      reads.push(path);
+      const content = store.get(path);
+      if (content === undefined) {
+        return;
+      }
+      // `readline` yields no trailing empty line for a file that ends in a newline, and a
+      // transcript always does.
+      const lines = content.split("\n");
+      for (const line of lines[lines.length - 1] === "" ? lines.slice(0, -1) : lines) {
+        yield line;
+      }
     },
     async writeText(path, content, opts = {}) {
       store.set(path, content);
@@ -219,6 +235,12 @@ export interface FakeFs extends Fs {
   modes: Map<string, number>;
   dirs: Set<string>;
   unwritable: Set<string>;
+  /**
+   * Every path read, in order, `readText` and `readLines` alike. What it is for is asserting
+   * that something was *not* read: the hook must never scan a transcript, which is a cost
+   * only a per-prompt measurement would otherwise reveal.
+   */
+  reads: string[];
 }
 
 export interface FakeSeams extends Omit<Seams, "runner" | "fs"> {

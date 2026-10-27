@@ -95,6 +95,17 @@ that same order, so its top line is the one `hair` would take. Anything else you
 forwarded to `hai`, and if the arguments already name a conversation — `hair -c`,
 `hair -r <id>` — nothing is claimed and `hair` is simply `hai`.
 
+A restored conversation comes back under its own name, which is also what Claude Code titles
+the terminal tab from. `hair` passes the name on to `claude`, and reads it out of the
+conversation's own transcript: the name you set with `/rename` if you set one, and otherwise
+the name Claude Code had generated for it — so conversations you never renamed come back named
+too, and one you renamed moments before losing it comes back under the new name.
+`hair --list` shows the same name `hair` would use. Passing a name is also how a name is set,
+so the first restore fixes it: a conversation you never renamed keeps the generated name it
+had at that point even if Claude Code would word it differently today. `hair` writes
+nothing to your terminal itself: the title is Claude Code's, set as the session starts and
+cleared when it ends, and `CLAUDE_CODE_DISABLE_TERMINAL_TITLE` is how you turn it off.
+
 A conversation is recorded on the first prompt you type, so `-p` runs and background jobs
 never appear. The registry is written by hooks that run inside the session, so `hai` has to
 be on the `PATH` wherever that is. Start `hai` from inside a devcontainer and it runs
