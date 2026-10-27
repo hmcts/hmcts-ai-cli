@@ -16,10 +16,13 @@ import {
 } from "./hook.js";
 import { COMPACTION_THRESHOLD, claimPath, parseRegistry, RESTORE_WINDOW_MS, recordLine, registryPath, type SessionRecord } from "./registry.js";
 import { restoreDecision } from "./restore.js";
+import { customTitlePath } from "./title.js";
 
 const HOME = "/home/dev";
 const REGISTRY = registryPath({ HOME })!;
 const ATTENDED = { [ATTENDED_ENV]: "1", [OWNER_PID_ENV]: "900" };
+/** Claude Code's own store for the name `/rename` set, for the payload below. */
+const TITLE = customTitlePath({ HOME }, { cwd: "/work", sessionId: "s1" })!;
 
 const HOST = "workstation";
 
@@ -53,6 +56,46 @@ describe("hookDecision", () => {
   it("should keep the display name hai read off the argv, no payload carrying it", () => {
     // Act / Assert
     expect(decide({ name: "pcs" })).toMatchObject({ action: "register", record: { name: "pcs" } });
+  });
+
+  /**
+   * Measured: `-n/--name` persists nothing — no per-session directory and no
+   * `custom-title.json` — so for 333 registered conversations the argv name was empty for
+   * every one of them and there was no name to restore a tab title from. `/rename` is the
+   * store that actually holds one. It also has to *win* rather than fill in, because `hair`
+   * puts the record's name back on the argv when it resumes: argv-first would re-assert the
+   * launch name on every restore and a later `/rename` could never take effect.
+   */
+  it("should prefer the title /rename stored over the name hai read off the argv", () => {
+    // Act / Assert
+    expect(decide({ name: "the launch name", storedName: "the renamed one" })).toMatchObject({ action: "register", record: { name: "the renamed one" } });
+  });
+
+  it("should fall back to the argv name for a conversation nobody has renamed", () => {
+    // Act / Assert
+    expect(decide({ name: "pcs", storedName: undefined })).toMatchObject({ action: "register", record: { name: "pcs" } });
+  });
+
+  /**
+   * `at` alone cannot catch this: the fifteen-minute throttle would hold the old name until
+   * the next refresh, and a session killed inside that window would be handed back under it
+   * for ever. One extra line per `/rename` is all it costs.
+   */
+  it("should re-register a conversation that has been renamed, inside the activity-refresh window", () => {
+    // Act
+    const outcome = decide({ storedName: "the renamed one", records: [record({ name: "the old one", at: FIXED_NOW - 1 })] });
+
+    // Assert
+    expect(outcome).toEqual({
+      action: "register",
+      reason: "the conversation has been renamed, and the registry is what the restored tab title comes from",
+      record: { sessionId: "s1", cwd: "/work", state: "open", at: FIXED_NOW, pid: 900, name: "the renamed one", host: HOST }
+    });
+  });
+
+  it("should re-register a conversation that was registered before it had a name at all", () => {
+    // Act / Assert
+    expect(decide({ storedName: "named at last", records: [record()] })).toMatchObject({ action: "register", record: { name: "named at last" } });
   });
 
   it("should register a session whose owning pid it could not read, liveness then refusing to guess", () => {
@@ -361,6 +404,60 @@ describe("runHook", () => {
     // Act / Assert
     await expect(runHook(seams, { event: USER_PROMPT_SUBMIT })).resolves.toBeUndefined();
     expect(seams.lines.join("")).toContain("did nothing: the disk is full");
+  });
+
+  /**
+   * The payload carries `session_id` and `cwd`, which is everything needed to find Claude
+   * Code's own `custom-title.json` — so the registry can hold the name a human actually
+   * gave the conversation instead of an argv flag almost nobody passes.
+   */
+  it("should register the title /rename stored, read off the hook payload's own session and cwd", async () => {
+    // Arrange
+    const seams = seamsIn({ files: { [TITLE]: '{"customTitle":"hai-resume"}' } });
+
+    // Act
+    await runHook(seams, { event: USER_PROMPT_SUBMIT, name: "the launch name" });
+
+    // Assert
+    expect(seams.fs.store.get(REGISTRY)).toContain('"name":"hai-resume"');
+  });
+
+  it.each<[string, Record<string, string>]>([
+    ["no title file exists, which is every conversation nobody has renamed", {}],
+    ["the title file is half-written", { [TITLE]: '{"customTitle":' }],
+    ["the title file holds no usable name", { [TITLE]: "{}" }]
+  ])("should fall back to the argv name when %s, rather than fail the hook", async (_name, files) => {
+    // Arrange
+    const seams = seamsIn({ files });
+
+    // Act / Assert
+    await expect(runHook(seams, { event: USER_PROMPT_SUBMIT, name: "pcs" })).resolves.toBeUndefined();
+    expect(seams.fs.store.get(REGISTRY)).toContain('"name":"pcs"');
+  });
+
+  it("should follow a rename mid-conversation, which is what the restored tab title comes from", async () => {
+    // Arrange
+    const seams = seamsIn({
+      files: { [REGISTRY]: recordLine(record({ name: "the old one" })), [TITLE]: '{"customTitle":"the renamed one"}' }
+    });
+
+    // Act
+    await runHook(seams, { event: USER_PROMPT_SUBMIT });
+
+    // Assert
+    expect(parseRegistry(seams.fs.store.get(REGISTRY)!)).toEqual([record({ name: "the renamed one" })]);
+  });
+
+  it("should write nothing more for a prompt that renamed nothing", async () => {
+    // Arrange
+    const unchanged = recordLine(record({ name: "hai-resume" }));
+    const seams = seamsIn({ files: { [REGISTRY]: unchanged, [TITLE]: '{"customTitle":"hai-resume"}' } });
+
+    // Act
+    await runHook(seams, { event: USER_PROMPT_SUBMIT });
+
+    // Assert
+    expect(seams.fs.store.get(REGISTRY)).toBe(unchanged);
   });
 
   it("should survive a stdin that rejects rather than a payload that is wrong", async () => {

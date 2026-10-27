@@ -3,7 +3,8 @@ import { forwardsItsOwnSession, NAME_FLAG, parseHairArgs } from "./hair/args.js"
 import { claimFirst } from "./hair/claim.js";
 import { runHook } from "./hair/hook.js";
 import { readRegistry } from "./hair/registry.js";
-import { describeCandidate, probeDirs, probeLiveness, restoreCandidates } from "./hair/restore.js";
+import { describeCandidate, probeDirs, probeLiveness, resolveNames, restoreCandidates } from "./hair/restore.js";
+import { writeTerminalTitle } from "./hair/title.js";
 import { launch } from "./launch.js";
 import type { Seams } from "./system/seams.js";
 
@@ -45,7 +46,7 @@ export async function launchHair(deps: { seams: Seams; processArgv: string[] }):
   // to be retired for the decision too, or `hair` spends a `ps` on something it then skips
   // — or worse, offers one it did not probe.
   const now = seams.clock.now();
-  const { candidates, skipped } = restoreCandidates({
+  const { candidates: offered, skipped } = restoreCandidates({
     records,
     cwd: seams.cwd,
     now,
@@ -55,6 +56,12 @@ export async function launchHair(deps: { seams: Seams; processArgv: string[] }):
   for (const { record, reason } of skipped) {
     seams.logger.verbose(`${record.sessionId}: ${reason}`);
   }
+
+  // What a conversation is called is Claude Code's to change, and the registry only holds a
+  // copy that a `/rename` shortly before the session was lost leaves behind. Settled once,
+  // over the candidates alone, so the tab title, the `--name` that goes back on the argv and
+  // `hair --list` cannot disagree about the same conversation.
+  const candidates = await resolveNames(seams, offered);
 
   if (mode.kind === "list") {
     seams.stdout(candidates.length === 0 ? `${NOTHING_TO_RESTORE}\n` : `${candidates.map((record) => describeCandidate(record, seams.cwd)).join("\n")}\n`);
@@ -73,15 +80,24 @@ export async function launchHair(deps: { seams: Seams; processArgv: string[] }):
   }
 
   seams.logger.say(`restoring ${claimed.name ?? claimed.sessionId} in ${claimed.cwd}`);
+  // Claude Code writes no title of its own at startup — measured on 2.1.304, the only
+  // `OSC 0` in a `claude -r` stream sits at the very end of it and is the clear-on-exit,
+  // with or without a stored `customTitle`. So a restored conversation comes back under
+  // whatever title the terminal had, which after a reboot is the shell's default and says
+  // nothing about which of ten tabs holds what. A title set *before* the handover survives
+  // for the life of the session and claude clears it when the session ends, so this is the
+  // one moment at which it can be put back.
+  writeTerminalTitle(seams, claimed.name);
   // Resume-by-id is not cwd-scoped, so resuming from the wrong directory would rebind the
   // conversation's project settings, hooks and CLAUDE.md discovery to wherever this
   // terminal happened to be sitting.
   seams.chdir(claimed.cwd);
   return await launch({
     seams: { ...handover, cwd: claimed.cwd },
-    // The name goes back on the argv, because the re-registration the resumed session's
-    // own hook writes reads it from there: without it a session started as `hai -n pcs`
-    // comes back nameless and every later `hair --list` shows it as "(unnamed)".
+    // The resolved name goes back on the argv, because the re-registration the resumed
+    // session's own hook writes reads it from there: without it a session started as
+    // `hai -n pcs` comes back nameless and every later `hair --list` shows it as
+    // "(unnamed)". It is the same value the tab title was just set from, by construction.
     processArgv: forwarding([RESUME_FLAG, claimed.sessionId, ...named(claimed.name), ...mode.forward])
   });
 }

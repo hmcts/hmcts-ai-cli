@@ -3,6 +3,7 @@ import { createFakeSeams, type FakeSeams, FIXED_NOW } from "./__fixtures__/fake-
 import { DEFAULT_BEDROCK_GROUP_ID } from "./az/group-membership.js";
 import { haiScriptPath } from "./claude/hooks.js";
 import { claimPath, recordLine, registryPath, type SessionRecord } from "./hair/registry.js";
+import { customTitlePath } from "./hair/title.js";
 import { launchHair, NOTHING_TO_RESTORE } from "./hair-launch.js";
 import { packageRoot } from "./update/self-update.js";
 
@@ -11,6 +12,8 @@ const KEY = "ABSKQmVkcm9jay1mYWtlLWtleS0wMDAwMDAwMDAw";
 const REGISTRY = registryPath({ HOME })!;
 /** In a container, so `launch` hands over in place rather than starting one. */
 const IN_CONTAINER = { "/.dockerenv": "" };
+/** Claude Code's own store for the name `/rename` set, for the record below. */
+const TITLE = customTitlePath({ HOME }, { cwd: "/work", sessionId: "s1" })!;
 
 /** The fake seams' own hostname, so a recorded pid is one `hair` may ask `ps` about. */
 const HOST = "workstation";
@@ -138,6 +141,92 @@ describe("launchHair", () => {
 
       // Assert
       expect(execArgv(seams).slice(-4)).toEqual(["-r", "s1", "--model", "opus"]);
+    });
+
+    /**
+     * Claude Code writes no title at startup — measured on 2.1.304, the only `OSC 0` in a
+     * `claude -r` stream is the clear-on-exit at the very end of it, with or without a
+     * stored `customTitle` — so without this the engineer's tabs all come back saying
+     * whatever the shell calls them. A title set before the handover lasts the life of the
+     * session. The bytes are asserted exactly, terminator included: `ESC ] 0 ; <text> BEL`.
+     */
+    it("should restore the tab title of the conversation it hands back", async () => {
+      // Arrange
+      const seams = seamsIn({ [REGISTRY]: recordLine(record({ name: "the pcs one" })) });
+
+      // Act
+      await launchHair({ seams, processArgv: ["node", "/bin/hair"] });
+
+      // Assert
+      expect(seams.out.join("")).toBe("\u001b]0;the pcs one\u0007");
+    });
+
+    it.each<[string, Partial<SessionRecord>, Parameters<typeof createFakeSeams>[0]]>([
+      ["no name resolves at all, blanking the title being worse than leaving it", {}, {}],
+      ["stdout is a pipe rather than a terminal", { name: "the pcs one" }, { stdoutIsTty: false }],
+      [
+        "the engineer told Claude Code itself not to touch their title",
+        { name: "the pcs one" },
+        { env: { HOME, HAI_NO_UPDATE: "1", AWS_BEARER_TOKEN_BEDROCK: KEY, CLAUDE_CODE_DISABLE_TERMINAL_TITLE: "1" } }
+      ]
+    ])("should write no escape sequence when %s", async (_name, over, seamsOver) => {
+      // Arrange
+      const seams = seamsIn({ [REGISTRY]: recordLine(record(over)) }, seamsOver);
+
+      // Act
+      await launchHair({ seams, processArgv: ["node", "/bin/hair"] });
+
+      // Assert
+      expect(execArgv(seams)).toContain("s1");
+      expect(seams.out).toEqual([]);
+    });
+
+    /**
+     * The suppression is on the *resolved* name, not on the record's: a record with no name
+     * whose title file holds one is the whole of the existing registry, every line of it
+     * having been written before the name was read from anywhere.
+     */
+    it("should restore the title of a conversation the registry has no name for, the file having one", async () => {
+      // Arrange
+      const seams = seamsIn({ [REGISTRY]: recordLine(record()), [TITLE]: '{"customTitle":"hai-resume"}' });
+
+      // Act
+      await launchHair({ seams, processArgv: ["node", "/bin/hair"] });
+
+      // Assert
+      expect(seams.out.join("")).toBe("\u001b]0;hai-resume\u0007");
+    });
+
+    /**
+     * The registry's name is a cache of something Claude Code owns and can be up to
+     * `ACTIVITY_REFRESH_MS` behind it — `/rename` at 16:55 and the container lost at 17:00.
+     * The file wins, and it has to win for all three consumers at once or a
+     * renamed-then-killed conversation lists under one name, resumes with a second on the
+     * argv and sets a tab title with a third.
+     */
+    it("should take the stored title over a stale record name, for the title and the argv alike", async () => {
+      // Arrange
+      const seams = seamsIn({ [REGISTRY]: recordLine(record({ name: "the old one" })), [TITLE]: '{"customTitle":"the renamed one"}' });
+
+      // Act
+      await launchHair({ seams, processArgv: ["node", "/bin/hair"] });
+
+      // Assert
+      expect(seams.out.join("")).toBe("\u001b]0;the renamed one\u0007");
+      expect(execArgv(seams).slice(-4)).toEqual(["-r", "s1", "--name", "the renamed one"]);
+      expect(seams.lines.join("")).toContain("restoring the renamed one in /work");
+    });
+
+    it("should keep the name the record holds when the title file has been deleted since", async () => {
+      // Arrange
+      const seams = seamsIn({ [REGISTRY]: recordLine(record({ name: "the pcs one" })) });
+
+      // Act
+      await launchHair({ seams, processArgv: ["node", "/bin/hair"] });
+
+      // Assert
+      expect(seams.out.join("")).toBe("\u001b]0;the pcs one\u0007");
+      expect(execArgv(seams).slice(-4)).toEqual(["-r", "s1", "--name", "the pcs one"]);
     });
 
     it("should move to the record's directory, resume-by-id not being cwd-scoped", async () => {
@@ -294,6 +383,40 @@ describe("launchHair", () => {
       expect(listing.out.join("")).toBe("latest  a minute ago  this directory\nmiddle  two days ago  this directory\nstale  six days ago  this directory\n");
       expect(execArgv(claiming).slice(-2)).toEqual(["--name", "a minute ago"]);
       expect(execArgv(claiming)).toContain("latest");
+    });
+
+    /**
+     * The listing is what someone reads before running the bare form, so it has to agree
+     * with what the bare form would do about the same conversation — the name is resolved
+     * once over the candidates and all three consumers read that one value. A list showing
+     * the old name while `hair` sets a tab title with the new one is the kind of
+     * disagreement nobody would think to look for.
+     */
+    it("should list a conversation under the stored title, not the stale name in the registry", async () => {
+      // Arrange
+      const seams = seamsIn({ [REGISTRY]: recordLine(record({ name: "the old one" })), [TITLE]: '{"customTitle":"the renamed one"}' });
+
+      // Act
+      await launchHair({ seams, processArgv: ["node", "/bin/hair", "--list"] });
+
+      // Assert
+      // And `--list` claims nothing, so not a byte of escape sequence either.
+      expect(seams.out.join("")).toBe("s1  the renamed one  this directory\n");
+    });
+
+    /**
+     * A `custom-title.json` deleted since the registration degrades to the last name the
+     * registry saw, rather than throwing or going back to "(unnamed)".
+     */
+    it("should list a conversation by the name the registry holds when no title file is there", async () => {
+      // Arrange
+      const seams = seamsIn({ [REGISTRY]: recordLine(record({ name: "the pcs one" })) });
+
+      // Act
+      await launchHair({ seams, processArgv: ["node", "/bin/hair", "--list"] });
+
+      // Assert
+      expect(seams.out.join("")).toBe("s1  the pcs one  this directory\n");
     });
 
     it("should say so when nothing is waiting", async () => {

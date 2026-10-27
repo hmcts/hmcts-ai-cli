@@ -1,7 +1,9 @@
 import { containerRunning, pidAlive } from "../container/lock.js";
+import type { Env } from "../system/env.js";
 import type { Fs } from "../system/fs.js";
 import type { Runner } from "../system/runner.js";
 import { keptRecords, retired, type SessionRecord } from "./registry.js";
+import { readCustomTitle } from "./title.js";
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
@@ -88,9 +90,42 @@ export function restoreCandidates(input: {
   return { candidates: candidates.sort((a, b) => rank(a, input.cwd) - rank(b, input.cwd) || b.at - a.at || compare(a.sessionId, b.sessionId)), skipped };
 }
 
+/** Pure, and the name is data: `resolveNames` has already settled which one it is. */
 export function describeCandidate(record: SessionRecord, cwd: string): string {
   const here = record.cwd === cwd ? "this directory" : record.cwd;
   return `${record.sessionId}  ${record.name ?? "(unnamed)"}  ${here}`;
+}
+
+/**
+ * The candidates with their names re-read from Claude Code's own store, which is the thing
+ * that owns them. The registry's `name` is a cache, and it can be up to
+ * `ACTIVITY_REFRESH_MS` behind: a `/rename` at 16:55 and a container lost at 17:00 leaves
+ * the file holding the new name and the record holding the old one. So the file wins and
+ * the record is the fallback — and that fallback is not a formality. It is what a
+ * conversation whose title file has since been deleted lists and resumes under, and it is
+ * the whole of the `-n/--name` case, where no file was ever written at all.
+ *
+ * Resolved once, here, because three things read the name: the tab title, the `--name` that
+ * goes back on the argv, and `hair --list`. Resolving per consumer would let a
+ * renamed-then-killed conversation list under its old name, resume with the old name on the
+ * argv and set a tab title with the new one — inconsistent in precisely the case reading
+ * the file exists for. Substituting into the record rather than returning a second map is
+ * what makes that unavoidable: there is one name downstream, not a record's and a real one.
+ *
+ * One read per *candidate*, which is a handful and not the registry, and it sits beside
+ * `probeLiveness` and `probeDirs` because those already do per-candidate I/O over this same
+ * list. Read-only: `custom-title.json` is Claude Code's private store and hai never writes
+ * one.
+ */
+export async function resolveNames(deps: { fs: Fs; env: Env }, candidates: SessionRecord[]): Promise<SessionRecord[]> {
+  const resolved: SessionRecord[] = [];
+  for (const record of candidates) {
+    const name = (await readCustomTitle(deps, { cwd: record.cwd, sessionId: record.sessionId })) ?? record.name;
+    // Left byte-identical when nothing resolved, rather than given a `name: undefined` the
+    // record never carried — the same "absent rather than empty" rule `parseRecord` follows.
+    resolved.push(name === undefined ? record : { ...record, name });
+  }
+  return resolved;
 }
 
 /**

@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { createFakeSeams, FIXED_NOW, type RunResponder } from "../__fixtures__/fake-seams.js";
 import type { SessionRecord } from "./registry.js";
-import { describeCandidate, livenessPlan, probeDirs, probeLiveness, restoreCandidates, restoreDecision } from "./restore.js";
+import { describeCandidate, livenessPlan, probeDirs, probeLiveness, resolveNames, restoreCandidates, restoreDecision } from "./restore.js";
+import { customTitlePath } from "./title.js";
 
 const HOST = "workstation";
 const MINUTE = 60 * 1000;
@@ -306,5 +307,83 @@ describe("probeDirs", () => {
 
     // Assert
     expect([...dirs]).toEqual(["/work"]);
+  });
+});
+
+describe("resolveNames", () => {
+  const HOME = "/home/dev";
+  const titleOf = (cwd: string, sessionId: string) => customTitlePath({ HOME }, { cwd, sessionId })!;
+  const stored = (name: string) => JSON.stringify({ customTitle: name });
+
+  /**
+   * The registry's `name` is a cache of something Claude Code owns, and it can be up to
+   * `ACTIVITY_REFRESH_MS` behind: `/rename` at 16:55 and the container lost at 17:00 leaves
+   * the record holding the old name and the file holding the new one. The file is
+   * authoritative at the moment the name is wanted.
+   */
+  it("should prefer the stored title over a record name that disagrees with it", async () => {
+    // Arrange
+    const seams = createFakeSeams({ env: { HOME }, files: { [titleOf("/work", "a")]: stored("the renamed one") } });
+
+    // Act
+    const resolved = await resolveNames(seams, [record({ sessionId: "a", name: "the old one" })]);
+
+    // Assert
+    expect(resolved).toEqual([record({ sessionId: "a", name: "the renamed one" })]);
+  });
+
+  it("should name a conversation the registry never had a name for, which is every record written before this", async () => {
+    // Arrange
+    const seams = createFakeSeams({ env: { HOME }, files: { [titleOf("/work", "a")]: stored("hai-resume") } });
+
+    // Act / Assert
+    expect(await resolveNames(seams, [record({ sessionId: "a" })])).toEqual([record({ sessionId: "a", name: "hai-resume" })]);
+  });
+
+  /**
+   * The fallback is not a formality: it is the `-n/--name` case, where no file was ever
+   * written, and the conversation whose title file has been deleted since it was registered.
+   */
+  it.each<[string, Record<string, string>]>([
+    ["no title file exists — either none was written or it has been deleted since", {}],
+    ["the title file is half-written", { [titleOf("/work", "a")]: '{"customTitle":' }],
+    ["the title file holds no usable name", { [titleOf("/work", "a")]: "{}" }]
+  ])("should fall back to the name the record holds when %s", async (_name, files) => {
+    // Arrange
+    const seams = createFakeSeams({ env: { HOME }, files });
+
+    // Act / Assert
+    expect(await resolveNames(seams, [record({ sessionId: "a", name: "pcs" })])).toEqual([record({ sessionId: "a", name: "pcs" })]);
+  });
+
+  it("should leave a record with no name anywhere exactly as it was, rather than give it an undefined one", async () => {
+    // Arrange
+    const seams = createFakeSeams({ env: { HOME } });
+    const unnamed = record({ sessionId: "a" });
+
+    // Act
+    const resolved = await resolveNames(seams, [unnamed]);
+
+    // Assert
+    expect(resolved[0]).toBe(unnamed);
+    expect(Object.keys(resolved[0]!)).not.toContain("name");
+  });
+
+  /**
+   * One read per candidate, keyed on that candidate's own directory and id — a name read
+   * for the wrong conversation is worse than no name at all.
+   */
+  it("should resolve each candidate against its own title file, in the order it was given", async () => {
+    // Arrange
+    const seams = createFakeSeams({
+      env: { HOME },
+      files: { [titleOf("/work", "a")]: stored("the work one"), [titleOf("/other", "b")]: stored("the other one") }
+    });
+
+    // Act
+    const resolved = await resolveNames(seams, [record({ sessionId: "a", cwd: "/work" }), record({ sessionId: "b", cwd: "/other" })]);
+
+    // Assert
+    expect(resolved.map((candidate) => candidate.name)).toEqual(["the work one", "the other one"]);
   });
 });

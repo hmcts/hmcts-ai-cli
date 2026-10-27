@@ -202,7 +202,11 @@ export interface SessionRecord {
   sessionId: string;
   /** The directory the conversation belongs to; `hair` moves there before resuming. */
   cwd: string;
-  /** `-n/--name`, when the session was given one. No hook payload carries it. */
+  /**
+   * What the conversation is called, and what `hair` restores the terminal tab title from.
+   * It is the title `/rename` persisted in Claude Code's own `custom-title.json`, falling
+   * back to the `-n/--name` hai read off the argv. No hook payload carries either.
+   */
   name?: string;
   /**
    * `open` is a conversation a human was driving and nothing has since closed. A clean
