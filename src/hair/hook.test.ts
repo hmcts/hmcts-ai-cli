@@ -16,16 +16,21 @@ import {
 } from "./hook.js";
 import { COMPACTION_THRESHOLD, claimPath, parseRegistry, RESTORE_WINDOW_MS, recordLine, registryPath, type SessionRecord } from "./registry.js";
 import { restoreDecision } from "./restore.js";
-import { customTitlePath } from "./title.js";
+import { transcriptPath } from "./title.js";
 
 const HOME = "/home/dev";
 const REGISTRY = registryPath({ HOME })!;
 const ATTENDED = { [ATTENDED_ENV]: "1", [OWNER_PID_ENV]: "900" };
-/** Claude Code's own store for the name `/rename` set, for the payload below. */
+/** Where Claude Code filed this conversation, which is where its name is kept. */
 const SLUG = "-filed-here";
-const TITLE = customTitlePath({ HOME }, { slug: SLUG, sessionId: "s1" })!;
 /** What Claude Code hands every hook, and the only authoritative statement of the slug. */
-const TRANSCRIPT = `${HOME}/.claude/projects/${SLUG}/s1.jsonl`;
+const TRANSCRIPT = transcriptPath(`${HOME}/.claude/projects/${SLUG}`, "s1");
+
+/**
+ * A transcript holding a name, laid out for the hook to find and never read: it is there so
+ * the "reads nothing but the registry" test would fail if the hook went looking.
+ */
+const named = (title: string) => `${JSON.stringify({ type: "custom-title", customTitle: title, sessionId: "s1" })}\n`;
 
 const HOST = "workstation";
 
@@ -58,56 +63,21 @@ describe("hookDecision", () => {
     });
   });
 
+  /**
+   * The argv is the only name the hook has, and the only one it needs: `resolveNames`
+   * re-reads the transcript at restore time and overwrites this, so the record's value is
+   * the fallback for a conversation whose transcript holds no title record — which is
+   * precisely the `-n/--name` case.
+   */
   it("should keep the display name hai read off the argv, no payload carrying it", () => {
     // Act / Assert
     expect(decide({ name: "pcs" })).toMatchObject({ action: "register", record: { name: "pcs" } });
   });
 
   /**
-   * Measured: `-n/--name` persists nothing — no per-session directory and no
-   * `custom-title.json` — so for 333 registered conversations the argv name was empty for
-   * every one of them and there was no name to restore a tab title from. `/rename` is the
-   * store that actually holds one. It also has to *win* rather than fill in, because `hair`
-   * puts the record's name back on the argv when it resumes: argv-first would re-assert the
-   * launch name on every restore and a later `/rename` could never take effect.
-   */
-  it("should prefer the title /rename stored over the name hai read off the argv", () => {
-    // Act / Assert
-    expect(decide({ name: "the launch name", storedName: "the renamed one" })).toMatchObject({ action: "register", record: { name: "the renamed one" } });
-  });
-
-  it("should fall back to the argv name for a conversation nobody has renamed", () => {
-    // Act / Assert
-    expect(decide({ name: "pcs", storedName: undefined })).toMatchObject({ action: "register", record: { name: "pcs" } });
-  });
-
-  /**
-   * `at` alone cannot catch this: the fifteen-minute throttle would hold the old name until
-   * the next refresh, and a session killed inside that window would be handed back under it
-   * for ever. One extra line per `/rename` is all it costs.
-   */
-  it("should re-register a conversation that has been renamed, inside the activity-refresh window", () => {
-    // Act
-    const outcome = decide({ storedName: "the renamed one", records: [record({ name: "the old one", at: FIXED_NOW - 1 })] });
-
-    // Assert
-    expect(outcome).toEqual({
-      action: "register",
-      reason: "the conversation has been renamed, and the registry is what the restored tab title comes from",
-      record: { sessionId: "s1", cwd: "/work", state: "open", at: FIXED_NOW, pid: 900, name: "the renamed one", host: HOST, slug: SLUG }
-    });
-  });
-
-  it("should re-register a conversation that was registered before it had a name at all", () => {
-    // Act / Assert
-    expect(decide({ storedName: "named at last", records: [record()] })).toMatchObject({ action: "register", record: { name: "named at last" } });
-  });
-
-  /**
-   * Recorded so the restore can find the title file without deriving the slug from a `cwd`
-   * that may have moved since. Taken out of the payload rather than computed: Claude Code
-   * fixes the slug at startup and `cwd` does not have to agree with it, and the hook
-   * re-registers on a cwd change, which is what makes a derived slug go stale for good.
+   * Recorded so the restore can find the transcript by one `stat` rather than by scanning
+   * every project directory. Taken out of the payload rather than computed: Claude Code
+   * fixes the slug at startup and `cwd` does not have to agree with it.
    */
   it("should record the slug out of the payload's transcript path, not one derived from cwd", () => {
     // Act
@@ -439,76 +409,54 @@ describe("runHook", () => {
   });
 
   /**
-   * The payload carries `session_id` and `transcript_path`, which is everything needed to
-   * find Claude Code's own `custom-title.json` — so the registry can hold the name a human
-   * actually gave the conversation rather than only the one `-n` was passed.
+   * **The registry file is the only thing a hook reads, and this is the test that keeps it
+   * that way.** Reading the conversation's title here cost a full transcript scan on every
+   * prompt — 402 ms measured on a 198 MB conversation, and the fifteen-minute throttle is no
+   * protection because the read happened before the decision that ignores the prompt. It
+   * bought nothing: `resolveNames` re-reads the transcript at restore time and overwrites
+   * whatever the registry held. Both rows go through `registration`, so neither the first
+   * prompt nor a later one may touch a transcript.
    */
-  it("should register the title /rename stored, read off the hook payload's own transcript path", async () => {
-    // Arrange
-    const seams = seamsIn({ files: { [TITLE]: '{"customTitle":"hai-resume"}' } });
-
-    // Act
-    await runHook(seams, { event: USER_PROMPT_SUBMIT, name: "the launch name" });
-
-    // Assert
-    expect(seams.fs.store.get(REGISTRY)).toContain('"name":"hai-resume"');
-  });
-
   it.each<[string, Record<string, string>]>([
-    ["no title file exists, which is every conversation nobody has renamed", {}],
-    ["the title file is half-written", { [TITLE]: '{"customTitle":' }],
-    ["the title file holds no usable name", { [TITLE]: "{}" }]
-  ])("should fall back to the argv name when %s, rather than fail the hook", async (_name, files) => {
+    ["a first prompt", {}],
+    ["a prompt in a session already registered and recently active", { [REGISTRY]: recordLine(record()) }]
+  ])("should read nothing but the registry for %s", async (_name, files) => {
     // Arrange
-    const seams = seamsIn({ files });
-
-    // Act / Assert
-    await expect(runHook(seams, { event: USER_PROMPT_SUBMIT, name: "pcs" })).resolves.toBeUndefined();
-    expect(seams.fs.store.get(REGISTRY)).toContain('"name":"pcs"');
-  });
-
-  /**
-   * The read is keyed on the transcript path too, so a session that has changed directory
-   * still finds its own title file. A cwd-derived key would miss here, and would go on
-   * missing for every prompt afterwards.
-   */
-  it("should still find the title file for a session whose cwd has moved away from its slug", async () => {
-    // Arrange
-    const seams = seamsIn({
-      stdinText: JSON.stringify(payload({ cwd: "/a-worktree-it-cd-ed-into" })),
-      files: { [TITLE]: '{"customTitle":"hai-resume"}' }
-    });
+    const seams = seamsIn({ files: { ...files, [TRANSCRIPT]: named("hai-resume") } });
 
     // Act
-    await runHook(seams, { event: USER_PROMPT_SUBMIT });
+    await runHook(seams, { event: USER_PROMPT_SUBMIT, name: "pcs" });
 
     // Assert
-    expect(seams.fs.store.get(REGISTRY)).toContain('"name":"hai-resume"');
+    expect(seams.fs.reads).toEqual([REGISTRY]);
   });
 
-  it("should follow a rename mid-conversation, which is what the restored tab title comes from", async () => {
+  it("should write nothing more for a prompt in a session that is already registered", async () => {
     // Arrange
-    const seams = seamsIn({
-      files: { [REGISTRY]: recordLine(record({ name: "the old one" })), [TITLE]: '{"customTitle":"the renamed one"}' }
-    });
+    const unchanged = recordLine(record({ name: "pcs" }));
+    const seams = seamsIn({ files: { [REGISTRY]: unchanged, [TRANSCRIPT]: named("hai-resume") } });
 
     // Act
-    await runHook(seams, { event: USER_PROMPT_SUBMIT });
-
-    // Assert
-    expect(parseRegistry(seams.fs.store.get(REGISTRY)!)).toEqual([record({ name: "the renamed one" })]);
-  });
-
-  it("should write nothing more for a prompt that renamed nothing", async () => {
-    // Arrange
-    const unchanged = recordLine(record({ name: "hai-resume" }));
-    const seams = seamsIn({ files: { [REGISTRY]: unchanged, [TITLE]: '{"customTitle":"hai-resume"}' } });
-
-    // Act
-    await runHook(seams, { event: USER_PROMPT_SUBMIT });
+    await runHook(seams, { event: USER_PROMPT_SUBMIT, name: "pcs" });
 
     // Assert
     expect(seams.fs.store.get(REGISTRY)).toBe(unchanged);
+  });
+
+  /**
+   * The slug goes in even though no name does: it is `resolveNames`' fast path to the
+   * transcript at restore time, which is why the hook wants the payload's `transcript_path`
+   * at all. The session here has `cd`-ed away from where Claude Code filed it.
+   */
+  it("should record the slug for a session whose cwd has moved away from it", async () => {
+    // Arrange
+    const seams = seamsIn({ stdinText: JSON.stringify(payload({ cwd: "/a-worktree-it-cd-ed-into" })) });
+
+    // Act
+    await runHook(seams, { event: USER_PROMPT_SUBMIT });
+
+    // Assert
+    expect(parseRegistry(seams.fs.store.get(REGISTRY)!)).toEqual([record({ cwd: "/a-worktree-it-cd-ed-into" })]);
   });
 
   it("should survive a stdin that rejects rather than a payload that is wrong", async () => {

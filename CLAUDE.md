@@ -145,69 +145,108 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
   `TERM_PROGRAM` set and the startup bytes in hand.
   The only thing that was ever missing was a **name to put on the argv**, which is what the
   two rules below are about.
-- **A record's `name` is the title `/rename` stored, and the argv `-n` only fills in.**
-  `/rename` persists at `~/.claude/projects/<slug>/<session-id>/custom-title.json` as
-  `{"customTitle":"…"}`, and the hook payload's `session_id` and `transcript_path` are
-  everything needed to find it. It is read because `-n` is the only other source and almost
-  nobody passes it: the registry's argv-derived name was empty for all 333 of one engineer's
-  records and `hair --list` said "(unnamed)" about every one of them, so every restored
-  session came back with no `--name` and therefore no tab title. Stored has to *win* rather
-  than merely fill in, because `claimFirst` puts the record's name back on the argv when it
-  resumes: argv-first would re-assert the launch name on every restore and a later `/rename`
-  could never take effect. It is re-read on **every** hook, not only at first registration,
-  and a name that differs from the record's is its own reason to re-register — `at` alone
-  cannot catch it, because `ACTIVITY_REFRESH_MS` would hold the old name for up to fifteen
-  minutes and a session killed inside that window would be handed back under it for ever. The
-  comparison is against the record this hook *would write*, not against the resolved name, so
-  a value the registration normalises away cannot read as a change on every single prompt. hai
-  only ever **reads** `custom-title.json`: creating or editing one would be writing into
-  Claude Code's private store on its behalf, and a format change would then be hai's bug to
-  own. A missing or malformed one is a silent no-name, because a hook never breaks a session.
-- **The title path is keyed on `transcript_path`, not on `cwd`.** Claude Code fixes the
-  project slug when the session starts; the hook re-registers a session whose directory
-  changed, so a conversation that registers at a workspace root and later `cd`s into a
-  worktree rewrites its record's `cwd` and a slug derived from that stops matching where the
-  session is filed — and every later lookup misses for good. `transcript_path` is
-  `<…>/projects/<slug>/<session-id>.jsonl`, so `transcriptSlug` takes the slug out of a value
-  Claude Code hands us rather than computing one we do not own. **Be straight about the
-  evidence: this is latent, not active.** A review reported 2 of 6 open records already
-  missing and that did not reproduce — every open record's cwd-derived slug was compared
-  against where its transcript actually lives and none mismatched. The fix stands on removing
-  the derivation, not on an observed failure.
+- **A conversation's name comes from its own transcript, and it is read once — at restore,
+  by `resolveNames`.** Claude Code appends every name it has for a conversation to the
+  transcript as a record of its own, and those records are the source:
+
+  ```
+  {"type":"ai-title","aiTitle":"VS Code Claude session restore","sessionId":"<id>"}
+  {"type":"custom-title","customTitle":"hai-resume","sessionId":"<id>"}
+  ```
+
+  Measured across the 1171 conversations on one machine: 278 carry an `ai-title` record, 67 a
+  `custom-title` record, 305 at least one — against 63 with a `custom-title.json` file. The
+  `ai-title` half is what makes this general rather than a nicety for the renamed few: it is
+  Claude Code's own name for every conversation nobody ran `/rename` on, which is most of
+  them. It is read at all because `-n` is the only other source and almost nobody passes it:
+  the registry's argv-derived name was empty for all 333 of one engineer's records and
+  `hair --list` said "(unnamed)" about every one of them, so every restored session came back
+  with no `--name` and therefore no tab title. hai only ever **reads** the transcripts and
+  `custom-title.json`: writing into Claude Code's own store on its behalf would make a format
+  change hai's bug to own. Every way of not having a name is a silent no-name, because a hook
+  never breaks a session.
+- **The hook reads no title, and the test that says so is load-bearing.** A record's `name`
+  is the argv `-n/--name` and nothing else. The hook *did* read the title on every
+  `UserPromptSubmit`, to keep the registry's copy fresh and to catch a `/rename` the
+  fifteen-minute throttle would otherwise hide — and once the title moved to the transcript
+  that became a full scan per prompt, measured at **402 ms** on a 198 MB conversation. The
+  throttle is no defence, because the read fed `hookDecision`'s input and so happened before
+  the decision to ignore the prompt. What killed it is that it bought nothing:
+  `resolveNames` re-reads the transcript over the candidates at restore time and that value
+  is what both the resumed `--name` and `hair --list` use, so a name in the registry is
+  overwritten at the only moment it is read. That leaves `record.name` one job — naming a
+  conversation whose transcript holds no title record at all, which is the `-n/--name` case,
+  and argv supplies it without touching a file. **Do not reintroduce the read in any form,
+  including a version skipped on the throttled path, and do not bring rename-detection back:
+  there is nothing to detect, because the registry's name is never what a restored tab is
+  titled from.** `hook.test.ts` asserts that a `UserPromptSubmit` reads `sessions.jsonl` and
+  nothing else, through `FakeFs`'s `reads` — an assertion on reads rather than on timing,
+  because the cost of this mistake is invisible to every other kind of test.
+- **The last `custom-title` record beats the last `ai-title` record, and a positional
+  last-of-either rule is a bug.** Measured in one transcript: the last `custom-title` record
+  sits at byte 10,697,664 and the last `ai-title` at 10,697,766 — the generated name is the
+  *later* of the two — and yet the conversation's real name is the custom one, `hai-resume`,
+  which its `custom-title.json` independently confirms. Claude Code goes on generating names
+  after a `/rename`, so "whichever came last" hands back the name the engineer has already
+  replaced. `/rename` is a person saying what the conversation is; an `ai-title` is a guess,
+  and it only wins where nobody has said. `pickTitle` is that one line and the scan keeps both
+  so it can be asked.
+- **The transcript is *located*, never derived from `cwd`.** A recorded `slug` names
+  `<registryDir>/projects/<slug>/<session-id>.jsonl` exactly and is tried first, one `stat`
+  and no scan — `transcriptSlug` takes it out of the `transcript_path` the hook payload
+  carries, which is Claude Code's own statement of where it filed the conversation. With no
+  slug recorded, or a recorded one that holds no such file, `findProjectDir` scans the
+  directories under `projects` for `<session-id>.jsonl`. Session ids are unique, so that is
+  exact; a slug derived from `cwd` was a guess, and the measurement is why there is no longer
+  one. Against the five open records in one live registry, the cwd-derived slug named the
+  directory the transcript is actually in for **two**: `058d3464…` had registered under
+  `…/apps/dtsse/.worktrees/dtsse-agent-hub-chatwidth`, `80d1d2d8…` under
+  `…/pcs-api/.claude/worktrees/enf-film` and `9b511157…` under this repo's own worktree, while
+  all three transcripts are filed under `-home-linus-Work-solirius-hmcts` — the directory each
+  session was started from. None of the five carries a `slug` either, because no record
+  written before it was recorded does, so the scan is the path the existing registry actually
+  takes. The scan costs 64 `stat` calls on that machine and only runs when the fast path
+  missed.
   The **slug** is recorded and not the whole path, because `~/.claude` is bind-mounted into a
   container session at a *different* absolute path (`$HOME/.claude` on the host,
   `/home/hmcts/.claude` inside, per `DEFAULT_HOME_BINDS`), so a path written by a hook running
   inside does not resolve for the `hair` reading it on the host. The slug carries no namespace
   and the `~/.claude` root is recomposed by whoever reads it, the same way `registryPath` and
   `claimPath` do. This is the path form of "a pid is never read across a PID namespace".
-  The `cwd` derivation **stays as a fallback**, for one reason that is not stylistic: no
-  record written before this carries a slug, those are killed sessions that will never fire
-  another hook to add one, and dropping the fallback would leave the existing registry
-  nameless for ever — the exact thing this branch set out to fix. It is safe to keep because
-  the session id is the *leaf* of the path, so a wrong slug names a directory that does not
-  exist: the derivation can only ever miss, never answer with another conversation's title.
-- **The registry's `name` is a cache, so the restore re-reads the file and the record is the
-  fallback.** The hook is the only thing that writes a name into the registry, and it can be
-  behind by up to `ACTIVITY_REFRESH_MS`: `/rename` at 16:55 and the container lost at 17:00
-  leaves the file holding the new name and the record the old one, and the record is then
-  wrong for good because the session will never fire another hook. It is also what every
-  line written before this feature existed looks like — a record with no name at all beside
-  a title file that has one, which is the whole of an engineer's existing registry and the
-  reason "once names are registered it fixes itself" is not true of the conversations `hair`
-  actually offers. So `resolveNames` reads the file again and the record's value is the
-  fallback, which is exactly right for the two cases the file cannot answer: a title file
-  deleted since the registration, and the `-n/--name` case where none was ever written.
+- **`custom-title.json` is the last fallback and nothing more.** It is read only when the
+  transcript named the conversation neither way, which is where it still earns its place:
+  exactly one conversation of the 1171 has the file and no `custom-title` record. It is found
+  beside the transcript that was located, not through a slug of its own, so it inherits the
+  same exactness.
+- **The scan is one pass that keeps the last of each type, and it does not tail-read.** The
+  title records are append-only and in practice land near the end, but density is an
+  observation and not a rule: a `/rename` early in a long conversation that was never renamed
+  again sits in the first megabyte of a hundred. So `scanTranscriptTitles` reads the whole
+  file through `Fs.readLines`, which streams — the largest transcript on this machine is
+  **198 MB**, and `readText` would make that one string. What a pass costs, measured warm:
+  29 ms for a 10 MB transcript, 137 ms for 68 MB, 402 ms for 198 MB. That is affordable per
+  *restore*, which is a handful of candidates once per terminal, and is exactly why it is not
+  affordable per *prompt* — see the rule above. `parseTitleRecord` rejects a line on a
+  substring test before `JSON.parse` for the same reason; a title record is a handful of lines
+  in tens of thousands.
+- **The registry's `name` is never the answer while a better one exists.** The hook writes
+  only the argv name, and every line written before this feature existed has none at all, so
+  the registry cannot be where a tab title comes from: `resolveNames` reads the transcript
+  over the candidates and the record's value is the fallback, which is exactly right for the
+  two cases the transcript cannot answer — one deleted since the registration, and the
+  `-n/--name` case where nothing was ever written to a transcript. This is also what makes a
+  stale registry name harmless, and so what makes the hook's title read deletable.
 - **The name is resolved once, over the candidates, and both consumers read that one value.**
   Two things read it — the `--name` that goes back on the argv, which is what Claude Code
   then titles the tab from, and `describeCandidate` in `hair --list`. Resolving per consumer
   would let a renamed-then-killed conversation list under its old name and come back under
   the new one, so the list would disagree with what `hair` had just done, which is precisely
-  the case re-reading the file exists for. `resolveNames` therefore substitutes into the
+  the case re-reading the transcript exists for. `resolveNames` therefore substitutes into the
   record rather than returning a second map, so there is one name downstream and not a
   record's and a real one; `describeCandidate` stays pure and keeps taking it as data. It
   sits beside `probeLiveness` and `probeDirs` because those already do per-candidate I/O over
-  the same list, and it runs on the **candidates**, not the registry: a handful of `readText`
-  calls against a list that has already had one `ps` spent on each of it. `hair --list` pays
+  the same list, and it runs on the **candidates**, not the registry: a handful of transcript
+  scans against a list that has already had one `ps` spent on each of it. `hair --list` pays
   that cost too, because a list that disagrees with what the bare form then does is the kind
   of thing nobody thinks to check.
 - **An end that was not the person's releases the claim and writes nothing.** That is the
@@ -548,7 +587,7 @@ table-testable:
 | `parseHairArgs`, `forwardsItsOwnSession` | — |
 | `parseRegistry`, `parseRecord`, `retired`, `keptRecords`, `compacted`, `shouldCompact`, `registryPath`, `claimPath` | `readRegistry`, `appendRecord`, `compactRegistry` |
 | `restoreDecision`, `restoreCandidates`, `describeCandidate`, `livenessPlan` | `probeLiveness`, `probeDirs`, `resolveNames` |
-| `transcriptSlug`, `customTitlePath`, `parseCustomTitle` | `readCustomTitle` |
+| `transcriptSlug`, `projectsDir`, `transcriptPath`, `customTitlePath`, `parseTitleRecord`, `pickTitle`, `parseCustomTitle` | `findProjectDir`, `scanTranscriptTitles`, `readSessionTitle` |
 | `claimDecision`, `parseClaim` | `claimFirst` |
 | `hookDecision`, `parsePayload` | `runHook` |
 | `resolvePluginDirs` is the exception — it reads the marketplace itself | — |
@@ -736,9 +775,12 @@ The shape, all in `src/hair-launch.ts`:
    `hair --list` prints the same array `claimFirst` walks, and it has to: the top line is
    the conversation the bare form is about to take, which is what makes the list worth
    eyeballing.
-6. `resolveNames` re-reads each candidate's name from Claude Code's own `custom-title.json`,
-   keyed on the slug the record carries, falling back to the name the record holds. One read
-   per candidate, and the single value both consumers below then use.
+6. `resolveNames` reads each candidate's name from the conversation's own transcript — found
+   by the recorded slug or by scanning the project directories for `<session-id>.jsonl` —
+   taking the last `custom-title` record over the last `ai-title` one, then
+   `custom-title.json`, then the name the record holds. One lookup per candidate, the single
+   value both consumers below then use, and the **only** place a title is read: the hook does
+   not, deliberately.
 7. `claimFirst` walks the candidates and takes the first it wins with `O_EXCL`, then
    `seams.chdir` moves to the record's own directory, then `launch()` runs with
    `["-r", id, "--name", <the resolved name>, ...rest]`. The name goes back on the argv for
@@ -789,7 +831,9 @@ which is why hai reads it off the argv and puts it on the hook's command line. `
 in the hook environment is the owning `claude` process, not the hook's own, and is what the
 registry records. `transcript_path` is `<…>/projects/<slug>/<session-id>.jsonl` and is the
 only authoritative statement of which project directory the conversation is filed under; the
-registry records the slug out of it rather than deriving one from `cwd`.
+registry records the slug out of it rather than deriving one from `cwd`, and the file it
+names is where the conversation's name is read from — the `ai-title` and `custom-title`
+records in the rules above.
 
 #### The terminal tab title: `claude` writes it, hai does not
 

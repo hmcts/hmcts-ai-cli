@@ -3,7 +3,7 @@ import type { Env } from "../system/env.js";
 import type { Fs } from "../system/fs.js";
 import type { Runner } from "../system/runner.js";
 import { keptRecords, retired, type SessionRecord } from "./registry.js";
-import { readCustomTitle } from "./title.js";
+import { readSessionTitle } from "./title.js";
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
@@ -97,13 +97,13 @@ export function describeCandidate(record: SessionRecord, cwd: string): string {
 }
 
 /**
- * The candidates with their names re-read from Claude Code's own store, which is the thing
- * that owns them. The registry's `name` is a cache, and it can be up to
- * `ACTIVITY_REFRESH_MS` behind: a `/rename` at 16:55 and a container lost at 17:00 leaves
- * the file holding the new name and the record holding the old one. So the file wins and
- * the record is the fallback — and that fallback is not a formality. It is what a
- * conversation whose title file has since been deleted lists and resumes under, and it is
- * the whole of the `-n/--name` case, where no file was ever written at all.
+ * The candidates with their names read from the conversation's own transcript, which is
+ * where Claude Code keeps them. **This is the only read of a title anywhere**: the hook
+ * writes nothing but the argv `-n`, because a scan here is a handful of candidates once per
+ * terminal while a scan in the hook was one per prompt — 402 ms of it on a 198 MB
+ * conversation. So the transcript wins and the record is the fallback, and that fallback is
+ * not a formality: it is the whole of the `-n/--name` case, where nothing was ever written
+ * to a transcript at all, and it covers a transcript Claude Code has since deleted.
  *
  * Resolved once, here, because two things read the name: the `--name` that goes back on the
  * argv — which is what Claude Code then sets the terminal tab title from — and
@@ -113,16 +113,17 @@ export function describeCandidate(record: SessionRecord, cwd: string): string {
  * rather than returning a second map is what makes that unavoidable: there is one name
  * downstream, not a record's and a real one.
  *
- * Keyed on the `slug` the record carries, falling back to its `cwd` for the records written
- * before the slug was recorded. One read per *candidate*, which is a handful and not the
- * registry, and it sits beside `probeLiveness` and `probeDirs` because those already do
- * per-candidate I/O over this same list. Read-only: `custom-title.json` is Claude Code's
- * private store and hai never writes one.
+ * Keyed on the `slug` the record carries, and otherwise on a scan of the project
+ * directories for the session's own transcript — which is every record written before the
+ * slug was recorded. One lookup per *candidate*, which is a handful and not the registry,
+ * and it sits beside `probeLiveness` and `probeDirs` because those already do per-candidate
+ * I/O over this same list. Read-only: the transcripts and `custom-title.json` are Claude
+ * Code's own store and hai never writes either.
  */
 export async function resolveNames(deps: { fs: Fs; env: Env }, candidates: SessionRecord[]): Promise<SessionRecord[]> {
   const resolved: SessionRecord[] = [];
   for (const record of candidates) {
-    const name = (await readCustomTitle(deps, { slug: record.slug, cwd: record.cwd, sessionId: record.sessionId })) ?? record.name;
+    const name = (await readSessionTitle(deps, { slug: record.slug, sessionId: record.sessionId })) ?? record.name;
     // Left byte-identical when nothing resolved, rather than given a `name: undefined` the
     // record never carried — the same "absent rather than empty" rule `parseRecord` follows.
     resolved.push(name === undefined ? record : { ...record, name });

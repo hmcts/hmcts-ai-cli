@@ -96,9 +96,11 @@ forwarded to `hai`, and if the arguments already name a conversation — `hair -
 `hair -r <id>` — nothing is claimed and `hair` is simply `hai`.
 
 A restored conversation comes back under its own name, which is also what Claude Code titles
-the terminal tab from. `hair` passes the name on to `claude`, and finds it by reading the one
-you set with `/rename` — so a conversation you renamed moments before losing it comes back
-under the new name, and `hair --list` shows the same name `hair` would use. `hair` writes
+the terminal tab from. `hair` passes the name on to `claude`, and reads it out of the
+conversation's own transcript: the name you set with `/rename` if you set one, and otherwise
+the name Claude Code generated for it — so conversations you never renamed come back named
+too, and one you renamed moments before losing it comes back under the new name. `hair --list`
+shows the same name `hair` would use. `hair` writes
 nothing to your terminal itself: the title is Claude Code's, set as the session starts and
 cleared when it ends, and `CLAUDE_CODE_DISABLE_TERMINAL_TITLE` is how you turn it off.
 

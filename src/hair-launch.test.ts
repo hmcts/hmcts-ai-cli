@@ -3,7 +3,7 @@ import { createFakeSeams, type FakeSeams, FIXED_NOW } from "./__fixtures__/fake-
 import { DEFAULT_BEDROCK_GROUP_ID } from "./az/group-membership.js";
 import { haiScriptPath } from "./claude/hooks.js";
 import { claimPath, recordLine, registryPath, type SessionRecord } from "./hair/registry.js";
-import { customTitlePath } from "./hair/title.js";
+import { transcriptPath } from "./hair/title.js";
 import { launchHair, NOTHING_TO_RESTORE } from "./hair-launch.js";
 import { packageRoot } from "./update/self-update.js";
 
@@ -12,9 +12,11 @@ const KEY = "ABSKQmVkcm9jay1mYWtlLWtleS0wMDAwMDAwMDAw";
 const REGISTRY = registryPath({ HOME })!;
 /** In a container, so `launch` hands over in place rather than starting one. */
 const IN_CONTAINER = { "/.dockerenv": "" };
-/** Claude Code's own store for the name `/rename` set, for the record below. */
+/** Where Claude Code filed the record below, which is where its name is kept. */
 const SLUG = "-work";
-const TITLE = customTitlePath({ HOME }, { slug: SLUG, sessionId: "s1" })!;
+const TRANSCRIPT = transcriptPath(`${HOME}/.claude/projects/${SLUG}`, "s1");
+/** One title record, the shape Claude Code appends on a `/rename`. */
+const titled = (name: string) => `${JSON.stringify({ type: "custom-title", customTitle: name })}\n`;
 
 /** The fake seams' own hostname, so a recorded pid is one `hair` may ask `ps` about. */
 const HOST = "workstation";
@@ -168,9 +170,9 @@ describe("launchHair", () => {
      * in — so without resolving at restore time they would come back nameless for ever, and
      * with no `--name` there is nothing for Claude Code to title the tab from.
      */
-    it("should name a conversation the registry has no name for, the title file having one", async () => {
+    it("should name a conversation the registry has no name for, its transcript having one", async () => {
       // Arrange
-      const seams = seamsIn({ [REGISTRY]: recordLine(record()), [TITLE]: '{"customTitle":"hai-resume"}' });
+      const seams = seamsIn({ [REGISTRY]: recordLine(record()), [TRANSCRIPT]: titled("hai-resume") });
 
       // Act
       await launchHair({ seams, processArgv: ["node", "/bin/hair"] });
@@ -182,12 +184,12 @@ describe("launchHair", () => {
     /**
      * The registry's name is a cache of something Claude Code owns and can be up to
      * `ACTIVITY_REFRESH_MS` behind it — `/rename` at 16:55 and the container lost at 17:00.
-     * The file wins, and it has to win for both consumers at once or `hair --list` disagrees
-     * with the name the conversation then comes back under.
+     * The transcript wins, and it has to win for both consumers at once or `hair --list`
+     * disagrees with the name the conversation then comes back under.
      */
-    it("should take the stored title over a stale record name, for the argv and the log line alike", async () => {
+    it("should take the transcript's title over a stale record name, for the argv and the log line alike", async () => {
       // Arrange
-      const seams = seamsIn({ [REGISTRY]: recordLine(record({ name: "the old one" })), [TITLE]: '{"customTitle":"the renamed one"}' });
+      const seams = seamsIn({ [REGISTRY]: recordLine(record({ name: "the old one" })), [TRANSCRIPT]: titled("the renamed one") });
 
       // Act
       await launchHair({ seams, processArgv: ["node", "/bin/hair"] });
@@ -197,7 +199,7 @@ describe("launchHair", () => {
       expect(seams.lines.join("")).toContain("restoring the renamed one in /work");
     });
 
-    it("should keep the name the record holds when the title file has been deleted since", async () => {
+    it("should keep the name the record holds when there is no transcript left to read", async () => {
       // Arrange
       const seams = seamsIn({ [REGISTRY]: recordLine(record({ name: "the pcs one" })) });
 
@@ -209,24 +211,24 @@ describe("launchHair", () => {
     });
 
     /**
-     * Claude Code fixes the project slug when the session starts; the record's `cwd` moves
-     * whenever the hook sees the session in a new directory. A conversation that registered
-     * at a workspace root and then `cd`-ed into a worktree has a `cwd` that no longer says
-     * where its transcripts live, so a cwd-derived lookup misses — the recorded slug is what
-     * still finds the title.
+     * A record's `cwd` says nothing about where its transcript is filed: Claude Code fixes
+     * the project slug when the session starts, and of the five open records in one live
+     * registry a slug derived from `cwd` named the right directory for two. This record
+     * carries no slug either — none written before the slug was recorded does — so the
+     * session-id scan is what finds it.
      */
-    it("should find the stored title through the recorded slug when cwd has moved since", async () => {
+    it("should find the name of a conversation filed nowhere near its cwd, with no slug recorded", async () => {
       // Arrange
       const seams = seamsIn({
-        [REGISTRY]: recordLine(record({ cwd: "/elsewhere", slug: SLUG })),
-        [TITLE]: '{"customTitle":"filed under the old directory"}'
+        [REGISTRY]: recordLine(record({ cwd: "/elsewhere" })),
+        [TRANSCRIPT]: titled("filed under the workspace root")
       });
 
       // Act
       await launchHair({ seams, processArgv: ["node", "/bin/hair"] });
 
       // Assert
-      expect(execArgv(seams).slice(-2)).toEqual(["--name", "filed under the old directory"]);
+      expect(execArgv(seams).slice(-2)).toEqual(["--name", "filed under the workspace root"]);
     });
 
     it("should move to the record's directory, resume-by-id not being cwd-scoped", async () => {
@@ -392,9 +394,9 @@ describe("launchHair", () => {
      * the old name while `hair` sets a tab title with the new one is the kind of
      * disagreement nobody would think to look for.
      */
-    it("should list a conversation under the stored title, not the stale name in the registry", async () => {
+    it("should list a conversation under the transcript's title, not the stale name in the registry", async () => {
       // Arrange
-      const seams = seamsIn({ [REGISTRY]: recordLine(record({ name: "the old one" })), [TITLE]: '{"customTitle":"the renamed one"}' });
+      const seams = seamsIn({ [REGISTRY]: recordLine(record({ name: "the old one" })), [TRANSCRIPT]: titled("the renamed one") });
 
       // Act
       await launchHair({ seams, processArgv: ["node", "/bin/hair", "--list"] });
@@ -404,10 +406,10 @@ describe("launchHair", () => {
     });
 
     /**
-     * A `custom-title.json` deleted since the registration degrades to the last name the
-     * registry saw, rather than throwing or going back to "(unnamed)".
+     * A transcript deleted since the registration degrades to the last name the registry
+     * saw, rather than throwing or going back to "(unnamed)".
      */
-    it("should list a conversation by the name the registry holds when no title file is there", async () => {
+    it("should list a conversation by the name the registry holds when no transcript is there", async () => {
       // Arrange
       const seams = seamsIn({ [REGISTRY]: recordLine(record({ name: "the pcs one" })) });
 

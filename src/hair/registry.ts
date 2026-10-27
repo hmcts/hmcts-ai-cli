@@ -205,8 +205,9 @@ export interface SessionRecord {
   cwd: string;
   /**
    * What the conversation is called, and what `hair` restores the terminal tab title from.
-   * It is the title `/rename` persisted in Claude Code's own `custom-title.json`, falling
-   * back to the `-n/--name` hai read off the argv. No hook payload carries either.
+   * It is the name the conversation's own transcript carries — the `custom-title` record
+   * `/rename` appends, or the `ai-title` one Claude Code generates — falling back to the
+   * `-n/--name` hai read off the argv. No hook payload carries either.
    */
   name?: string;
   /**
@@ -232,11 +233,12 @@ export interface SessionRecord {
   container?: string;
   /**
    * The directory Claude Code filed this conversation's transcripts under, taken out of the
-   * hook payload's own `transcript_path`. It is what `resolveNames` finds the stored title
-   * through at restore time, and it is recorded rather than derived because Claude Code
-   * fixes it when the session starts while `cwd` can move underneath it — a conversation
-   * that registers at a workspace root and then `cd`s into a worktree rewrites its `cwd`
-   * and a slug derived from that stops matching.
+   * hook payload's own `transcript_path`. It is the fast path to the transcript at restore
+   * time — one `stat` rather than `findProjectDir`'s scan — and it is recorded rather than
+   * derived because Claude Code fixes it when the session starts while `cwd` can move
+   * underneath it: a conversation that registers at a workspace root and then `cd`s into a
+   * worktree rewrites its `cwd`, and a slug derived from that names a directory the
+   * transcript is not in.
    *
    * The slug and not the whole path, because `~/.claude` is bind-mounted into a container
    * session at a different absolute path, so a path recorded inside does not resolve for a

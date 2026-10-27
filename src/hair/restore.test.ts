@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createFakeSeams, FIXED_NOW, type RunResponder } from "../__fixtures__/fake-seams.js";
 import type { SessionRecord } from "./registry.js";
 import { describeCandidate, livenessPlan, probeDirs, probeLiveness, resolveNames, restoreCandidates, restoreDecision } from "./restore.js";
-import { customTitlePath } from "./title.js";
+import { transcriptPath } from "./title.js";
 
 const HOST = "workstation";
 const MINUTE = 60 * 1000;
@@ -312,20 +312,20 @@ describe("probeDirs", () => {
 
 describe("resolveNames", () => {
   const HOME = "/home/dev";
-  const titleOf = (slug: string, sessionId: string) => customTitlePath({ HOME }, { slug, sessionId })!;
-  const stored = (name: string) => JSON.stringify({ customTitle: name });
-  /** The slug `projectSlug` derives from the fixture record's `/work`, so the fallback finds it. */
-  const SLUG = "-work";
+  const transcriptOf = (slug: string, sessionId: string) => transcriptPath(`${HOME}/.claude/projects/${slug}`, sessionId);
+  const named = (name: string) => `${JSON.stringify({ type: "custom-title", customTitle: name })}\n`;
+  /** A project directory that is nothing like the fixture record's `/work`, which is the point. */
+  const SLUG = "-filed-somewhere-else";
 
   /**
    * The registry's `name` is a cache of something Claude Code owns, and it can be up to
    * `ACTIVITY_REFRESH_MS` behind: `/rename` at 16:55 and the container lost at 17:00 leaves
-   * the record holding the old name and the file holding the new one. The file is
-   * authoritative at the moment the name is wanted.
+   * the record holding the old name and the transcript holding the new one. The transcript
+   * is authoritative at the moment the name is wanted.
    */
-  it("should prefer the stored title over a record name that disagrees with it", async () => {
+  it("should prefer the title the transcript holds over a record name that disagrees with it", async () => {
     // Arrange
-    const seams = createFakeSeams({ env: { HOME }, files: { [titleOf(SLUG, "a")]: stored("the renamed one") } });
+    const seams = createFakeSeams({ env: { HOME }, files: { [transcriptOf(SLUG, "a")]: named("the renamed one") } });
 
     // Act
     const resolved = await resolveNames(seams, [record({ sessionId: "a", name: "the old one" })]);
@@ -336,20 +336,21 @@ describe("resolveNames", () => {
 
   it("should name a conversation the registry never had a name for, which is every record written before this", async () => {
     // Arrange
-    const seams = createFakeSeams({ env: { HOME }, files: { [titleOf(SLUG, "a")]: stored("hai-resume") } });
+    const seams = createFakeSeams({ env: { HOME }, files: { [transcriptOf(SLUG, "a")]: named("hai-resume") } });
 
     // Act / Assert
     expect(await resolveNames(seams, [record({ sessionId: "a" })])).toEqual([record({ sessionId: "a", name: "hai-resume" })]);
   });
 
   /**
-   * The fallback is not a formality: it is the `-n/--name` case, where no file was ever
-   * written, and the conversation whose title file has been deleted since it was registered.
+   * The fallback is not a formality: it is the `-n/--name` case, where nothing was ever
+   * written to a transcript, and the conversation whose transcript has been deleted since it
+   * was registered.
    */
   it.each<[string, Record<string, string>]>([
-    ["no title file exists — either none was written or it has been deleted since", {}],
-    ["the title file is half-written", { [titleOf(SLUG, "a")]: '{"customTitle":' }],
-    ["the title file holds no usable name", { [titleOf(SLUG, "a")]: "{}" }]
+    ["no transcript exists — either none was written or it has been deleted since", {}],
+    ["the transcript carries no title record", { [transcriptOf(SLUG, "a")]: `${JSON.stringify({ type: "user" })}\n` }],
+    ["the transcript's title record holds no usable name", { [transcriptOf(SLUG, "a")]: `${JSON.stringify({ type: "custom-title" })}\n` }]
   ])("should fall back to the name the record holds when %s", async (_name, files) => {
     // Arrange
     const seams = createFakeSeams({ env: { HOME }, files });
@@ -372,32 +373,33 @@ describe("resolveNames", () => {
   });
 
   /**
-   * Claude Code fixes the slug when the session starts; the record's `cwd` is rewritten
-   * whenever the hook sees the session in a new directory. So a conversation that registered
-   * at a workspace root and then `cd`-ed into a worktree has a `cwd` that no longer says
-   * where its transcripts live, and only the recorded slug still finds the title.
+   * The record's `cwd` says nothing about where its transcript is. Measured against the five
+   * open records in one live registry, a slug derived from `cwd` named the right project
+   * directory for two of them: the other three had registered in worktrees and sub-repos
+   * while Claude Code had filed them under the directory the session was started from. None
+   * of those records carries a slug either, so the session-id scan is the only thing that
+   * finds them — and it does, because a session id is unique.
    */
-  it("should key on the recorded slug rather than on a cwd that has moved since", async () => {
+  it("should find a conversation filed nowhere near its cwd, with no slug recorded to point at it", async () => {
     // Arrange
-    const seams = createFakeSeams({ env: { HOME }, files: { [titleOf(SLUG, "a")]: stored("filed under the old directory") } });
+    const seams = createFakeSeams({ env: { HOME }, files: { [transcriptOf(SLUG, "a")]: named("filed under the workspace root") } });
 
     // Act
-    const resolved = await resolveNames(seams, [record({ sessionId: "a", cwd: "/a-worktree-it-cd-ed-into", slug: SLUG })]);
+    const resolved = await resolveNames(seams, [record({ sessionId: "a", cwd: "/a-worktree-it-cd-ed-into" })]);
 
     // Assert
-    expect(resolved[0]!.name).toBe("filed under the old directory");
+    expect(resolved[0]!.name).toBe("filed under the workspace root");
   });
 
   /**
-   * One read per candidate, keyed on that candidate's own directory and id — a name read
-   * for the wrong conversation is worse than no name at all. These records carry no slug,
-   * so they also exercise the `cwd` fallback the existing registry depends on.
+   * One lookup per candidate, keyed on that candidate's own id — a name read for the wrong
+   * conversation is worse than no name at all.
    */
-  it("should resolve each candidate against its own title file, in the order it was given", async () => {
+  it("should resolve each candidate against its own transcript, in the order it was given", async () => {
     // Arrange
     const seams = createFakeSeams({
       env: { HOME },
-      files: { [titleOf(SLUG, "a")]: stored("the work one"), [titleOf("-other", "b")]: stored("the other one") }
+      files: { [transcriptOf(SLUG, "a")]: named("the work one"), [transcriptOf("-other", "b")]: named("the other one") }
     });
 
     // Act

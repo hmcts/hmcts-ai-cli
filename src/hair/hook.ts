@@ -4,7 +4,7 @@ import type { Env } from "../system/env.js";
 import type { Fs } from "../system/fs.js";
 import { releaseClaim } from "./claim.js";
 import { appendRecord, compactRegistry, keptRecords, readRegistry, type SessionRecord, shouldCompact } from "./registry.js";
-import { readCustomTitle, transcriptSlug } from "./title.js";
+import { transcriptSlug } from "./title.js";
 
 export const USER_PROMPT_SUBMIT = "UserPromptSubmit";
 export const SESSION_END = "SessionEnd";
@@ -110,20 +110,24 @@ export const ACTIVITY_REFRESH_MS = 15 * 60 * 1000;
  * stays, so "still marked open" is the crash signal — but it only holds for the reasons
  * that mean the conversation is over, because `SessionEnd` fires on a kill too.
  *
- * `storedName` is the title `/rename` wrote, read off Claude Code's own
- * `custom-title.json`, and it beats the `-n/--name` hai read off the argv. Measured: `-n`
- * persists nothing at all, so for 333 registered conversations the argv name was empty for
- * every one of them and the registry had no name to restore. Stored also has to win rather
- * than merely fill in, because `hair` puts the record's name *back* on the argv when it
- * resumes: with argv first, the name a session was launched under would re-assert itself
- * on every restore and a later `/rename` could never take effect.
+ * **The hook reads no title.** What a record carries as `name` is the `-n/--name` hai read
+ * off the argv and nothing else, because `resolveNames` re-reads the conversation's own
+ * transcript at restore time — transcript first, its last `custom-title` record over its
+ * last `ai-title` one, the record's `name` only as the fallback — and that read is the one
+ * the resumed `--name` and `hair --list` both come from. So a name in the registry is
+ * overwritten at the only moment it is used, which leaves the record's value doing one job:
+ * naming a conversation whose transcript holds no title record at all, which is the
+ * `-n/--name` case, and argv supplies that without reading anything. Reading a title here
+ * bought that one value at the price of a full transcript scan on **every prompt** — 402 ms
+ * measured on a 198 MB conversation. Do not put it back, and do not reintroduce
+ * rename-detection in any form: there is nothing to detect, because the registry's name is
+ * never what a restored tab is titled from.
  */
 export function hookDecision(input: {
   event: string;
   payload: HookPayload | null;
   env: Env;
   name?: string;
-  storedName?: string;
   host: string;
   now: number;
   records: SessionRecord[];
@@ -153,24 +157,12 @@ export function hookDecision(input: {
   const pid = Number(input.env[OWNER_PID_ENV]) || 0;
   const record = registration(input, payload, pid);
   if (existing !== undefined && existing.state === "open" && existing.pid === pid && existing.cwd === payload.cwd) {
-    // A `/rename` mid-session moves the name the tab should carry, and `at` alone would not
-    // catch it: the throttle below would hold the old name for up to fifteen minutes, and a
-    // session killed inside that window would be restored under it for ever. The comparison
-    // is against the record this hook would write rather than against the resolved name, so
-    // a name the registration normalises away cannot read as a change on every prompt.
-    const renamed = existing.name !== record.name;
-    if (!renamed && input.now - existing.at < ACTIVITY_REFRESH_MS) {
+    if (input.now - existing.at < ACTIVITY_REFRESH_MS) {
       // Every prompt fires this hook, and a subagent handing its report back fires it too.
       // The registry only has to hold one line per conversation.
       return { action: "ignore", reason: "the session is already registered and was active recently enough" };
     }
-    return {
-      action: "register",
-      reason: renamed
-        ? "the conversation has been renamed, and the registry is what the restored tab title comes from"
-        : "the session is still being driven, so when it was last active moves on",
-      record
-    };
+    return { action: "register", reason: "the session is still being driven, so when it was last active moves on", record };
   }
   return {
     action: "register",
@@ -197,15 +189,6 @@ export async function runHook(
       payload,
       env: deps.env,
       name: input.name,
-      // Re-read on every hook, not only on a first registration: `/rename` moves the name
-      // mid-conversation, and this is one `Fs.readText` that answers null rather than
-      // throwing for an absent file. Keyed on the payload's own `transcript_path`, which is
-      // where Claude Code filed the conversation, not on a slug derived from `cwd`.
-      storedName: await readCustomTitle(deps, {
-        slug: transcriptSlug(payload?.transcript_path),
-        cwd: payload?.cwd,
-        sessionId: payload?.session_id
-      }),
       host: deps.hostname,
       now: deps.clock.now(),
       records
@@ -252,7 +235,7 @@ function closed(now: number, payload: HookPayload): SessionRecord {
   return { sessionId: payload.session_id!, cwd: payload.cwd!, state: "closed", at: now, pid: 0 };
 }
 
-function registration(input: { env: Env; name?: string; storedName?: string; host: string; now: number }, payload: HookPayload, pid: number): SessionRecord {
+function registration(input: { env: Env; name?: string; host: string; now: number }, payload: HookPayload, pid: number): SessionRecord {
   return {
     sessionId: payload.session_id!,
     cwd: payload.cwd!,
@@ -261,10 +244,10 @@ function registration(input: { env: Env; name?: string; storedName?: string; hos
     pid,
     // The namespace the pid is meaningful in. Without these, `hair` on the host would
     // read a container pid as if it were one of its own.
-    ...field("name", input.storedName ?? input.name),
+    ...field("name", input.name),
     ...field("host", input.host),
     ...field("container", input.env[CONTAINER_ENV]),
-    // Recorded so `resolveNames` can find the stored title at restore time without deriving
+    // Recorded so `resolveNames` can find the transcript at restore time without deriving
     // the slug from a `cwd` that may have moved since. Pure: the payload hands it over.
     ...field("slug", transcriptSlug(payload.transcript_path))
   };
