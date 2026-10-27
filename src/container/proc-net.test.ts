@@ -1,22 +1,18 @@
 import { describe, expect, it } from "vitest";
 import { addressKind, createDebounce, listeners, type ProcNetSocket, parseProcNet } from "./proc-net.js";
 
-/**
- * Captured from a container running `python3 -m http.server 8111 --bind 0.0.0.0` and
- * `--bind 127.0.0.1` on 9876: 00000000:1FAF is 0.0.0.0:8111 and 0100007F:2694 is
- * 127.0.0.1:9876, both in state 0A.
- */
+/** 0100007F:2694 is 127.0.0.1:9876 and 00000000:1FAF is 0.0.0.0:8111, both in state 0A. */
 const TCP = `  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
    0: 0100007F:2694 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 63401415 1 0000000000000000 100 0 0 10 0
    1: 00000000:1FAF 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 63390650 1 0000000000000000 100 0 0 10 0
 `;
 
-/** Captured from cftlib's XUI container, whose Node server listens on :: port 0BB8 (3000). */
+/** A tcp6 table: a server on `::`, port 0BB8 (3000). */
 const TCP6 = `  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
    0: 00000000000000000000000000000000:0BB8 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000   100        0 31500707 1 0000000000000000 100 0 0 10 0
 `;
 
-/** A connection out, plus a line the kernel cut short, which is every round that races a write. */
+/** A connection out (state 01), a line the kernel cut short, and a line that is not a socket. */
 const NOISE = `  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
    0: 00000000:1F90 0100007F:9C40 01 00000000:00000000 00:00000000 00000000     0        0 1 1 0000000000000000 100 0 0 10 0
    1: 00000000:1F91

@@ -2,10 +2,8 @@ import { REGISTRY_HOST, TOKEN_USER } from "../container/acr.js";
 import { ALLOWED_SOURCES_KEY, DOCKER_VOLUME_KEY, DOCKER_VOLUME_SIZE, SBX_BIN } from "./kit.js";
 
 /**
- * Both scopes, from one token. The host scope is what sbx pulls the kit with; the
- * `--all-sandboxes` scope is a separate secret that the Docker engine *inside* a sandbox
- * uses, and without it every hmctsprod pull there is refused with "authentication
- * required" — which is exactly what cftlib's IDAM simulator and the XUI images need.
+ * Both scopes, from one token: the host scope pulls the kit, and the `--all-sandboxes` scope is
+ * what the Docker engine inside a sandbox uses — without it every hmctsprod pull there is refused.
  */
 export const SECRET_SCOPES = [
   { flags: ["-f"], where: "the host" },
@@ -13,9 +11,8 @@ export const SECRET_SCOPES = [
 ] as const;
 
 /**
- * The create: `sbx run` with the kit and the workspaces, which sbx records in the
- * sandbox's spec. The workspaces are mounted at their host paths, which is what makes
- * Claude Code's project slug — and so the shared conversation history — match the host's.
+ * The create: `sbx run` with the kit and the workspaces, which sbx records in the sandbox's
+ * spec. They mount at their host paths, so Claude Code's project slug matches the host's.
  */
 export function buildCreateArgs(ctx: SbxContext): string[] {
   const argv = [SBX_BIN, "run", "--name", ctx.name];

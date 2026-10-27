@@ -65,7 +65,7 @@ describe("createHiddenInput", () => {
   });
 
   it("should default to the process streams", () => {
-    // Act / Assert — process.stdin is not a terminal under vitest.
+    // Act / Assert
     expect(createHiddenInput().isTty).toBe(false);
   });
 });

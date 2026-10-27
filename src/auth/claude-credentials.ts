@@ -5,10 +5,7 @@ import type { Env } from "../system/env.js";
 import type { Fs } from "../system/fs.js";
 import type { Runner } from "../system/runner.js";
 
-/**
- * The value Claude Code writes when its credentials are being managed by a proxy rather
- * than a real claude.ai login, so it is not evidence of a BYO licence.
- */
+/** What Claude Code writes when a proxy manages its credentials, so it is not evidence of a BYO licence. */
 export const PROXY_MANAGED_SENTINEL = "sk-ant-oat01-proxy-managed";
 
 export const KEYCHAIN_SERVICE = "Claude Code-credentials";

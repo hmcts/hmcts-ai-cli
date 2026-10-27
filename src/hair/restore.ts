@@ -10,30 +10,20 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
 /**
  * Pure over the three things worth knowing about a registered session: whether anything
  * closed it, whether the directory it belongs to is still there, and whether the process
- * that owned it is still running. First match wins, the same shape as `lockDecision` in
- * src/container/lock.ts.
- *
- * A live pid is *not* a restore candidate. `claude -r` on a running session forks a copy
- * of the conversation rather than attaching to it, so resuming one would hand the
- * engineer a duplicate instead of the session they lost. An unanswerable pid is left
- * alone too — the same rule the transcript lock follows, for the same reason.
+ * that owned it is still running. First match wins. A live pid is *not* a candidate, because
+ * `claude -r` on a running session forks a copy of it; nor is an unanswerable one.
  */
 export function restoreDecision(input: { record: SessionRecord; now: number; cwdExists: boolean; alive: boolean | null }): RestoreOutcome {
   if (input.record.state !== "open") {
     return { action: "skip", reason: "the session was closed cleanly" };
   }
   if (retired(input.record, input.now)) {
-    // Ahead of the probes, and the reason nothing probed it: a retired record costs no
-    // `ps` and no `stat`. `claude -r` still finds the conversation; this only stops `hair`
-    // offering it unasked.
+    // Ahead of the probes, so a retired record costs no `ps` and no `stat`.
     return { action: "skip", reason: `nothing has touched it for ${days(input.now - input.record.at)} days, so it is not a conversation to hand back` };
   }
   if (!input.cwdExists) {
-    // Decided here, before any claim is taken. `process.chdir` throws on a missing
-    // directory, and a worktree or a clone being deleted under a registered conversation
-    // is routine — so a claim taken first and a chdir that then throws would end `hair`
-    // with the claim held, and the next run would reclaim the same record and fail again,
-    // for every conversation, until someone hand-edited the registry.
+    // Decided before any claim is taken: `process.chdir` throws on a missing directory, and
+    // a claim held by a run that then threw would have every later `hair` reclaim and fail.
     return { action: "skip", reason: `its directory ${input.record.cwd} is gone, so there is nowhere to resume it` };
   }
   if (input.alive === true) {
@@ -46,21 +36,10 @@ export function restoreDecision(input: { record: SessionRecord; now: number; cwd
 }
 
 /**
- * Exact cwd match first, then most recent first. Most of the engineer's terminals share a
- * directory, so cwd is a preference and not a filter: a restored terminal takes a waiting
- * conversation whatever directory it belongs to, rather than starting a fresh session and
- * leaving one stranded.
- *
- * Within that, the newest goes first, because nothing retires an open record. A
- * conversation stepped out of with an interactive `/resume` stays open by design (see
- * `CONVERSATION_OVER_REASONS`), and one abandoned three weeks ago was never cleanly ended
- * either, so the pile of candidates drifts above the number of terminals and never
- * shrinks. Oldest-first handed each terminal the stalest thing in it — an engineer with
- * ten tabs got ten conversations from weeks ago while the ten they actually had open sat
- * unclaimed behind them, which is the opposite of giving back what was open. Newest-first
- * hands back the conversations that were live most recently, which are overwhelmingly the
- * ones that were on screen, and lets the stale ones sink to the bottom where they cost
- * nothing.
+ * Exact cwd match first, then most recent first. cwd is a preference and not a filter: a
+ * restored terminal takes a waiting conversation whatever directory it belongs to, rather
+ * than starting fresh and leaving one stranded. Newest-first because only `RESTORE_WINDOW_MS`
+ * retires an open record, so the pile of candidates is larger than the number of terminals.
  */
 export function restoreCandidates(input: {
   records: SessionRecord[];
@@ -97,42 +76,22 @@ export function describeCandidate(record: SessionRecord, cwd: string): string {
 }
 
 /**
- * One record with its name read from the conversation's own transcript, which is where
- * Claude Code keeps it. **This is the only read of a title anywhere**: the hook writes
- * nothing but the argv `-n`, because a scan here is one conversation per terminal while a
- * scan in the hook was one per prompt — 402 ms of it on a 198 MB conversation.
- *
- * So the transcript wins and the record's `name` is the fallback. That fallback's only real
- * case is a transcript that is **not there** — deleted since the registration, or filed
- * where `findProjectDir` cannot find it. It is *not* the `-n/--name` case: measured, a
- * session started as `claude -n X` has `{"type":"custom-title","customTitle":"X"}` as line 1
- * of its transcript, written before the first prompt, so `readSessionTitle` answers for it.
- *
- * Keyed on the `slug` the record carries, and otherwise on a scan of the project directories
- * for the session's own transcript — which is every record written before the slug was
- * recorded. Read-only: the transcripts are Claude Code's own store and hai never writes
- * them.
+ * One record with its name read from the conversation's own transcript, which is where Claude
+ * Code keeps it, and from the record's `name` only when there is no transcript to read. The
+ * transcript is found by the recorded `slug`, otherwise by scanning the project directories.
+ * Read-only: the transcripts are Claude Code's own store and hai never writes them.
  */
 export async function resolveName(deps: { fs: Fs; env: Env }, record: SessionRecord): Promise<SessionRecord> {
   const name = (await readSessionTitle(deps, { slug: record.slug, sessionId: record.sessionId })) ?? record.name;
   // Left byte-identical when nothing resolved, rather than given a `name: undefined` the
-  // record never carried — the same "absent rather than empty" rule `parseRecord` follows.
+  // record never carried.
   return name === undefined ? record : { ...record, name };
 }
 
 /**
- * Every candidate's name, which is what `hair --list` needs and only `hair --list`. The bare
- * form resolves the **claimed** record alone, because that is the only name it uses: each
- * candidate costs a full streamed transcript pass — 402 ms on the 199 MB conversation here —
- * and after a reboot every restoring terminal was paying one per candidate, before the claim
- * was even taken, to use exactly one of the answers.
- *
- * Moving the resolution after the claim cannot change which conversation is claimed: the
- * candidate order is `rank(cwd)`, then `at`, then `sessionId`, and the name is not an input
- * to any of them. What it does mean is that the list and the bare form read the same
- * transcript the same way rather than sharing one array, so `describeCandidate` still
- * renders a name `resolveName` has already settled and the top line of `hair --list` is
- * still the conversation `hair` would take, under the name it would take it under.
+ * Every candidate's name, which is what `hair --list` needs and only `hair --list` — the bare
+ * form resolves the claimed record alone, each candidate costing a full streamed transcript
+ * pass. Safe either way because the candidate order does not depend on a name.
  */
 export async function resolveNames(deps: { fs: Fs; env: Env }, candidates: SessionRecord[]): Promise<SessionRecord[]> {
   const resolved: SessionRecord[] = [];
@@ -143,27 +102,14 @@ export async function resolveNames(deps: { fs: Fs; env: Env }, candidates: Sessi
 }
 
 /**
- * How a record's pid can be asked about at all, pure over where it was written and where
- * we are standing. A pid only means something in its own PID namespace, and the two
- * halves of this feature are routinely in different ones: the hook runs inside the
- * container session and records its `CLAUDE_PID`, while `hair` may run on the host, where
- * `buildDockerArgs` passes no `--pid=host`. Both directions of that mistake bite. A
- * container pid that happens to exist on the host — low pids are kernel threads, and
- * after a reboot they are exactly the numbers that come back — hides a crashed
- * conversation for good; a container pid absent on the host reads as gone, so `hair`
- * claims a *live* session and `claude -r` forks it, which is the one outcome this whole
- * design exists to prevent.
- *
- * So: the pid is probed only when the record was written where we are standing.
- * Otherwise, a record that names the hai container it ran in can still be answered
- * definitively through Docker — a container that is gone took its session with it, which
- * is what makes the bare-host flow work at all, since a reboot removes every one of them.
- * Anything else is unanswerable, and `restoreDecision` already leaves those alone.
+ * How a record's pid can be asked about at all, pure over where it was written and where we
+ * are standing. A pid means nothing outside its own PID namespace and the hook recording one
+ * routinely runs in a different one from the `hair` reading it, so: `ps` only when the record
+ * was written here, Docker when it names a hai container, and nothing otherwise.
  */
 export function livenessPlan(input: { record: SessionRecord; host: string | undefined }): LivenessPlan {
   if (input.record.pid === 0) {
-    // A registration hai could not read a CLAUDE_PID for. Nothing to ask, and "no pid" is
-    // not "no process": the session may well be the one running in this very terminal.
+    // "No pid" is not "no process": the session may be the one running in this very terminal.
     return { probe: "none", reason: "the registration recorded no owning pid" };
   }
   if (input.record.host !== undefined && input.record.host === input.host) {
@@ -176,11 +122,8 @@ export function livenessPlan(input: { record: SessionRecord; host: string | unde
 }
 
 /**
- * Only the records `keptRecords` says are worth anything: a tombstone's pid is never asked
- * about, nor a retired record's, and `restoreDecision` discards both ahead of liveness
- * anyway. One sequential `ps` per record adds up, and bounding this list is most of why
- * open records are retired at all — without it the probe count is every conversation the
- * engineer has ever had, for ever, on every `hair --list`.
+ * Only the records `keptRecords` says are worth anything: one sequential `ps` per record
+ * adds up, and bounding this list is most of why open records are retired at all.
  */
 export async function probeLiveness(
   deps: { runner: Runner; logger: { verbose(message: string): void }; host: string | undefined; now: number },

@@ -22,14 +22,8 @@ export const CONTAINER_GID = 1000;
 export const ADD_HOST = "idam-simulator:127.0.0.1";
 
 /**
- * The whole `docker run` argv, as one pure function over gathered facts, so every
- * decision in it is snapshot-testable per platform and route — and so the "no secret ever
- * reaches the container config" guarantee is a test rather than a habit. No `-p`: ports
- * are published by the watcher's sidecars, as the session turns out to listen on them.
- *
- * No secret can reach it: the context holds none. They go in on a `docker exec` stdin,
- * because anything in --env or --env-file is readable afterwards with `docker inspect`
- * and is persisted in the container's config on disk.
+ * The whole `docker run` argv. No secret can reach it: anything in `--env` is readable
+ * afterwards with `docker inspect`, so credentials go in on a `docker exec` stdin.
  */
 export function buildDockerArgs(ctx: ContainerContext): string[] {
   const argv = [
@@ -38,13 +32,11 @@ export function buildDockerArgs(ctx: ContainerContext): string[] {
     "-d",
     "--name",
     ctx.sessionName,
-    // The nested daemon needs root; the interactive session execs back down to the image's user.
     "--user",
     "0:0",
     "--privileged",
     "--init",
-    // Its own network namespace. A second dockerd sharing the host's rewrites the host's
-    // docker0 and flushes the host daemon's iptables chains.
+    // Its own namespace: a second dockerd sharing the host's flushes the host daemon's iptables chains.
     "--network",
     ctx.network
   ];
@@ -64,8 +56,7 @@ export function buildDockerArgs(ctx: ContainerContext): string[] {
     `${ctx.secretsDir}:mode=0700,uid=${CONTAINER_UID},gid=${CONTAINER_GID}`,
     "--mount",
     renderMount({ kind: "volume", source: ctx.dockerVolume, target: NESTED_DOCKER_DIR }),
-    // At its own host path, so Claude Code's project slug — and so the transcript history
-    // and the lock that guards it — match a session run on the host.
+    // At its own host path, so Claude Code's project slug matches a session run on the host.
     "--mount",
     renderMount({ kind: "bind", source: ctx.repoPath, target: ctx.repoPath })
   );
@@ -80,20 +71,8 @@ export function buildDockerArgs(ctx: ContainerContext): string[] {
 }
 
 /**
- * The interactive session: a second exec, as the image's user, into the already-running
- * container.
- *
- * The route's own environment goes **here**, not on `docker run`. `--env` on a create is
- * create-time only, and `lockDecision` reattaches a second session to the container the
- * first one started — `sessionName` is a hash of the repo path, so two terminals in one
- * repo share it. A reattaching session would otherwise run under the *previous* session's
- * payer environment: `HAI_ROUTE=bedrock` reattaching to a `byol` container got its bearer
- * token (that arrives on this exec's stdin) with no `CLAUDE_CODE_USE_BEDROCK` to switch it
- * on and the first session's `HAI_UNSET_ENV` still in force, so `claude` fell back to the
- * bind-mounted `~/.claude` login — a personal session hai had just announced as HMCTS's.
- *
- * `ctx.sessionEnv` holds no secret: `splitEnv` keeps those for the exec stdin, and the
- * unset list is names only.
+ * The interactive session: a second exec, as the image's user. The route's environment goes
+ * here, not on the create, because a reattaching terminal must not inherit the first's payer.
  */
 export function buildSessionExecArgs(ctx: ContainerContext, claudeArgv: string[]): string[] {
   const argv = [DOCKER_BIN, "exec", "-i"];
@@ -141,9 +120,8 @@ export interface ContainerContext {
    */
   env: Record<string, string>;
   /**
-   * This session's own route environment — the open half of what `buildClaudeEnv` added,
-   * plus `HAI_UNSET_ENV`. On the session exec rather than the create, because a second
-   * terminal reattaches to the same container and must not inherit the first's payer.
+   * This session's own route environment — the open half of `buildClaudeEnv`'s, plus
+   * `HAI_UNSET_ENV`. On the session exec rather than the create: see `buildSessionExecArgs`.
    */
   sessionEnv: Record<string, string>;
 }

@@ -486,7 +486,7 @@ describe("createPortPublisher", () => {
   });
 
   it("should leave an ephemeral-range listener alone, so Testcontainers cannot accumulate sidecars", async () => {
-    // Arrange: one docker-proxy mapping per inner container, each on a random high port
+    // Arrange
     const churn = table(row("00000000", 41235), row("00000000", 41236));
     const seams = seamsIn({ env: { HOME, HAI_VERBOSE: "1" }, respond: respondWith(churn) });
     const tick = publisherIn(seams);
@@ -504,7 +504,7 @@ describe("createPortPublisher", () => {
   });
 
   it("should publish a port a nested container is forwarding, which is the cftlib case", async () => {
-    // Arrange: docker-proxy inside the session listens on 0.0.0.0 for each inner -p
+    // Arrange
     const nested = table(row("00000000", 5062), row("00000000", 4452), row("0100007F", 9876));
     const seams = seamsIn({ respond: respondWith(nested) });
     const tick = publisherIn(seams);
@@ -543,7 +543,7 @@ describe("startPortWatch", () => {
   });
 
   it("should empty the state as it starts, a session that publishes nothing leaving no stale URLs", async () => {
-    // Arrange: the previous session for this repo published 5062, and this one listens on nothing
+    // Arrange
     const seams = seamsIn({
       files: { [STATE_FILE]: '{"ports":[{"port":5062,"state":"published","url":"http://localhost:5062"}]}' },
       respond: respondWith(table())
@@ -669,7 +669,7 @@ describe("startPortWatch", () => {
   });
 
   it("should keep watching, so a server started later in the session is still published", async () => {
-    // Arrange: nothing is listening for the first two rounds
+    // Arrange
     let round = 0;
     const seams = seamsIn({
       respond: (argv) => {

@@ -28,11 +28,6 @@ describe("parseHairArgs", () => {
   });
 });
 
-/**
- * `hair -r abc` is a natural typo of `hai -r abc`. Without this it would claim an
- * unrelated conversation, emit `-r <claimed> -r abc`, open `abc` because claude takes the
- * last, and leave the claimed one held by a live pid that no other terminal could get past.
- */
 describe("forwardsItsOwnSession", () => {
   it.each<[string, string[]]>([
     ["-r with an id", ["-r", "abc"]],

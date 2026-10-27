@@ -5,20 +5,10 @@ import { STATE_DIR_MODE, STATE_FILE_MODE, stateDir, statePath, tryStatePath } fr
 
 export const CACHE_FILE = "auth.json";
 
-/**
- * Twelve hours, and it means it now that a cache hit no longer re-stamps `at`: a change of
- * group is picked up within a working day, for at most two `az rest` calls a day per
- * identity. Shortening it would mostly cost the people the block protects — each expiry is
- * a fresh Graph call, and a call az cannot make answers "unknown", which refuses the
- * personal routes outright. Delete this file to force a re-check sooner.
- */
+/** Twelve hours, so a change of group is picked up within a working day. */
 export const CACHE_TTL_MS = 12 * 60 * 60 * 1000;
 
-/**
- * Group membership only, keyed by the signed-in identity. A credential is never written
- * here, or anywhere else on disk. Only the default path reaches this at all: an explicit
- * `HAI_ROUTE` resolves no membership, so it asks `az` nothing and has nothing to cache.
- */
+/** Group membership only, keyed by the signed-in identity; a credential is never written here. */
 export async function readAuthCache(deps: { fs: Fs; env: Env; clock: Clock }, key: string): Promise<AuthCacheEntry | null> {
   const path = tryStatePath(deps.env, CACHE_FILE);
   const contents = path === null ? null : await deps.fs.readText(path);

@@ -1,11 +1,6 @@
 /**
  * The listening sockets inside the session container, read from its own /proc/net/tcp and
- * /proc/net/tcp6. This is cft-workspace's `scripts/lib/agent-hub/ports.mjs`, which reads the
- * same two tables inside a virtual agent's pod, ported to TypeScript.
- *
- * It is what catches the interesting case: when cftlib runs `docker compose` on the nested
- * daemon, each inner container's published port becomes a docker-proxy listener in the
- * session container's own network namespace, so it shows up here like any other server.
+ * /proc/net/tcp6. A nested container's published port appears here as a docker-proxy listener.
  */
 
 /** Below this are the privileged ports, which nothing in a CFT stack listens on. */
@@ -19,9 +14,8 @@ const IPV6_LOOPBACK = "00000000000000000000000001000000";
 const V4_MAPPED_PREFIX = "FFFF0000";
 
 /**
- * 127.0.0.11, Docker's embedded DNS, which is in every container on a user-defined network
- * and on a new ephemeral port each time. It is never a server the engineer started, so
- * reporting it as a loopback-only listener is noise and its "bind to 0.0.0.0" hint is wrong.
+ * 127.0.0.11, Docker's embedded DNS, on a new ephemeral port each time. Never a server the
+ * engineer started, so reporting it as a loopback-only listener is noise.
  */
 const DOCKER_DNS = "0B00007F";
 
@@ -40,9 +34,8 @@ export function parseProcNet(text: string): ProcNetSocket[] {
 }
 
 /**
- * `loopback` for 127.0.0.0/8, ::1 and ::ffff:127.x; otherwise `reachable`, which is to say
- * something outside the container can connect to it. The kernel prints each 32-bit word of
- * an address in host byte order, so 127.0.0.1 is 0100007F.
+ * `loopback` for 127.0.0.0/8, ::1 and ::ffff:127.x; otherwise `reachable`. The kernel prints
+ * each 32-bit word of an address in host byte order, so 127.0.0.1 is 0100007F.
  */
 export function addressKind(hex: string): "loopback" | "reachable" {
   if (hex.length === 8) {
@@ -73,8 +66,7 @@ export function listeners(sockets: ProcNetSocket[]): Listeners {
 
 /**
  * A port joins the set once seen on `appear` reads in a row and leaves it once missing from
- * `disappear` in a row, so a Gradle task that rebinds between ticks is not seen twice and a
- * port is never acted on from a single read of a table that was being written.
+ * `disappear` in a row, so none is acted on from a single read of a table being written.
  */
 export function createDebounce({ appear = APPEAR_READS, disappear = DISAPPEAR_READS } = {}): (current: number[]) => number[] {
   const ports = new Map<number, Sighting>();

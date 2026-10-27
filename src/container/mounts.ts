@@ -1,10 +1,6 @@
 import type { Env } from "../system/env.js";
 
-/**
- * The host's Docker socket, which the devcontainer shares and container mode must not:
- * the session runs its own engine, and handing it the host's would put every nested
- * container back on the host.
- */
+/** The host's Docker socket: the session runs its own engine, so sharing it would put every nested container back on the host. */
 export const DROPPED_MOUNT_SOURCES = ["/var/run/docker.sock"];
 
 /** `--network=host` is what makes a nested daemon rewrite the host's docker0 and iptables. */
@@ -13,12 +9,8 @@ export const DROPPED_RUN_ARGS = ["--network=host", "--network", "host"];
 export const DEFAULT_CONTAINER_USER = "hmcts";
 
 /**
- * What a repo with no devcontainer.json of its own gets: the same credential and cache
- * surface cft-workspace's devcontainer.json asks for, since it is the same image.
- *
- * ~/.claude goes in wholesale, which is what makes a claude.ai licence work in the
- * container with no plumbing: the credential, the settings and the transcripts are all
- * the host's own.
+ * What a repo with no devcontainer.json of its own gets. ~/.claude goes in wholesale, which
+ * is what makes a claude.ai licence work in the container with no plumbing.
  */
 export const DEFAULT_HOME_BINDS: { path: string; readonly?: boolean }[] = [
   { path: ".claude" },
@@ -66,9 +58,8 @@ export function defaultSpec(vars: SubstitutionVars): DevcontainerSpec {
 }
 
 /**
- * devcontainer.json is the authoritative list of what an engineer expects to find in the
- * container, so it is read rather than copied. Two things are deliberately dropped —
- * see DROPPED_MOUNT_SOURCES and DROPPED_RUN_ARGS.
+ * devcontainer.json is the authoritative list of what an engineer expects in the container.
+ * Two things are dropped — see DROPPED_MOUNT_SOURCES and DROPPED_RUN_ARGS.
  */
 export function parseDevcontainer(json: string, vars: SubstitutionVars): DevcontainerSpec | null {
   let parsed: DevcontainerJson;

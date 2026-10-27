@@ -25,9 +25,8 @@ export function stagingDecision(input: { wanted: Record<string, string>; staged:
 }
 
 /**
- * The scripts ship in the package and are copied into the state directory so there is a
- * host path to bind-mount at /opt/hai: node_modules is not somewhere to mount from, and a
- * global install may not even be readable by the container's user.
+ * Copied into the state directory so there is a host path to bind-mount at /opt/hai: a global
+ * install's node_modules may not even be readable by the container's user.
  */
 export async function stageRuntime(deps: { fs: Fs; env: Env }): Promise<string> {
   const dir = stagedRuntimeDir(deps.env);

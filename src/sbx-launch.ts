@@ -9,21 +9,14 @@ import type { Seams } from "./system/seams.js";
 import { findWorkspaceRoot } from "./workspace/workspace-root.js";
 
 /**
- * `sbx-hai`: the same contract as `hai` — every argument forwarded to `claude` verbatim,
- * the same self-update, the route resolved on the host — with the session running in a
- * Docker Sandboxes microVM instead of a container hai starts itself.
- *
- * The claude argv is *not* built here, unlike the other two backends: the kit's own launch
- * script execs `hai` with the arguments after the `--` and lets that resolve the route
- * inside the sandbox, so hai forwards the arguments and nothing else.
+ * `sbx-hai`: the same contract as `hai`, with the session in a Docker Sandboxes microVM. The claude
+ * argv is not built here — the kit's own launch script execs `hai` with the arguments after the `--`.
  */
 export async function launchSbx(deps: { seams: Seams; processArgv: string[] }): Promise<void> {
   const { seams } = deps;
   const forwarded = forwardArgv(deps.processArgv);
 
-  // sbx talks to a daemon on the host and starts a microVM there; there is nothing for it
-  // to talk to from inside a container. HAI_FORCE_HOST=1 is the way to exercise this path
-  // from a devcontainer, as it is for container mode.
+  // sbx talks to a daemon on the host, so there is nothing for it to reach from inside a container.
   const probe = await probeContainer(seams);
   if (isInContainer(probe)) {
     throw new Error(`sbx-hai runs on the host, not inside a container (${containerReasons(probe).join("; ")}). Docker Sandboxes is a host-only tool.`);
@@ -39,11 +32,8 @@ export async function launchSbx(deps: { seams: Seams; processArgv: string[] }): 
 }
 
 /**
- * Informational only. The route decides nothing here — the sandbox has its own credential
- * — and a host with no usable one must still be able to start a sandbox, so a resolution
- * that fails is reported rather than fatal. `decideOnly` keeps it to a decision: settling
- * the gateway would put a VPN probe and a private Key Vault read behind a verbose line, and
- * off the VPN it would announce a Bedrock fallback that `sbx-hai` forwards nothing of.
+ * Informational only: the sandbox has its own credential, so a resolution that fails is reported
+ * rather than fatal. `decideOnly` keeps it to a decision — no VPN probe and no Key Vault read.
  */
 async function routeNote(deps: { seams: Seams }): Promise<string> {
   try {

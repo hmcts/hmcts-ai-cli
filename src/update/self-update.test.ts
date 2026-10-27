@@ -4,7 +4,6 @@ import { PACKAGE_NAME, REGISTRY_ARG } from "./package-manager.js";
 import { maybeSelfUpdate, PACKUMENT_URL, packageRoot, readCurrentVersion, skipUpdateCheck } from "./self-update.js";
 
 const HOME = "/home/dev";
-/** The cache this used to keep. Still on people's machines, and never read again. */
 const STALE_CACHE_PATH = `${HOME}/.local/state/hai/update.json`;
 const CURRENT = "0.1.0";
 const LATEST = "0.2.0";
@@ -37,7 +36,7 @@ describe("readCurrentVersion", () => {
     // Act
     const version = await readCurrentVersion(createFakeSeams());
 
-    // Assert — the fake fs holds nothing, so this is the fallback.
+    // Assert
     expect(version).toBe("0.0.0");
   });
 
@@ -87,7 +86,7 @@ describe("skipUpdateCheck", () => {
 
 describe("the version check", () => {
   it("should read the feed anonymously, with no authorization header and no az call", async () => {
-    // Arrange — the feed allows anonymous reads, so nothing has to be minted first.
+    // Arrange
     const { requests, fetch } = feed(LATEST);
     const seams = createFakeSeams({ env: { HOME }, fetch, respond: installs });
 
@@ -137,7 +136,7 @@ describe("maybeSelfUpdate", () => {
   });
 
   it("should say nothing at all under HAI_UPDATED=1, so a broken release cannot loop", async () => {
-    // Arrange — the re-exec after an update, which must not check or install again.
+    // Arrange
     const seams = createFakeSeams({ env: { HOME, HAI_UPDATED: "1", HAI_VERBOSE: "1" }, fetch: feed(LATEST).fetch, respond: installs });
 
     // Act
@@ -169,13 +168,13 @@ describe("maybeSelfUpdate", () => {
     await maybeSelfUpdate({ seams, currentVersion: CURRENT });
     await maybeSelfUpdate({ seams, currentVersion: CURRENT });
 
-    // Assert — a cached answer is how a published release stays invisible for hours.
+    // Assert
     expect(requests.map((request) => request.url)).toEqual([PACKUMENT_URL, PACKUMENT_URL]);
     expect(seams.fs.store.has(STALE_CACHE_PATH)).toBe(false);
   });
 
   it("should ignore a leftover update.json from a version that cached", async () => {
-    // Arrange — the old cache said CURRENT was latest; the feed says otherwise.
+    // Arrange
     const { requests, fetch } = feed(LATEST);
     const cache = JSON.stringify({ at: FIXED_NOW, latest: CURRENT });
     const seams = createFakeSeams({ env: { HOME }, fetch, respond: installs, files: { [STALE_CACHE_PATH]: cache } });

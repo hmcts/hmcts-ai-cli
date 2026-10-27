@@ -19,10 +19,8 @@ export function parseAzAccount(stdout: string): AzAccount | null {
 }
 
 /**
- * Null when az cannot say who we are, which only costs us the cache. `user.name` is the
- * signed-in UPN rather than the directory object id: reading the oid needs a Graph
- * directory read that many HMCTS accounts are not granted, and the UPN is just as stable
- * a cache key.
+ * Null when az cannot say who we are. The cache key is `user.name`, the signed-in UPN, because
+ * reading the directory object id needs a Graph read many HMCTS accounts are not granted.
  */
 export async function readAzAccount(deps: { runner: Runner; env: Env }): Promise<AzAccount | null> {
   const result = await deps.runner.run(["az", "account", "show", "-o", "json"], {

@@ -95,12 +95,6 @@ describe("registrationHooks", () => {
   });
 });
 
-/**
- * Resolved from this module's own realpath'd location, never from `process.argv[1]`:
- * argv[1] is the path as invoked, which for a global install is the bin **symlink**
- * (`<prefix>/bin/hair`, no `.js`), so anything inferring a sibling path or an identity
- * from it is reading the wrong string.
- */
 describe("binPath", () => {
   it.each<[string]>([[HAIR_BIN], [HAI_BIN]])("should resolve %s next to this module, not next to argv[1]", (bin) => {
     // Act

@@ -121,13 +121,6 @@ describe("compacted", () => {
     expect(compacted([open(), open({ sessionId: "b", state: "closed" })], FIXED_NOW)).toBe(recordLine(open()));
   });
 
-  /**
-   * Only an allow-listed reason writes a tombstone now, so every signal-killed session and
-   * every `/resume` departure is open for ever unless something retires it. Without this
-   * the file never shrinks, `probeLiveness` spawns a `ps` per record on every `hair --list`
-   * for the rest of the engineer's career, and an open set past the threshold makes a
-   * compaction unable to drop anything at all.
-   */
   it("should drop an open record nothing has touched inside the window, nothing else retiring one", () => {
     // Arrange
     const fresh = open({ sessionId: "yesterday", at: FIXED_NOW - DAY });
@@ -147,13 +140,6 @@ describe("compacted", () => {
   });
 });
 
-/**
- * The rewrite is the one operation that can lose a concurrent append, so it has to stay
- * rare. A length test alone was enough while every conversation ended in a tombstone; with
- * open records permanent it is not, because an open set bigger than the threshold leaves
- * `lines >= COMPACTION_THRESHOLD` true while the rewrite drops nothing — and the rewrite
- * would then run on every single hook.
- */
 describe("shouldCompact", () => {
   it.each<[string, number, number, boolean]>([
     ["a short file, whatever it would keep", COMPACTION_THRESHOLD - 1, 1, false],
@@ -207,11 +193,6 @@ describe("the registry's I/O", () => {
     expect([...seams.fs.store.keys()].filter((key) => key.endsWith(".tmp"))).toEqual([]);
   });
 
-  /**
-   * One shared `.tmp` would let two sessions compacting at once write different content
-   * to the same path before either renamed it — the half-written file the rename exists to
-   * rule out.
-   */
   it("should write to a temporary file of its own, not one every session shares", async () => {
     // Arrange
     const seams = createFakeSeams({ env: { HOME }, pid: 4242 });

@@ -8,9 +8,8 @@ const AZ_TIMEOUT_MS = 30_000;
 const FALLBACK_LIFETIME_MS = 30 * 60 * 1000;
 
 /**
- * `az account get-access-token` has reported expiry two ways across CLI versions:
- * `expires_on` as epoch seconds, and `expiresOn` as a local-time string. Handle both,
- * and fall back to a short lifetime rather than treating an unknown shape as expired.
+ * az reports expiry as either `expires_on` (epoch seconds) or `expiresOn` (a local-time string)
+ * depending on CLI version; an unknown shape falls back to a short lifetime, not to expired.
  */
 export function parseAzToken(stdout: string, now: number): AzToken {
   const parsed = JSON.parse(stdout) as { accessToken?: string; expires_on?: unknown; expiresOn?: unknown };

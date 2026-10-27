@@ -1,8 +1,4 @@
-/**
- * The shared HMCTS Azure Artifacts feed; `hai` is not published to npmjs.org. Reads are
- * anonymous — the packument and the tarballs need no credential — so this doubles as the
- * `--registry` the install is given. Only publishing needs a PAT, and that is CI's job.
- */
+/** The shared HMCTS Azure Artifacts feed; `hai` is not published to npmjs.org. Reads are anonymous, so this doubles as the install's `--registry`. */
 export const FEED_URL = "https://pkgs.dev.azure.com/hmcts/Artifacts/_packaging/hmcts-lib/npm/registry/";
 
 /** The canonical npm form: the scope separator is encoded so a scoped name stays one path segment. */

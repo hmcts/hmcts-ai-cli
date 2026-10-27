@@ -11,10 +11,7 @@ const SESSION = "hai-hmcts-7293fcec";
 const LOCK = `${HOME}/.claude/projects/-home-linus-Work-solirius-hmcts/.hai.lock`;
 const BEDROCK_KEY = "ABSKQmVkcm9jay1mYWtlLWtleS0wMDAwMDAwMDAw";
 const ACR_TOKEN = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.fake-acr-token.sig";
-/**
- * Container mode's session-registry hooks. `hair` on PATH rather than an absolute path:
- * hai's own install is a host path this container cannot see.
- */
+/** `hair` on PATH rather than an absolute path: hai's own install is a host path this container cannot see. */
 const HOOKS =
   `"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"'hair' hook UserPromptSubmit"}]}],` +
   `"SessionEnd":[{"hooks":[{"type":"command","command":"'hair' hook SessionEnd"}]}]}`;
@@ -81,17 +78,13 @@ describe("runContainerMode", () => {
   });
 
   it("should carry this session's route environment and unset names on the exec, not the create", async () => {
-    // Arrange — `docker run --env` is create-time only and a second terminal in the same
-    // repo reattaches to this container, so anything the payer depends on has to be per
-    // session: terminal 2 on HAI_ROUTE=bedrock would otherwise run under terminal 1's byol
-    // environment, with its Bedrock key arriving but no CLAUDE_CODE_USE_BEDROCK to use it.
+    // Arrange
     const seams = seamsIn();
 
     // Act
     await runContainerMode(input(seams)).catch(() => undefined);
 
-    // Assert — names only for the unset list, so it is open rather than a secret, and the
-    // entrypoint unsets them before it exports anything hai delivered.
+    // Assert
     const session = seams.runner.interactiveCalls[0]?.argv.join(" ") ?? "";
     expect(session).toContain(`--env HAI_UNSET_ENV=${conflictingEnv("bedrock").join(",")}`);
     expect(session).toContain("--env CLAUDE_CODE_USE_BEDROCK=1");
@@ -217,10 +210,7 @@ describe("runContainerMode", () => {
   });
 
   it("should run a reattached session under its own route, not the one that created the container", async () => {
-    // Arrange — the hole: terminal 1 resolved byol in this repo, terminal 2 runs
-    // HAI_ROUTE=bedrock in the same repo and reclaims the lock, because `sessionName` is a
-    // hash of the repo path. No `docker run` happens at all for terminal 2, so anything its
-    // payer depends on has to arrive on the exec.
+    // Arrange
     const seams = seamsIn(
       {},
       {},
@@ -232,7 +222,7 @@ describe("runContainerMode", () => {
     // Act
     await runContainerMode(input(seams)).catch(() => undefined);
 
-    // Assert — its own switch and its own unset list, with no create to have carried them.
+    // Assert
     const session = seams.runner.interactiveCalls[0]?.argv.join(" ") ?? "";
     expect(seams.runner.calls.filter((call) => call.argv[1] === "run")).toEqual([]);
     expect(session).toContain("--env CLAUDE_CODE_USE_BEDROCK=1");

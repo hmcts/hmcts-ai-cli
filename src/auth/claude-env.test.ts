@@ -88,7 +88,7 @@ describe("buildClaudeEnv", () => {
 
   describe("byol", () => {
     it("should set no Bedrock variables, which would override the OAuth credential", () => {
-      // Act — handed every other credential there is, to prove none of them is injected.
+      // Act
       const added = buildClaudeEnv({ env: {}, route: "byol", bedrockKey: BEDROCK_KEY, claudeToken: CLAUDE_TOKEN, gateway: GATEWAY });
 
       // Assert
@@ -96,8 +96,7 @@ describe("buildClaudeEnv", () => {
     });
 
     it("should carry over an exported CLAUDE_CODE_OAUTH_TOKEN, which a container gets no other way", () => {
-      // Act — container mode hands claude only what this returns, so `{}` left a byol
-      // session on the bind-mounted ~/.claude login instead of the exported token.
+      // Act
       const added = buildClaudeEnv({ env: { CLAUDE_CODE_OAUTH_TOKEN: CLAUDE_TOKEN }, route: "byol" });
 
       // Assert
@@ -115,7 +114,7 @@ describe("buildClaudeEnv", () => {
 
   describe("agent-hub", () => {
     it("should set the hub's Claude token and nothing else", () => {
-      // Act — the Bedrock variables would override it, which is why byol adds none either.
+      // Act
       const added = buildClaudeEnv({ env: {}, route: "agent-hub", bedrockKey: BEDROCK_KEY, claudeToken: CLAUDE_TOKEN, gateway: GATEWAY });
 
       // Assert
@@ -123,8 +122,7 @@ describe("buildClaudeEnv", () => {
     });
 
     it("should refuse to build an agent-hub environment with no token", () => {
-      // Act / Assert — one credential from one source: no silent fall back to the login on
-      // this machine, which is a different licence and a different bill.
+      // Act / Assert
       expect(() => buildClaudeEnv({ env: {}, route: "agent-hub" })).toThrow("needs the Claude token agent-hub holds for you");
     });
   });
@@ -144,12 +142,12 @@ describe("buildClaudeEnv", () => {
     });
 
     it.each(ROUTES)("should remove ANTHROPIC_API_KEY and ANTHROPIC_AUTH_TOKEN on %s, which no route of ours uses", (route) => {
-      // Assert — either would quietly take precedence over the credential that pays.
+      // Assert
       expect([...conflictingEnv(route)]).toEqual(expect.arrayContaining(["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"]));
     });
 
     it.each(ROUTES)("should never remove what the %s route sets", (route) => {
-      // Arrange — every credential to hand, so each route injects its full set.
+      // Arrange
       const added = buildClaudeEnv({
         env: { CLAUDE_CODE_OAUTH_TOKEN: CLAUDE_TOKEN },
         route,
@@ -168,8 +166,7 @@ describe("buildClaudeEnv", () => {
     it.each(
       ROUTES.flatMap((route) => ["AWS_REGION", ...Object.keys(DEFAULT_MODELS)].map((name) => [route, name] as [Route, string]))
     )("should leave %s's %s alone, a tuning knob rather than a payer fact", (route, name) => {
-      // Assert — per name, because `arrayContaining` over a list only fails when *every*
-      // one of them is present: AWS_REGION added on its own used to pass.
+      // Assert
       expect(conflictingEnv(route)).not.toContain(name);
     });
 
@@ -178,16 +175,12 @@ describe("buildClaudeEnv", () => {
       ["agent-hub", "ANTHROPIC_BEDROCK_BASE_URL"],
       ["bedrock", "ANTHROPIC_BEDROCK_BASE_URL"]
     ])("should clear the Bedrock base url on %s, because the header carries the key but the url does the routing", (route, name) => {
-      // Assert — a shell carrying cft-workspace's old gateway quadruple otherwise kept a
-      // url pointing at the AI Gateway while the APIM key was stripped: every request
-      // reached APIM unauthenticated and 401d with nothing explaining why.
+      // Assert
       expect(conflictingEnv(route)).toContain(name);
     });
 
     it("should leave the Bedrock base url on ai-gateway, the one route that sets one itself", () => {
-      // Assert — `existingOr` there is the single documented way to point a route at a
-      // custom endpoint; nothing in the environment can tell a deliberate url from a
-      // leftover, so the route that owns the variable is the only place to answer it.
+      // Assert
       expect(conflictingEnv("ai-gateway")).not.toContain("ANTHROPIC_BEDROCK_BASE_URL");
       expect(
         buildClaudeEnv({ env: { ANTHROPIC_BEDROCK_BASE_URL: "https://local/bedrock" }, route: "ai-gateway", gateway: GATEWAY }).ANTHROPIC_BEDROCK_BASE_URL
@@ -195,8 +188,7 @@ describe("buildClaudeEnv", () => {
     });
 
     it.each(ROUTES)("should clear ANTHROPIC_BASE_URL on %s, which no route of ours uses", (route) => {
-      // Assert — an inherited one would send a personal OAuth token to a third-party
-      // endpoint on byol, and is meaningless on the rest.
+      // Assert
       expect(conflictingEnv(route)).toContain("ANTHROPIC_BASE_URL");
     });
   });

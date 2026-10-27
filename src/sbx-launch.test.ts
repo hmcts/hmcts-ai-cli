@@ -126,9 +126,7 @@ describe("launchSbx", () => {
   });
 
   it("should report a group member's route without reading the Key Vault or warning about a fallback it forwards nothing of", async () => {
-    // Arrange — a member, and the note is verbose-only: settling the gateway for it would
-    // read a private Key Vault, write an apiKeyHelper and, off the VPN, say out loud that
-    // hai fell back to a Bedrock key, none of which reaches the sandbox.
+    // Arrange
     const seams = createFakeSeams({
       env: { HOME, HAI_NO_UPDATE: "1", HAI_VERBOSE: "1" },
       cwd: WORKSPACE,
@@ -156,8 +154,7 @@ describe("launchSbx", () => {
   });
 
   it("should start the sandbox anyway when no route resolves on this host", async () => {
-    // Arrange — no credential anywhere and not in the Bedrock group, which is fatal for
-    // hai and must not be here: sbx binds the sandbox's credential itself.
+    // Arrange
     const seams = createFakeSeams({
       env: { HOME, HAI_NO_UPDATE: "1", HAI_VERBOSE: "1" },
       cwd: WORKSPACE,

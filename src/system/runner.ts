@@ -33,8 +33,7 @@ export function createRunner({ exit = defaultExit, echo = defaultEcho }: { exit?
         });
 
         // A failure to spawn reads as a non-zero exit rather than a rejection: every caller
-        // treats "az is missing" and "az said no" the same way, and a probe that throws
-        // would have to be wrapped at every call site.
+        // treats "az is missing" and "az said no" the same way.
         child.on("error", (err: Error) => {
           resolve({ code: SPAWN_FAILED_CODE, stdout, stderr: err.message });
         });
@@ -81,8 +80,7 @@ export function createRunner({ exit = defaultExit, echo = defaultEcho }: { exit?
         });
         child.on("close", (code) => {
           try {
-            // Node cannot replace its own process image, so the nearest thing is to
-            // wait and leave with the child's status.
+            // Node cannot replace its own process image, so wait and leave with the child's status.
             exit(code ?? SIGNALLED_CODE);
           } catch (err) {
             reject(err);
@@ -116,9 +114,7 @@ export interface RunOptions {
   env?: Record<string, string>;
   /**
    * Also write the child's output onward as it arrives, while still capturing it for the
-   * result: a long command has to show that it is doing something, and callers that parse
-   * what it said still can. It goes to stderr, because stdout is hai's own parseable
-   * output and the terminal is about to be handed over.
+   * result. It goes to stderr, because stdout is hai's own parseable output.
    */
   echo?: boolean;
 }
@@ -131,17 +127,11 @@ export interface RunResult {
 
 export interface Runner {
   run(argv: string[], opts?: RunOptions): Promise<RunResult>;
-  /**
-   * Hands the terminal over the same way `exec` does, but comes back with the child's
-   * status instead of leaving: container mode has a container to remove and a lock to
-   * release once the session ends.
-   */
+  /** Hands the terminal over as `exec` does, but comes back with the child's status. */
   interactive(argv: string[], opts?: Pick<RunOptions, "cwd" | "env">): Promise<number>;
   /**
    * Hands the terminal to another process and does not come back: the returned promise
-   * only ever rejects, when the process could not be started at all. Node cannot replace
-   * its own image the way execve does, so this spawns with inherited stdio and exits with
-   * the child's status once it is done.
+   * only ever rejects, when the process could not be started at all.
    */
   exec(argv: string[], opts?: Pick<RunOptions, "cwd" | "env">): Promise<never>;
 }

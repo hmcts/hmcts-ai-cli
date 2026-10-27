@@ -2,7 +2,6 @@ export function createEnv(): Env {
   return { ...process.env };
 }
 
-/** An HAI_* flag is on only when it is exactly "1", so `HAI_OFFLINE=0` reads as off. */
 export function isEnabled(env: Env, name: string): boolean {
   return env[name] === "1";
 }

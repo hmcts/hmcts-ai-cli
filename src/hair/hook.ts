@@ -10,12 +10,8 @@ export const USER_PROMPT_SUBMIT = "UserPromptSubmit";
 export const SESSION_END = "SessionEnd";
 
 /**
- * Measured on Claude Code 2.1.304: the hook's inherited environment is the only thing
- * that tells a conversation a human is driving from a script run. Nothing in the
- * `UserPromptSubmit` payload does — a `claude -p` run and an interactive session submit
- * byte-identical payloads — and `CLAUDE_CODE_ENTRYPOINT` does not either, because a
- * `--bg` session reports `cli` just as an attended one does. This variable was `1` for
- * the interactive session and `0` for both the `-p` and the `--bg` run.
+ * The only signal that tells a human-driven conversation from a script run: nothing in the
+ * `UserPromptSubmit` payload does, and `CLAUDE_CODE_ENTRYPOINT` reports `cli` for `--bg` too.
  */
 export const ATTENDED_ENV = "CLAUDE_CODE_SESSION_ATTENDED";
 
@@ -23,107 +19,33 @@ export const ATTENDED_ENV = "CLAUDE_CODE_SESSION_ATTENDED";
 export const OWNER_PID_ENV = "CLAUDE_PID";
 
 /**
- * The container hai started for this session, set as a `--env` in `src/container/run.ts`.
- * A pid recorded in there cannot be asked about from the host, but the container can, so
- * this is what a `hair` on the host reads a crashed container session from.
+ * The container hai started for this session, set as a `--env` in `src/container/run.ts`. A
+ * pid recorded in there cannot be asked about from the host, but the container can.
  */
 export const CONTAINER_ENV = "HAI_CONTAINER_NAME";
 
 /**
- * The `SessionEnd` reasons that mean the conversation itself is over, so its id is no
- * longer one to hand a terminal. Every other reason leaves the entry open.
- *
- * Measured on Claude Code 2.1.304: `SessionEnd` fires on a kill as well as on an exit,
- * reporting `other` — the same reason a finished `-p` run gives. Deregistering on every
- * reason therefore closed the entry of every session that was *killed*, which is exactly
- * the set the registry exists to hold: closing the editor stops the devcontainer, which
- * SIGTERMs every session in it, and after a restart `hair --list` reported "the session
- * was closed cleanly" about every conversation the engineer had had open.
- *
- * The reason field is a closed enum in 2.1.304 — `clear`, `resume`, `logout`,
- * `prompt_input_exit`, `other`, which is both what the hooks reference documents and what
- * the installed binary validates against. `bypass_permissions_disabled` was a sixth and
- * was removed in 2.1.234. Of the five:
- *
- * - `prompt_input_exit` (`/exit`) and `clear` (`/clear`) are the person finishing with
- *   that id — `/clear` ends it and starts a new one, so the old id is not a conversation
- *   to hand anyone.
- * - `other` is a kill, and also a finished `-p` run and a `claude stop` on a background
- *   one. Ignoring it costs nothing for those two, because neither ever registers — hai
- *   gates registration on `CLAUDE_CODE_SESSION_ATTENDED` — so there is no entry of theirs
- *   to leave behind.
- * - `logout` is **not** on the list, and the argument that it should be is the one to
- *   watch for, because it is nearly right: signing out is deliberate, so surely it is the
- *   person ending the session. It is deliberate about *credentials*. The conversation is
- *   untouched and entirely resumable, so an engineer who logs out and straight back in
- *   would find it tombstoned with nothing saying it had ever existed — the exact
- *   asymmetric loss the allow-list is for. Deliberateness is not the test; "done with this
- *   id" is, and `/logout` does not mean it.
- * - `resume` is not on it either, for the same distinction. An interactive `/resume` switch
- *   is deliberate but does not *end* the conversation it leaves; that conversation is still
- *   a real one worth handing back, and while its process lives `restoreDecision` keeps it
- *   out of the way anyway. What it costs is a candidate per switch, which `RESTORE_WINDOW_MS`
- *   is what retires.
- *
- * It is an allow-list rather than a deny-list of `other` because the two mistakes are not
- * symmetrical. A reason wrongly left open costs one stale line the next `hair` offers and
- * the engineer passes over; a reason wrongly deregistered costs the conversation, with no
- * trace that it ever existed. So a sixth reason a later Claude Code invents stays
- * recoverable until someone measures it.
+ * The `SessionEnd` reasons that mean the conversation itself is over, so its id is no longer
+ * one to hand a terminal. Every other reason leaves the entry open, `SessionEnd` firing on a
+ * kill too and reporting `other`. An allow-list, so a reason nobody has measured stays
+ * restorable: the test is "done with this id", not "deliberate".
  */
 export const CONVERSATION_OVER_REASONS: readonly string[] = ["prompt_input_exit", "clear"];
 
 /**
- * How stale a record's `at` has to be before a prompt restamps it. `at` is *last
- * activity*, not registration time, and this is the throttle that keeps it affordable.
- *
- * It had to become last-activity because the candidate order depends on it. Registration
- * time ranks the wrong conversation first in the ordinary case: A registered at 09:00 and
- * worked in all day, B registered at 16:30 with one question and left idle, both killed at
- * 17:30 — newest-registration-first hands back the one-question conversation and leaves
- * the day's work second, which is the opposite of handing back what was on screen.
- *
- * Restamping on *every* prompt would be a line per prompt, which `COMPACTION_THRESHOLD`
- * would then have to absorb, so it is throttled. Fifteen minutes is the trade: the
- * ordering can be wrong by at most the interval, which is far finer than the gaps it
- * exists to resolve (an hour, in the case above), and a session driven all day costs of
- * the order of thirty lines instead of one per prompt. Shorter buys precision nobody can
- * perceive at the price of running the one risky operation here more often; longer starts
- * losing the idle-versus-active distinction that is the whole point of ordering by
- * recency.
+ * How stale a record's `at` has to be before a prompt restamps it. `at` is *last activity*
+ * rather than registration time, because the candidate order is by recency; the throttle is
+ * what keeps that from costing a registry line per prompt.
  */
 export const ACTIVITY_REFRESH_MS = 15 * 60 * 1000;
 
 /**
  * Pure over the payload, the environment and what the registry already says. First match
- * wins.
- *
- * Registration is on the first `UserPromptSubmit`, not on `SessionStart`. After a reboot
- * every entry looks stale-open, so the registry is only useful if it holds conversations
- * a human actually drove — `SessionStart` fires for every subagent sweep, every `-p`
- * script run and every background job, including the one cft-workspace starts from a
- * `SessionStart` hook on every session, and a registry full of those is a registry nobody
- * can restore from.
- *
- * Deregistration is on `SessionEnd` and only for a `CONVERSATION_OVER_REASONS` reason.
- * The asymmetry is the point — an entry the person closed goes, an entry a kill ended
- * stays, so "still marked open" is the crash signal — but it only holds for the reasons
- * that mean the conversation is over, because `SessionEnd` fires on a kill too.
- *
- * **The hook reads no title.** What a record carries as `name` is the `-n/--name` hai read
- * off the argv and nothing else, because `resolveName` re-reads the conversation's own
- * transcript at restore time — transcript first, its last `custom-title` record over its
- * last `ai-title` one, the record's `name` only as the fallback — and that read is the one
- * the resumed `--name` and `hair --list` both come from. So a name in the registry is
- * overwritten at the only moment it is used, which leaves the record's value doing one job:
- * naming a conversation whose transcript is **not there** to be read. Not the `-n/--name`
- * case — measured, `claude -n X` writes a `custom-title` record as line 1 of the transcript
- * before the first prompt, so the transcript answers for that too. Reading a title here
- * bought nothing at the price of a full transcript scan on **every prompt** — 402 ms
- * measured on a 198 MB conversation, and on the throttled ignore path as well, the read
- * feeding the decision that then ignores the prompt. Do not put it back, and do not
- * reintroduce rename-detection in any form: there is nothing to detect, because the
- * registry's name is never what a restored tab is titled from.
+ * wins. Registration is on an attended `UserPromptSubmit` rather than `SessionStart`, which
+ * also fires for subagent sweeps, `-p` runs and background jobs; deregistration is on a
+ * `CONVERSATION_OVER_REASONS` `SessionEnd` alone, so "still marked open" is the crash signal.
+ * The hook reads no title: `name` is the argv `-n/--name`, and `resolveName` re-reads the
+ * conversation's own transcript at restore time anyway.
  */
 export function hookDecision(input: {
   event: string;
@@ -174,10 +96,8 @@ export function hookDecision(input: {
 }
 
 /**
- * A hook runs under a timeout and must never be what breaks a session, so every path
- * here swallows its error and returns: `hair hook` exits 0 whatever happened. A lost
- * registration costs the engineer one `claude -r` typed by hand; a hook that throws costs
- * them the prompt they were submitting.
+ * A hook must never be what breaks a session, so every path here swallows its error and
+ * returns: `hair hook` exits 0 whatever happened.
  */
 export async function runHook(
   deps: { fs: Fs; clock: Clock; env: Env; logger: Logger; hostname: string; pid: number; stdin(): Promise<string> },
@@ -201,13 +121,7 @@ export async function runHook(
     }
     if (outcome.action === "interrupted") {
       // Nothing is written: the entry stays exactly as it was, which is the crash signal.
-      // The claim does go, because the terminal that held it has ended too, and a
-      // conversation nobody is sitting in should not need a pid read to be offered again.
-      // `claimDecision` would reclaim it anyway, but only on `pidAlive` answering false
-      // about the pid `hair` itself had — and a devcontainer's PID namespace starts at 1
-      // again on every restart, so that is one needless draw against a reused number.
-      // Liveness is still the guard that stops a live session being forked: the registry
-      // entry carries the session's own pid and `restoreDecision` reads it.
+      // The claim goes, because the terminal holding it has ended too.
       await releaseClaim(deps, outcome.sessionId);
       return;
     }
@@ -250,9 +164,7 @@ function registration(input: { env: Env; name?: string; host: string; now: numbe
     ...field("host", input.host),
     ...field("container", input.env[CONTAINER_ENV]),
     // Recorded so `resolveName` can find the transcript at restore time without deriving
-    // the slug from a `cwd` that may have moved since. Pure: the payload hands it over, and
-    // `transcriptSlug` guards the type, so a payload whose `transcript_path` is not a string
-    // costs the slug rather than the whole registration.
+    // the slug from a `cwd` that may have moved since.
     ...field("slug", transcriptSlug(payload.transcript_path))
   };
 }
@@ -263,13 +175,9 @@ function field<K extends string>(key: K, value: string | undefined): Record<K, s
 }
 
 /**
- * The fields Claude Code 2.1.304 actually sends, measured — and a *description* of them
- * rather than a check on them: `parsePayload` casts, having established only that the JSON
- * was a non-array object, so anything reading a field here has to guard its own type.
- * `UserPromptSubmit` carries
- * `session_id`, `transcript_path`, `cwd`, `prompt_id`, `permission_mode`,
- * `hook_event_name` and `prompt`; `SessionEnd` carries `session_id`, `transcript_path`,
- * `cwd`, `prompt_id`, `hook_event_name` and `reason`. Neither carries the session's
+ * A *description* of the fields Claude Code sends rather than a check on them:
+ * `parsePayload` casts, having established only that the JSON was a non-array object, so
+ * anything reading a field here has to guard its own type. No payload carries the session's
  * `-n/--name`, which is why hai puts it on the hook's command line.
  */
 export interface HookPayload {
@@ -283,20 +191,15 @@ export interface HookPayload {
   transcript_path?: string;
   hook_event_name?: string;
   /**
-   * One of `prompt_input_exit`, `clear`, `resume`, `logout` and `other` — the whole enum
-   * in 2.1.304. `other` covers a kill as well as a finished `-p` run, which is why
-   * `CONVERSATION_OVER_REASONS` and not "any reason at all" decides a deregistration.
-   * Typed as a plain string because a later version may add to the set, and the point of
-   * the allow-list is that one it has never heard of still parses.
+   * Typed as a plain string rather than the enum, because a later version may add to the
+   * set and the point of the allow-list is that a reason it has never heard of still parses.
    */
   reason?: string;
 }
 
 /**
- * Four verdicts, because `SessionEnd` has two of its own and conflating them is what the
- * bug was. `interrupted` is "the session is over but the conversation is not": the entry
- * is left untouched and only the claim is released, so it carries the session id rather
- * than a record there is nothing to write.
+ * `interrupted` is "the session is over but the conversation is not": the entry is left
+ * untouched and only the claim is released, so it carries the session id and not a record.
  */
 export type HookOutcome =
   | { action: "ignore"; reason: string }

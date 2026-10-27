@@ -12,11 +12,8 @@ export const EPHEMERAL_LOW_FALLBACK = 32768;
 const LOOPBACK_ADDRESS = "127.0.0.1";
 
 /**
- * The whole rule, over whatever candidates it is given: a clashing port is left
- * unpublished, **never moved to another number**, because cftlib's IDAM simulator issues
- * and validates tokens under a fixed host and port, so XUI's sign-in redirect breaks as
- * soon as a port answers somewhere else. Each port is decided once — re-probing later
- * would only widen the window it cannot close anyway.
+ * A clashing port is left unpublished, never moved: cftlib's IDAM simulator issues and
+ * validates tokens under a fixed port, so XUI's sign-in redirect breaks if one moves.
  */
 export function selectPorts(probed: PortProbe[]): PortSelection {
   const publish: number[] = [];
@@ -32,10 +29,8 @@ export function selectPorts(probed: PortProbe[]): PortSelection {
 }
 
 /**
- * Docker's iptables chain bypasses the host firewall, so a published port answers anyone on
- * the network whatever ufw says, while the URL hai reports is `localhost`. The ports cftlib
- * publishes itself were already on 0.0.0.0; what is new is hai doing it for every port a
- * session turns out to listen on, so the default is loopback and HAI_PORTS_PUBLIC=1 opts out.
+ * Docker's iptables chain bypasses the host firewall, so a 0.0.0.0 mapping answers anyone on
+ * the network whatever ufw says. Loopback by default; HAI_PORTS_PUBLIC=1 opts out.
  */
 export function publishArg(port: number, isPublic: boolean): string {
   return isPublic ? `${port}:${port}` : `${LOOPBACK_ADDRESS}:${port}:${port}`;

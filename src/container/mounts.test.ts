@@ -5,10 +5,7 @@ const HOME = "/home/linus";
 const WORKSPACE = "/home/linus/Work/solirius/hmcts";
 const VARS = { env: { HOME }, workspaceFolder: WORKSPACE };
 
-/**
- * cft-workspace's own .devcontainer/devcontainer.json, trimmed to the keys container mode
- * reads. The mounts, runArgs, workspaceMount and containerUser are verbatim.
- */
+/** cft-workspace's own .devcontainer/devcontainer.json, trimmed to the keys container mode reads. */
 const DEVCONTAINER = `{
   "name": "cft-workspace",
   "image": "hmctsprod.azurecr.io/cft-workspace/devcontainer:latest",

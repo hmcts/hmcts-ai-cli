@@ -87,7 +87,7 @@ describe("hasAzSession", () => {
     ["a token can still be minted", 0, true],
     ["the refresh token has expired", 1, false]
   ])("should report %s", async (_name, code, expected) => {
-    // Arrange — az account show still answers once the refresh token is gone, so this asks for a token.
+    // Arrange
     const seams = createFakeSeams({ respond: () => ({ code }) });
 
     // Act / Assert
@@ -276,7 +276,7 @@ describe("pullImage", () => {
     // Act
     await pullImage(seams, { image, policy: "always" });
 
-    // Assert — the image is already here, so a failed pull is only worth a verbose line.
+    // Assert
     expect(pulls).toBe(2);
   });
 
@@ -292,7 +292,7 @@ describe("pullImage", () => {
   });
 
   it("should carry on with the cached image when an always-pull fails", async () => {
-    // Arrange — offline, VPN down or an expired az session, with the image already here.
+    // Arrange
     const seams = createFakeSeams({
       env: { HOME, HAI_VERBOSE: "1" },
       respond: (argv) => (argv[1] === "image" ? { code: 0 } : { code: 1, stderr: "dial tcp: lookup hmctsprod.azurecr.io: no such host" })

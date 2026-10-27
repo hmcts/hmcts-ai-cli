@@ -9,21 +9,12 @@ export const DEFAULT_AGENT_HUB_SCOPE = "api://dtsse-agent-hub/.default";
 
 const REQUEST_TIMEOUT_MS = 15_000;
 
-/**
- * The hub's own credential kinds, of which hai asks for two: the Bedrock API key the
- * `bedrock` route uses, and the `claude setup-token` output the `agent-hub` route uses.
- * The hub's `OWNER_READABLE` is `["bedrock", "claude_md", "git_identity"]`, so `claude` is
- * readable only by a virtual agent holding a launch token — an owner asking for it is
- * refused, and the `agent-hub` route fails saying so. Widening that is a change to the hub.
- */
+/** The hub credential kinds hai asks for: the `bedrock` route's API key and the `agent-hub` route's `claude setup-token` output. */
 export const CREDENTIAL_KINDS = ["bedrock", "claude"] as const;
 
 const credentialPath = (kind: CredentialKind) => `/api/agent/credentials/${kind}`;
 
-/**
- * agent-hub is reachable from the public internet, so nothing here is gated on the VPN
- * probe. A 404 on the credential means "none stored", not a failure.
- */
+/** agent-hub is reachable from the public internet, so nothing here is gated on the VPN probe; a 404 means "none stored". */
 export function createAgentHub(deps: { runner: Runner; net: Net; env: Env; clock: Clock }): AgentHub {
   const baseUrl = (deps.env.AGENT_HUB_URL ?? DEFAULT_AGENT_HUB_URL).replace(/\/+$/, "");
   const scope = deps.env.AGENT_HUB_SCOPE ?? DEFAULT_AGENT_HUB_SCOPE;

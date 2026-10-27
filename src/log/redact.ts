@@ -1,8 +1,5 @@
 export const MASK = "[redacted]";
 
-// Secret-shaped strings, borrowed from cft-workspace's scripts/lib/secret-patterns and
-// extended with the two shapes this CLI actually handles: a Bedrock bearer token and a
-// claude.ai OAuth token.
 const SECRET_PATTERNS: RegExp[] = [
   /-----BEGIN (?:RSA |EC |OPENSSH |)PRIVATE KEY-----[\s\S]*?-----END[^-]*-----/g,
   /eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)?/g,
@@ -20,19 +17,14 @@ const SECRET_ENV_KEYS = new Set([
   "CLAUDE_CODE_OAUTH_TOKEN",
   "ANTHROPIC_CUSTOM_HEADERS",
   "ANTHROPIC_API_KEY",
-  // No route of hai's sets this, but `conflictingEnv` clears it on all four, and whether a
-  // name hai clears was a credential or a switch is what decides whether that is said out
-  // loud or only under HAI_VERBOSE. It is a credential by definition.
+  // No route of hai's sets this, but it is a credential by definition and every route clears it.
   "ANTHROPIC_AUTH_TOKEN",
   "AGENT_HUB_LAUNCH_TOKEN"
 ]);
 
 /**
- * The one list of which environment variables hold a credential. Container mode splits the
- * route's environment on it: these go to the container on a `docker exec` stdin and the
- * rest as `--env` on the session's own exec, neither on `docker run --env`, where
- * `docker inspect` would read them back. It is also what decides whether a name hai
- * *clears* is said out loud or only under `HAI_VERBOSE`.
+ * The one list of which environment variables hold a credential. Container mode keeps these off
+ * `docker run --env`, where `docker inspect` would read them back, delivering them on a stdin.
  */
 export function isSecretEnvKey(name: string): boolean {
   return SECRET_ENV_KEYS.has(name);

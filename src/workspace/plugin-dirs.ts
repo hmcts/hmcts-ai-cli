@@ -17,10 +17,8 @@ export function parsePluginNames(list: string | undefined): string[] {
 }
 
 /**
- * Resolves AGENT_HUB_PLUGINS names through the workspace marketplace, exactly as
- * run.sh's add_plugin_dirs does. A name that is missing or whose directory has no plugin
- * manifest is skipped with a note — never fatal, because a stale tick on the hub should
- * not stop a session starting.
+ * Resolves AGENT_HUB_PLUGINS names through the workspace marketplace. A name that is missing
+ * or has no plugin manifest is skipped with a note: a stale hub entry must not stop a session.
  */
 export async function resolvePluginDirs(deps: { fs: Fs; logger: Logger; root: string; names: string[] }): Promise<string[]> {
   if (deps.names.length === 0) {
