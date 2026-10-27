@@ -105,22 +105,24 @@ export function describeCandidate(record: SessionRecord, cwd: string): string {
  * conversation whose title file has since been deleted lists and resumes under, and it is
  * the whole of the `-n/--name` case, where no file was ever written at all.
  *
- * Resolved once, here, because three things read the name: the tab title, the `--name` that
- * goes back on the argv, and `hair --list`. Resolving per consumer would let a
- * renamed-then-killed conversation list under its old name, resume with the old name on the
- * argv and set a tab title with the new one — inconsistent in precisely the case reading
- * the file exists for. Substituting into the record rather than returning a second map is
- * what makes that unavoidable: there is one name downstream, not a record's and a real one.
+ * Resolved once, here, because two things read the name: the `--name` that goes back on the
+ * argv — which is what Claude Code then sets the terminal tab title from — and
+ * `describeCandidate` in `hair --list`. Resolving per consumer would let a
+ * renamed-then-killed conversation list under its old name and come back under the new one,
+ * so the list would disagree with what `hair` had just done. Substituting into the record
+ * rather than returning a second map is what makes that unavoidable: there is one name
+ * downstream, not a record's and a real one.
  *
- * One read per *candidate*, which is a handful and not the registry, and it sits beside
- * `probeLiveness` and `probeDirs` because those already do per-candidate I/O over this same
- * list. Read-only: `custom-title.json` is Claude Code's private store and hai never writes
- * one.
+ * Keyed on the `slug` the record carries, falling back to its `cwd` for the records written
+ * before the slug was recorded. One read per *candidate*, which is a handful and not the
+ * registry, and it sits beside `probeLiveness` and `probeDirs` because those already do
+ * per-candidate I/O over this same list. Read-only: `custom-title.json` is Claude Code's
+ * private store and hai never writes one.
  */
 export async function resolveNames(deps: { fs: Fs; env: Env }, candidates: SessionRecord[]): Promise<SessionRecord[]> {
   const resolved: SessionRecord[] = [];
   for (const record of candidates) {
-    const name = (await readCustomTitle(deps, { cwd: record.cwd, sessionId: record.sessionId })) ?? record.name;
+    const name = (await readCustomTitle(deps, { slug: record.slug, cwd: record.cwd, sessionId: record.sessionId })) ?? record.name;
     // Left byte-identical when nothing resolved, rather than given a `name: undefined` the
     // record never carried — the same "absent rather than empty" rule `parseRecord` follows.
     resolved.push(name === undefined ? record : { ...record, name });

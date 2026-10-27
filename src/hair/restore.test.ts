@@ -312,8 +312,10 @@ describe("probeDirs", () => {
 
 describe("resolveNames", () => {
   const HOME = "/home/dev";
-  const titleOf = (cwd: string, sessionId: string) => customTitlePath({ HOME }, { cwd, sessionId })!;
+  const titleOf = (slug: string, sessionId: string) => customTitlePath({ HOME }, { slug, sessionId })!;
   const stored = (name: string) => JSON.stringify({ customTitle: name });
+  /** The slug `projectSlug` derives from the fixture record's `/work`, so the fallback finds it. */
+  const SLUG = "-work";
 
   /**
    * The registry's `name` is a cache of something Claude Code owns, and it can be up to
@@ -323,7 +325,7 @@ describe("resolveNames", () => {
    */
   it("should prefer the stored title over a record name that disagrees with it", async () => {
     // Arrange
-    const seams = createFakeSeams({ env: { HOME }, files: { [titleOf("/work", "a")]: stored("the renamed one") } });
+    const seams = createFakeSeams({ env: { HOME }, files: { [titleOf(SLUG, "a")]: stored("the renamed one") } });
 
     // Act
     const resolved = await resolveNames(seams, [record({ sessionId: "a", name: "the old one" })]);
@@ -334,7 +336,7 @@ describe("resolveNames", () => {
 
   it("should name a conversation the registry never had a name for, which is every record written before this", async () => {
     // Arrange
-    const seams = createFakeSeams({ env: { HOME }, files: { [titleOf("/work", "a")]: stored("hai-resume") } });
+    const seams = createFakeSeams({ env: { HOME }, files: { [titleOf(SLUG, "a")]: stored("hai-resume") } });
 
     // Act / Assert
     expect(await resolveNames(seams, [record({ sessionId: "a" })])).toEqual([record({ sessionId: "a", name: "hai-resume" })]);
@@ -346,8 +348,8 @@ describe("resolveNames", () => {
    */
   it.each<[string, Record<string, string>]>([
     ["no title file exists — either none was written or it has been deleted since", {}],
-    ["the title file is half-written", { [titleOf("/work", "a")]: '{"customTitle":' }],
-    ["the title file holds no usable name", { [titleOf("/work", "a")]: "{}" }]
+    ["the title file is half-written", { [titleOf(SLUG, "a")]: '{"customTitle":' }],
+    ["the title file holds no usable name", { [titleOf(SLUG, "a")]: "{}" }]
   ])("should fall back to the name the record holds when %s", async (_name, files) => {
     // Arrange
     const seams = createFakeSeams({ env: { HOME }, files });
@@ -370,14 +372,32 @@ describe("resolveNames", () => {
   });
 
   /**
+   * Claude Code fixes the slug when the session starts; the record's `cwd` is rewritten
+   * whenever the hook sees the session in a new directory. So a conversation that registered
+   * at a workspace root and then `cd`-ed into a worktree has a `cwd` that no longer says
+   * where its transcripts live, and only the recorded slug still finds the title.
+   */
+  it("should key on the recorded slug rather than on a cwd that has moved since", async () => {
+    // Arrange
+    const seams = createFakeSeams({ env: { HOME }, files: { [titleOf(SLUG, "a")]: stored("filed under the old directory") } });
+
+    // Act
+    const resolved = await resolveNames(seams, [record({ sessionId: "a", cwd: "/a-worktree-it-cd-ed-into", slug: SLUG })]);
+
+    // Assert
+    expect(resolved[0]!.name).toBe("filed under the old directory");
+  });
+
+  /**
    * One read per candidate, keyed on that candidate's own directory and id — a name read
-   * for the wrong conversation is worse than no name at all.
+   * for the wrong conversation is worse than no name at all. These records carry no slug,
+   * so they also exercise the `cwd` fallback the existing registry depends on.
    */
   it("should resolve each candidate against its own title file, in the order it was given", async () => {
     // Arrange
     const seams = createFakeSeams({
       env: { HOME },
-      files: { [titleOf("/work", "a")]: stored("the work one"), [titleOf("/other", "b")]: stored("the other one") }
+      files: { [titleOf(SLUG, "a")]: stored("the work one"), [titleOf("-other", "b")]: stored("the other one") }
     });
 
     // Act

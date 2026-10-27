@@ -125,27 +125,67 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
   interactive `/resume` switch is deliberate but does not *end* the conversation it leaves,
   and that conversation is still worth handing back. Do not add either back on the grounds
   that the engineer meant to do it; they did, and it is not the question.
+- **hai writes no terminal title, and must not start. `--name` *is* the title mechanism.**
+  Measured on Claude Code 2.1.304 with the TUI actually mounting (the reproduction is in the
+  measured-behaviour section below, and the `TERM`/`TERM_PROGRAM` part of it is what makes
+  the difference): `claude -n ZZNAMEPROBE` writes `ESC]0;⏳ ZZNAMEPROBE` at byte 142 of 2990
+  — at **startup** — rewrites it as the session's status changes, and clears it on exit. So
+  Claude Code sets the tab title itself, from the name on the argv, which `hair` already
+  passes. Two consequences, and either one on its own kills the idea of writing it from
+  here: anything hai wrote would be overwritten within about a second as the TUI mounts, and
+  there was never anything to add, because `-n` was already doing it. The binary carries
+  `terminalTitle: sessionTitle ?? aiSessionTitle ?? agentTitle ?? haikuTitle ?? "Claude Code"`
+  and a `terminalTitleFromRename` setting — that selector is what an outside write was trying
+  to pre-empt, and it is not ours to pre-empt.
+  **The earlier claim in this file was that Claude Code writes no title at startup, and it
+  was wrong.** It came from captures of `claude -r <id>` in which the TUI never mounted, so
+  the only `OSC 0` in the stream was the clear-on-exit at the very end; the same harness is
+  what produced "`-n` persists/sets nothing". A capture that does not mount the TUI measures
+  nothing about what the TUI does. Do not re-derive either claim without `TERM` and
+  `TERM_PROGRAM` set and the startup bytes in hand.
+  The only thing that was ever missing was a **name to put on the argv**, which is what the
+  two rules below are about.
 - **A record's `name` is the title `/rename` stored, and the argv `-n` only fills in.**
-  Measured on Claude Code 2.1.304: `-n/--name` persists nothing at all — `claude
-  --session-id <uuid> -n PROBENAME -p …` writes a transcript and no per-session directory —
-  so the registry's argv-derived name was empty for all 333 of one engineer's records and
-  `hair --list` said "(unnamed)" about every one of them. `/rename` *does* persist, at
-  `~/.claude/projects/<slug>/<session-id>/custom-title.json` as
-  `{"customTitle":"…"}`, and the hook payload's `session_id` and `cwd` are everything needed
-  to find it — `projectSlug` is the transform, the same one the transcript directory and the
-  lock use, verified against the directory names on this machine including a path with a dot
-  in it. Stored has to *win* rather than merely fill in, because `claimFirst` puts the
-  record's name back on the argv when it resumes: argv-first would re-assert the launch name
-  on every restore and a later `/rename` could never take effect. It is re-read on **every**
-  hook, not only at first registration, and a name that differs from the record's is its own
-  reason to re-register — `at` alone cannot catch it, because `ACTIVITY_REFRESH_MS` would
-  hold the old name for up to fifteen minutes and a session killed inside that window would
-  be handed back under it for ever. The comparison is against the record this hook *would
-  write*, not against the resolved name, so a value the registration normalises away cannot
-  read as a change on every single prompt. hai only ever **reads** `custom-title.json`:
-  creating or editing one would be writing into Claude Code's private store on its behalf,
-  and a format change would then be hai's bug to own. A missing or malformed one is a silent
-  no-name, because a hook never breaks a session.
+  `/rename` persists at `~/.claude/projects/<slug>/<session-id>/custom-title.json` as
+  `{"customTitle":"…"}`, and the hook payload's `session_id` and `transcript_path` are
+  everything needed to find it. It is read because `-n` is the only other source and almost
+  nobody passes it: the registry's argv-derived name was empty for all 333 of one engineer's
+  records and `hair --list` said "(unnamed)" about every one of them, so every restored
+  session came back with no `--name` and therefore no tab title. Stored has to *win* rather
+  than merely fill in, because `claimFirst` puts the record's name back on the argv when it
+  resumes: argv-first would re-assert the launch name on every restore and a later `/rename`
+  could never take effect. It is re-read on **every** hook, not only at first registration,
+  and a name that differs from the record's is its own reason to re-register — `at` alone
+  cannot catch it, because `ACTIVITY_REFRESH_MS` would hold the old name for up to fifteen
+  minutes and a session killed inside that window would be handed back under it for ever. The
+  comparison is against the record this hook *would write*, not against the resolved name, so
+  a value the registration normalises away cannot read as a change on every single prompt. hai
+  only ever **reads** `custom-title.json`: creating or editing one would be writing into
+  Claude Code's private store on its behalf, and a format change would then be hai's bug to
+  own. A missing or malformed one is a silent no-name, because a hook never breaks a session.
+- **The title path is keyed on `transcript_path`, not on `cwd`.** Claude Code fixes the
+  project slug when the session starts; the hook re-registers a session whose directory
+  changed, so a conversation that registers at a workspace root and later `cd`s into a
+  worktree rewrites its record's `cwd` and a slug derived from that stops matching where the
+  session is filed — and every later lookup misses for good. `transcript_path` is
+  `<…>/projects/<slug>/<session-id>.jsonl`, so `transcriptSlug` takes the slug out of a value
+  Claude Code hands us rather than computing one we do not own. **Be straight about the
+  evidence: this is latent, not active.** A review reported 2 of 6 open records already
+  missing and that did not reproduce — every open record's cwd-derived slug was compared
+  against where its transcript actually lives and none mismatched. The fix stands on removing
+  the derivation, not on an observed failure.
+  The **slug** is recorded and not the whole path, because `~/.claude` is bind-mounted into a
+  container session at a *different* absolute path (`$HOME/.claude` on the host,
+  `/home/hmcts/.claude` inside, per `DEFAULT_HOME_BINDS`), so a path written by a hook running
+  inside does not resolve for the `hair` reading it on the host. The slug carries no namespace
+  and the `~/.claude` root is recomposed by whoever reads it, the same way `registryPath` and
+  `claimPath` do. This is the path form of "a pid is never read across a PID namespace".
+  The `cwd` derivation **stays as a fallback**, for one reason that is not stylistic: no
+  record written before this carries a slug, those are killed sessions that will never fire
+  another hook to add one, and dropping the fallback would leave the existing registry
+  nameless for ever — the exact thing this branch set out to fix. It is safe to keep because
+  the session id is the *leaf* of the path, so a wrong slug names a directory that does not
+  exist: the derivation can only ever miss, never answer with another conversation's title.
 - **The registry's `name` is a cache, so the restore re-reads the file and the record is the
   fallback.** The hook is the only thing that writes a name into the registry, and it can be
   behind by up to `ACTIVITY_REFRESH_MS`: `/rename` at 16:55 and the container lost at 17:00
@@ -157,39 +197,19 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
   actually offers. So `resolveNames` reads the file again and the record's value is the
   fallback, which is exactly right for the two cases the file cannot answer: a title file
   deleted since the registration, and the `-n/--name` case where none was ever written.
-- **The name is resolved once, over the candidates, and all three consumers read that one
-  value.** Three things read it — the tab title, the `--name` that goes back on the argv, and
-  `describeCandidate` in `hair --list` — and resolving per consumer would let a
-  renamed-then-killed conversation list under its old name, resume with the old name on the
-  argv and set a tab title with the new one, which is precisely the case re-reading the file
-  exists for. `resolveNames` therefore substitutes into the record rather than returning a
-  second map, so there is one name downstream and not a record's and a real one;
-  `describeCandidate` stays pure and keeps taking it as data. It sits beside `probeLiveness`
-  and `probeDirs` because those already do per-candidate I/O over the same list, and it runs
-  on the **candidates**, not the registry: a handful of `readText` calls against a list that
-  has already had one `ps` spent on each of it. `hair --list` pays that cost too, because a
-  list that disagrees with what the bare form then does is the kind of thing nobody thinks to
-  check.
-- **The tab title is `OSC 0`, it is written before the handover, and it does not go through
-  the logger.** Measured on 2.1.304: Claude Code writes **no** title at startup — in two
-  captures of `claude -r <id>`, one of a session with a `customTitle` on disk and one
-  without, the only `OSC 0` in the stream sat at the very end and is the clear-on-exit — so
-  resuming restores nothing and every tab comes back under the shell's default. A title set
-  *before* the handover survives for the life of the session, so `claimFirst` winning is the
-  one moment at which it can be put back. The bytes are `ESC ] 0 ; <text> BEL`,
-  BEL-terminated, captured from a live session under a pty. `createLogger` redacts, prefixes
-  `hai: ` and appends a newline, every one of which corrupts an escape sequence, so this is
-  the one thing `hair` writes that is not a log line: it goes through `Seams.stdout`, which
-  is a verbatim `process.stdout.write`. The fact that was missing is `stdoutIsTty`, so the
-  gate and the destination are the same stream — `hair --list | grep` must come back with
-  lines and nothing else. Three suppressions and all three matter: no name leaves the
-  terminal alone rather than blanking it, a non-tty stdout writes nothing, and
-  `CLAUDE_CODE_DISABLE_TERMINAL_TITLE` is honoured as *set at all* rather than as `=1`,
-  because the variable is Claude Code's and the grammar of someone else's opt-out is not
-  hai's to narrow. Control characters are dropped out of the name: an OSC string runs to its
-  terminator, so a BEL in a title would cut the sequence short and leave the rest as input to
-  the terminal. `--name` still goes on the argv — per `claude --help` it feeds the prompt box
-  and the `/resume` picker — it is just not the title mechanism.
+- **The name is resolved once, over the candidates, and both consumers read that one value.**
+  Two things read it — the `--name` that goes back on the argv, which is what Claude Code
+  then titles the tab from, and `describeCandidate` in `hair --list`. Resolving per consumer
+  would let a renamed-then-killed conversation list under its old name and come back under
+  the new one, so the list would disagree with what `hair` had just done, which is precisely
+  the case re-reading the file exists for. `resolveNames` therefore substitutes into the
+  record rather than returning a second map, so there is one name downstream and not a
+  record's and a real one; `describeCandidate` stays pure and keeps taking it as data. It
+  sits beside `probeLiveness` and `probeDirs` because those already do per-candidate I/O over
+  the same list, and it runs on the **candidates**, not the registry: a handful of `readText`
+  calls against a list that has already had one `ps` spent on each of it. `hair --list` pays
+  that cost too, because a list that disagrees with what the bare form then does is the kind
+  of thing nobody thinks to check.
 - **An end that was not the person's releases the claim and writes nothing.** That is the
   fourth `hookDecision` verdict, `interrupted`, and the reason it carries a session id
   rather than a record. The entry has to be left byte-identical — it *is* the signal — but
@@ -528,7 +548,7 @@ table-testable:
 | `parseHairArgs`, `forwardsItsOwnSession` | — |
 | `parseRegistry`, `parseRecord`, `retired`, `keptRecords`, `compacted`, `shouldCompact`, `registryPath`, `claimPath` | `readRegistry`, `appendRecord`, `compactRegistry` |
 | `restoreDecision`, `restoreCandidates`, `describeCandidate`, `livenessPlan` | `probeLiveness`, `probeDirs`, `resolveNames` |
-| `customTitlePath`, `parseCustomTitle`, `titleDecision` | `readCustomTitle`, `writeTerminalTitle` |
+| `transcriptSlug`, `customTitlePath`, `parseCustomTitle` | `readCustomTitle` |
 | `claimDecision`, `parseClaim` | `claimFirst` |
 | `hookDecision`, `parsePayload` | `runHook` |
 | `resolvePluginDirs` is the exception — it reads the marketplace itself | — |
@@ -717,16 +737,15 @@ The shape, all in `src/hair-launch.ts`:
    the conversation the bare form is about to take, which is what makes the list worth
    eyeballing.
 6. `resolveNames` re-reads each candidate's name from Claude Code's own `custom-title.json`,
-   falling back to the one the record holds. One read per candidate, and the single value
-   every consumer below then uses.
+   keyed on the slug the record carries, falling back to the name the record holds. One read
+   per candidate, and the single value both consumers below then use.
 7. `claimFirst` walks the candidates and takes the first it wins with `O_EXCL`, then
    `seams.chdir` moves to the record's own directory, then `launch()` runs with
-   `["-r", id, "--name", <the resolved name>, ...rest]` — the name goes back on the argv
-   because that is where the resumed session's own hook reads it from, and without it a
-   session started as `hai -n pcs` comes back nameless and reads as "(unnamed)" in every
-   later `hair --list`. Between the claim and the handover `writeTerminalTitle` puts that
-   same name back on the terminal tab as an `OSC 0` sequence, Claude Code writing none of
-   its own on a resume.
+   `["-r", id, "--name", <the resolved name>, ...rest]`. The name goes back on the argv for
+   two reasons: the resumed session's own hook reads it from there, so without it a session
+   started as `hai -n pcs` comes back nameless and reads as "(unnamed)" in every later
+   `hair --list`; and Claude Code sets the terminal tab title from it as the TUI mounts, so
+   that argument *is* how the tab title comes back. Nothing here writes a title itself.
 
 The other half is the hook. `sessionRegistryHooks` puts `UserPromptSubmit` and
 `SessionEnd` entries into the settings hai already passes as its single `--settings`, so
@@ -768,7 +787,39 @@ and the quoting is what stops a session name with a space in it being read as mo
 `permission_mode` and `prompt`, plus `reason`. Neither carries the session's `-n/--name`,
 which is why hai reads it off the argv and puts it on the hook's command line. `CLAUDE_PID`
 in the hook environment is the owning `claude` process, not the hook's own, and is what the
-registry records.
+registry records. `transcript_path` is `<…>/projects/<slug>/<session-id>.jsonl` and is the
+only authoritative statement of which project directory the conversation is filed under; the
+registry records the slug out of it rather than deriving one from `cwd`.
+
+#### The terminal tab title: `claude` writes it, hai does not
+
+**The harness matters more than the command.** A capture in which the TUI never mounts shows
+no title at startup, and two claims were wrong because of exactly that. `TERM` and
+`TERM_PROGRAM` have to be set and the session has to be under a pty:
+
+```bash
+TERM=xterm-256color TERM_PROGRAM=vscode script -qc 'claude -n ZZNAMEPROBE' /dev/null > cap.bin
+grep -abo $'\033]0;' cap.bin   # byte offsets of every OSC 0 in the stream
+```
+
+For `claude -n ZZNAMEPROBE`, in a 2990-byte capture:
+
+| byte | sequence | when |
+|---|---|---|
+| 142 | `ESC]0;⏳ ZZNAMEPROBE` | at startup, as the TUI mounts |
+| 2356 | `ESC]0;● ZZNAMEPROBE` | rewritten as the session's status changes |
+| 2913 | `ESC]0;` | cleared on exit |
+
+So **`-n/--name` sets the tab title**, Claude Code owns it for the life of the session, and
+it reasserts it as the status changes. The selector in the binary is
+`terminalTitle: sessionTitle ?? aiSessionTitle ?? agentTitle ?? haikuTitle ?? "Claude Code"`,
+with a `terminalTitleFromRename` setting beside it.
+
+Two earlier entries in this file asserted the opposite — that Claude Code writes no title at
+startup, and that `-n` persists and sets nothing — and both were artefacts of a capture
+taken without those variables, where the only `OSC 0` was the clear-on-exit at the end of
+the stream. An `OSC 0` written from outside before the handover is overwritten within about
+a second. Nothing in hai writes a terminal title; passing `--name` is the whole mechanism.
 
 `reason` is a closed enum of five, and this is the table the whole deregistration rule
 turns on. The enum is both what the hooks reference documents

@@ -22,11 +22,14 @@ const HOME = "/home/dev";
 const REGISTRY = registryPath({ HOME })!;
 const ATTENDED = { [ATTENDED_ENV]: "1", [OWNER_PID_ENV]: "900" };
 /** Claude Code's own store for the name `/rename` set, for the payload below. */
-const TITLE = customTitlePath({ HOME }, { cwd: "/work", sessionId: "s1" })!;
+const SLUG = "-filed-here";
+const TITLE = customTitlePath({ HOME }, { slug: SLUG, sessionId: "s1" })!;
+/** What Claude Code hands every hook, and the only authoritative statement of the slug. */
+const TRANSCRIPT = `${HOME}/.claude/projects/${SLUG}/s1.jsonl`;
 
 const HOST = "workstation";
 
-const payload = (over: Partial<HookPayload> = {}): HookPayload => ({ session_id: "s1", cwd: "/work", ...over });
+const payload = (over: Partial<HookPayload> = {}): HookPayload => ({ session_id: "s1", cwd: "/work", transcript_path: TRANSCRIPT, ...over });
 const record = (over: Partial<SessionRecord> = {}): SessionRecord => ({
   sessionId: "s1",
   cwd: "/work",
@@ -34,6 +37,8 @@ const record = (over: Partial<SessionRecord> = {}): SessionRecord => ({
   at: FIXED_NOW,
   pid: 900,
   host: HOST,
+  // Last, so a `recordLine` of this matches what `registration` serialises byte for byte.
+  slug: SLUG,
   ...over
 });
 
@@ -49,7 +54,7 @@ describe("hookDecision", () => {
     expect(outcome).toEqual({
       action: "register",
       reason: "a human drove this session for the first time",
-      record: { sessionId: "s1", cwd: "/work", state: "open", at: FIXED_NOW, pid: 900, host: HOST }
+      record: { sessionId: "s1", cwd: "/work", state: "open", at: FIXED_NOW, pid: 900, host: HOST, slug: SLUG }
     });
   });
 
@@ -89,13 +94,36 @@ describe("hookDecision", () => {
     expect(outcome).toEqual({
       action: "register",
       reason: "the conversation has been renamed, and the registry is what the restored tab title comes from",
-      record: { sessionId: "s1", cwd: "/work", state: "open", at: FIXED_NOW, pid: 900, name: "the renamed one", host: HOST }
+      record: { sessionId: "s1", cwd: "/work", state: "open", at: FIXED_NOW, pid: 900, name: "the renamed one", host: HOST, slug: SLUG }
     });
   });
 
   it("should re-register a conversation that was registered before it had a name at all", () => {
     // Act / Assert
     expect(decide({ storedName: "named at last", records: [record()] })).toMatchObject({ action: "register", record: { name: "named at last" } });
+  });
+
+  /**
+   * Recorded so the restore can find the title file without deriving the slug from a `cwd`
+   * that may have moved since. Taken out of the payload rather than computed: Claude Code
+   * fixes the slug at startup and `cwd` does not have to agree with it, and the hook
+   * re-registers on a cwd change, which is what makes a derived slug go stale for good.
+   */
+  it("should record the slug out of the payload's transcript path, not one derived from cwd", () => {
+    // Act
+    const outcome = decide({ payload: payload({ cwd: "/a-worktree-it-cd-ed-into" }) });
+
+    // Assert
+    expect(outcome).toMatchObject({ action: "register", record: { cwd: "/a-worktree-it-cd-ed-into", slug: SLUG } });
+  });
+
+  it("should carry no slug at all when the payload gave no transcript path to take one from", () => {
+    // Act
+    const outcome = decide({ payload: { session_id: "s1", cwd: "/work" } });
+
+    // Assert
+    expect(outcome.action).toBe("register");
+    expect(Object.keys((outcome as { record: SessionRecord }).record)).not.toContain("slug");
   });
 
   it("should register a session whose owning pid it could not read, liveness then refusing to guess", () => {
@@ -162,7 +190,7 @@ describe("hookDecision", () => {
     expect(outcome).toEqual({
       action: "register",
       reason: "the session is still being driven, so when it was last active moves on",
-      record: { sessionId: "s1", cwd: "/work", state: "open", at: FIXED_NOW, pid: 900, name: "pcs", host: HOST }
+      record: { sessionId: "s1", cwd: "/work", state: "open", at: FIXED_NOW, pid: 900, name: "pcs", host: HOST, slug: SLUG }
     });
   });
 
@@ -283,7 +311,9 @@ describe("runHook", () => {
     await runHook(seams, { event: USER_PROMPT_SUBMIT, name: "pcs" });
 
     // Assert
-    expect(seams.fs.store.get(REGISTRY)).toBe(recordLine({ sessionId: "s1", cwd: "/work", state: "open", at: FIXED_NOW, pid: 900, name: "pcs", host: HOST }));
+    expect(seams.fs.store.get(REGISTRY)).toBe(
+      recordLine({ sessionId: "s1", cwd: "/work", state: "open", at: FIXED_NOW, pid: 900, name: "pcs", host: HOST, slug: SLUG })
+    );
   });
 
   it("should append a tombstone and release the claim when the session ends", async () => {
@@ -356,7 +386,7 @@ describe("runHook", () => {
     await runHook(seams, { event: USER_PROMPT_SUBMIT });
 
     // Assert
-    expect(seams.fs.store.get(REGISTRY)).toBe(recordLine({ sessionId: "s1", cwd: "/work", state: "open", at: FIXED_NOW, pid: 900, host: HOST }));
+    expect(seams.fs.store.get(REGISTRY)).toBe(recordLine({ sessionId: "s1", cwd: "/work", state: "open", at: FIXED_NOW, pid: 900, host: HOST, slug: SLUG }));
   });
 
   /**
@@ -376,7 +406,9 @@ describe("runHook", () => {
     await runHook(seams, { event: USER_PROMPT_SUBMIT });
 
     // Assert
-    expect(seams.fs.store.get(REGISTRY)).toBe(`${open}${recordLine({ sessionId: "s1", cwd: "/work", state: "open", at: FIXED_NOW, pid: 900, host: HOST })}`);
+    expect(seams.fs.store.get(REGISTRY)).toBe(
+      `${open}${recordLine({ sessionId: "s1", cwd: "/work", state: "open", at: FIXED_NOW, pid: 900, host: HOST, slug: SLUG })}`
+    );
     expect([...seams.fs.store.keys()].filter((key) => key.endsWith(".tmp"))).toEqual([]);
   });
 
@@ -391,7 +423,7 @@ describe("runHook", () => {
     await runHook(seams, { event: USER_PROMPT_SUBMIT });
 
     // Assert
-    expect(seams.fs.store.get(REGISTRY)).toBe(recordLine({ sessionId: "s1", cwd: "/work", state: "open", at: FIXED_NOW, pid: 900, host: HOST }));
+    expect(seams.fs.store.get(REGISTRY)).toBe(recordLine({ sessionId: "s1", cwd: "/work", state: "open", at: FIXED_NOW, pid: 900, host: HOST, slug: SLUG }));
   });
 
   it("should exit quietly when anything at all goes wrong, a hook never being what breaks a session", async () => {
@@ -407,11 +439,11 @@ describe("runHook", () => {
   });
 
   /**
-   * The payload carries `session_id` and `cwd`, which is everything needed to find Claude
-   * Code's own `custom-title.json` — so the registry can hold the name a human actually
-   * gave the conversation instead of an argv flag almost nobody passes.
+   * The payload carries `session_id` and `transcript_path`, which is everything needed to
+   * find Claude Code's own `custom-title.json` — so the registry can hold the name a human
+   * actually gave the conversation rather than only the one `-n` was passed.
    */
-  it("should register the title /rename stored, read off the hook payload's own session and cwd", async () => {
+  it("should register the title /rename stored, read off the hook payload's own transcript path", async () => {
     // Arrange
     const seams = seamsIn({ files: { [TITLE]: '{"customTitle":"hai-resume"}' } });
 
@@ -433,6 +465,25 @@ describe("runHook", () => {
     // Act / Assert
     await expect(runHook(seams, { event: USER_PROMPT_SUBMIT, name: "pcs" })).resolves.toBeUndefined();
     expect(seams.fs.store.get(REGISTRY)).toContain('"name":"pcs"');
+  });
+
+  /**
+   * The read is keyed on the transcript path too, so a session that has changed directory
+   * still finds its own title file. A cwd-derived key would miss here, and would go on
+   * missing for every prompt afterwards.
+   */
+  it("should still find the title file for a session whose cwd has moved away from its slug", async () => {
+    // Arrange
+    const seams = seamsIn({
+      stdinText: JSON.stringify(payload({ cwd: "/a-worktree-it-cd-ed-into" })),
+      files: { [TITLE]: '{"customTitle":"hai-resume"}' }
+    });
+
+    // Act
+    await runHook(seams, { event: USER_PROMPT_SUBMIT });
+
+    // Assert
+    expect(seams.fs.store.get(REGISTRY)).toContain('"name":"hai-resume"');
   });
 
   it("should follow a rename mid-conversation, which is what the restored tab title comes from", async () => {

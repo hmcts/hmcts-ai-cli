@@ -31,7 +31,6 @@ export function createSeams(): Seams {
     stdout: (text) => {
       process.stdout.write(text);
     },
-    stdoutIsTty: Boolean(process.stdout.isTTY),
     logger: createLogger({ write: (text) => process.stderr.write(text), isVerbose: isEnabled(env, "HAI_VERBOSE") })
   };
 }
@@ -76,14 +75,5 @@ export interface Seams {
   /** A Claude Code hook is handed its payload on stdin and nothing else. */
   stdin(): Promise<string>;
   stdout(text: string): void;
-  /**
-   * Whether `stdout` is a terminal rather than a pipe or a captured log. `hair` writes one
-   * thing that is not program output — the `OSC 0` sequence that restores the tab title of
-   * a conversation it is handing back — and that has to be suppressed when nothing on the
-   * other end can read it: `hair --list | grep` must come back with lines and nothing else.
-   * The write still goes through `stdout`, which is a verbatim `process.stdout.write`, so
-   * the gate and the destination are the same stream.
-   */
-  stdoutIsTty: boolean;
   logger: Logger;
 }

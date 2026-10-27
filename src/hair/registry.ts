@@ -113,7 +113,8 @@ export function parseRecord(line: string): SessionRecord | null {
     pid: Number(parsed.pid) || 0,
     ...text("name", parsed.name),
     ...text("host", parsed.host),
-    ...text("container", parsed.container)
+    ...text("container", parsed.container),
+    ...text("slug", parsed.slug)
   };
 }
 
@@ -229,4 +230,18 @@ export interface SessionRecord {
    * uses the field for.
    */
   container?: string;
+  /**
+   * The directory Claude Code filed this conversation's transcripts under, taken out of the
+   * hook payload's own `transcript_path`. It is what `resolveNames` finds the stored title
+   * through at restore time, and it is recorded rather than derived because Claude Code
+   * fixes it when the session starts while `cwd` can move underneath it — a conversation
+   * that registers at a workspace root and then `cd`s into a worktree rewrites its `cwd`
+   * and a slug derived from that stops matching.
+   *
+   * The slug and not the whole path, because `~/.claude` is bind-mounted into a container
+   * session at a different absolute path, so a path recorded inside does not resolve for a
+   * `hair` on the host. The `~/.claude` root is recomposed by whoever reads it, the same way
+   * `registryPath` and `claimPath` do.
+   */
+  slug?: string;
 }

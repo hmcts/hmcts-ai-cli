@@ -1,24 +1,77 @@
 import { describe, expect, it } from "vitest";
 import { createFakeSeams } from "../__fixtures__/fake-seams.js";
 import { projectSlug } from "../container/session.js";
-import { BEL, customTitlePath, DISABLE_TITLE_ENV, OSC_TITLE_PREFIX, parseCustomTitle, readCustomTitle, titleDecision, writeTerminalTitle } from "./title.js";
+import { customTitlePath, parseCustomTitle, readCustomTitle, transcriptSlug } from "./title.js";
 
 const HOME = "/home/dev";
 const CWD = "/home/dev/work/pcs-api";
+const SLUG = projectSlug(CWD);
 const SESSION = "0d2a1f40-3c7e-4a1a-9f22-6b1d4c8e5a90";
-const TITLE = `${HOME}/.claude/projects/${projectSlug(CWD)}/${SESSION}/custom-title.json`;
+const TITLE = `${HOME}/.claude/projects/${SLUG}/${SESSION}/custom-title.json`;
+
+describe("transcriptSlug", () => {
+  /**
+   * The payload states which project directory the conversation is filed under, so there is
+   * no reason to compute it — and a computed one goes wrong, `cwd` being able to move under
+   * a session while Claude Code's slug is fixed at startup.
+   */
+  it("should take the slug out of the transcript path the payload carries", () => {
+    // Act / Assert
+    expect(transcriptSlug(`${HOME}/.claude/projects/${SLUG}/${SESSION}.jsonl`)).toBe(SLUG);
+  });
+
+  /**
+   * The container's `~/.claude` is the host's bound at a different absolute path, so the
+   * slug has to come out of whatever root the hook saw without that root mattering.
+   */
+  it("should answer the same slug for a path recorded inside a container session", () => {
+    // Act / Assert
+    expect(transcriptSlug(`/home/hmcts/.claude/projects/${SLUG}/${SESSION}.jsonl`)).toBe(SLUG);
+  });
+
+  it.each<[string, string | undefined]>([
+    ["no transcript path at all", undefined],
+    ["an empty transcript path", ""],
+    ["a bare filename, which names no project directory", `${SESSION}.jsonl`],
+    ["a root-level filename", `/${SESSION}.jsonl`]
+  ])("should answer undefined for %s", (_name, path) => {
+    // Act / Assert
+    expect(transcriptSlug(path)).toBeUndefined();
+  });
+});
 
 describe("customTitlePath", () => {
   it("should name Claude Code's own per-conversation title file", () => {
+    // Act / Assert
+    expect(customTitlePath({ HOME }, { slug: SLUG, sessionId: SESSION })).toBe(TITLE);
+  });
+
+  /**
+   * The recorded slug is what Claude Code itself filed the conversation under; a slug
+   * derived from `cwd` is a guess that is wrong as soon as the session changes directory.
+   */
+  it("should prefer the recorded slug over one derived from cwd", () => {
+    // Act / Assert
+    expect(customTitlePath({ HOME }, { slug: SLUG, cwd: "/somewhere-it-cd-ed-to", sessionId: SESSION })).toBe(TITLE);
+  });
+
+  /**
+   * The fallback for the records written before a slug was recorded — which is every line of
+   * an engineer's existing registry, and those are killed sessions that will never fire
+   * another hook to fill it in. It is safe because the session id is the *leaf*: a wrong slug
+   * names a directory that does not exist, so this can only miss, never answer with another
+   * conversation's title.
+   */
+  it("should fall back to deriving the slug from cwd for a record that carries none", () => {
     // Act / Assert
     expect(customTitlePath({ HOME }, { cwd: CWD, sessionId: SESSION })).toBe(TITLE);
   });
 
   /**
-   * The transform has to be byte-identical to Claude Code's or every lookup silently
-   * misses, so these are real directory names off this machine rather than a restatement
-   * of the regex: a plain path, one whose last segment holds dots, and a worktree path
-   * carrying a dot-directory and dashes together.
+   * The derived form has to be byte-identical to Claude Code's or the fallback silently
+   * misses, so these are real directory names off this machine rather than a restatement of
+   * the regex: a plain path, one whose last segment holds dots, and a worktree path carrying
+   * a dot-directory and dashes together.
    */
   it.each<[string, string]>([
     ["/home/linus/Work/solirius/hmcts", "-home-linus-Work-solirius-hmcts"],
@@ -33,9 +86,9 @@ describe("customTitlePath", () => {
   });
 
   it.each<[string, Parameters<typeof customTitlePath>]>([
-    ["there is no HOME to find ~/.claude under", [{}, { cwd: CWD, sessionId: SESSION }]],
-    ["the payload carried no cwd, so the project slug cannot be derived", [{ HOME }, { sessionId: SESSION }]],
-    ["the payload carried no session id", [{ HOME }, { cwd: CWD }]]
+    ["there is no HOME to find ~/.claude under", [{}, { slug: SLUG, sessionId: SESSION }]],
+    ["the record carries neither a slug nor a cwd", [{ HOME }, { sessionId: SESSION }]],
+    ["there is no session id, which is the leaf of the path", [{ HOME }, { slug: SLUG }]]
   ])("should answer null when %s", (_name, args) => {
     // Act / Assert
     expect(customTitlePath(...args)).toBeNull();
@@ -66,65 +119,17 @@ describe("parseCustomTitle", () => {
   });
 });
 
-describe("titleDecision", () => {
-  /**
-   * The exact bytes, terminator included. `OSC 0` is `ESC ] 0 ; <text> BEL`, captured from
-   * a live Claude Code session under a pty: a missing or swapped terminator leaves the
-   * title unset and the rest of the stream being eaten as part of the sequence.
-   */
-  it("should emit ESC ] 0 ; name BEL", () => {
-    // Act
-    const outcome = titleDecision({ name: "pcs", isTty: true, env: {} });
-
-    // Assert
-    expect(outcome).toMatchObject({ action: "write", sequence: "\u001b]0;pcs\u0007" });
-    expect(`${OSC_TITLE_PREFIX}pcs${BEL}`).toBe("\u001b]0;pcs\u0007");
-  });
-
-  it.each<[string, Parameters<typeof titleDecision>[0]]>([
-    ["the record has no name, so blanking the title would be worse than leaving it", { isTty: true, env: {} }],
-    ["the name is empty", { name: "", isTty: true, env: {} }],
-    ["stdout is a pipe or a captured log rather than a terminal", { name: "pcs", isTty: false, env: {} }],
-    ["the engineer told Claude Code itself not to touch their title", { name: "pcs", isTty: true, env: { [DISABLE_TITLE_ENV]: "1" } }]
-  ])("should write nothing when %s", (_name, input) => {
-    // Act / Assert
-    expect(titleDecision(input)).toMatchObject({ action: "skip" });
-  });
-
-  /**
-   * The variable is Claude Code's, not hai's, so the `HAI_*` rule that a flag is on only
-   * at exactly `1` is the wrong reading of it: any value the engineer set means they meant
-   * it, and going round their opt-out on Claude Code's behalf is the one thing this must
-   * not do.
-   */
-  it("should honour the opt-out whatever value it was set to, the variable not being hai's", () => {
-    // Act / Assert
-    expect(titleDecision({ name: "pcs", isTty: true, env: { [DISABLE_TITLE_ENV]: "true" } })).toMatchObject({ action: "skip" });
-    expect(titleDecision({ name: "pcs", isTty: true, env: { [DISABLE_TITLE_ENV]: "" } })).toMatchObject({ action: "write" });
-  });
-
-  /**
-   * An OSC string runs to its terminator, so a BEL or an ESC inside the name would cut the
-   * sequence short and leave the remainder as input to the terminal.
-   */
-  it("should drop the control characters out of a name rather than let them end the sequence early", () => {
-    // Act / Assert
-    expect(titleDecision({ name: `pcs${BEL}; rm -rf /`, isTty: true, env: {} })).toMatchObject({ action: "write", sequence: "\u001b]0;pcs; rm -rf /\u0007" });
-    expect(titleDecision({ name: "\n\t", isTty: true, env: {} })).toMatchObject({ action: "skip" });
-  });
-});
-
 describe("readCustomTitle", () => {
   it("should read the stored title for a conversation", async () => {
     // Arrange
     const seams = createFakeSeams({ env: { HOME }, files: { [TITLE]: '{"customTitle":"hai-resume"}' } });
 
     // Act / Assert
-    await expect(readCustomTitle(seams, { cwd: CWD, sessionId: SESSION })).resolves.toBe("hai-resume");
+    await expect(readCustomTitle(seams, { slug: SLUG, sessionId: SESSION })).resolves.toBe("hai-resume");
   });
 
   it.each<[string, Record<string, string>, Parameters<typeof readCustomTitle>[1]]>([
-    ["no title file was ever written, which is every conversation nobody has renamed", {}, { cwd: CWD, sessionId: SESSION }],
+    ["no title file was ever written, which is every conversation nobody has renamed", {}, { slug: SLUG, sessionId: SESSION }],
     ["the path cannot be derived at all", {}, {}]
   ])("should answer undefined when %s", async (_name, files, input) => {
     // Arrange
@@ -132,36 +137,5 @@ describe("readCustomTitle", () => {
 
     // Act / Assert
     await expect(readCustomTitle(seams, input)).resolves.toBeUndefined();
-  });
-});
-
-describe("writeTerminalTitle", () => {
-  it("should put the sequence on stdout and nothing through the logger", () => {
-    // Arrange
-    const seams = createFakeSeams({ env: { HAI_VERBOSE: "1" } });
-
-    // Act
-    writeTerminalTitle(seams, "pcs");
-
-    // Assert
-    // Not one byte of the sequence may go through `createLogger`, which redacts, prefixes
-    // `hai: ` and appends a newline.
-    expect(seams.out).toEqual(["\u001b]0;pcs\u0007"]);
-    expect(seams.lines.join("")).not.toContain(OSC_TITLE_PREFIX);
-  });
-
-  it.each<[string, Parameters<typeof createFakeSeams>[0], string | undefined]>([
-    ["the conversation has no name", {}, undefined],
-    ["stdout is not a terminal", { stdoutIsTty: false }, "pcs"],
-    ["the engineer opted out of title writes", { env: { [DISABLE_TITLE_ENV]: "1" } }, "pcs"]
-  ])("should leave the terminal alone when %s", (_name, over, title) => {
-    // Arrange
-    const seams = createFakeSeams(over);
-
-    // Act
-    writeTerminalTitle(seams, title);
-
-    // Assert
-    expect(seams.out).toEqual([]);
   });
 });

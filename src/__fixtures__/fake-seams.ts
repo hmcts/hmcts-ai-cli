@@ -183,7 +183,6 @@ export function createFakeSeams(
       }),
     stdin: rest.stdin ?? (async () => stdinText ?? ""),
     stdout: rest.stdout ?? ((text) => out.push(text)),
-    stdoutIsTty: rest.stdoutIsTty ?? true,
     logger
   };
   return { ...seams, runner: seams.runner as FakeRunner, fs: seams.fs as FakeFs, lines, out, chdirs };

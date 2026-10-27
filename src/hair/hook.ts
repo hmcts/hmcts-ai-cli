@@ -4,7 +4,7 @@ import type { Env } from "../system/env.js";
 import type { Fs } from "../system/fs.js";
 import { releaseClaim } from "./claim.js";
 import { appendRecord, compactRegistry, keptRecords, readRegistry, type SessionRecord, shouldCompact } from "./registry.js";
-import { readCustomTitle } from "./title.js";
+import { readCustomTitle, transcriptSlug } from "./title.js";
 
 export const USER_PROMPT_SUBMIT = "UserPromptSubmit";
 export const SESSION_END = "SessionEnd";
@@ -199,8 +199,13 @@ export async function runHook(
       name: input.name,
       // Re-read on every hook, not only on a first registration: `/rename` moves the name
       // mid-conversation, and this is one `Fs.readText` that answers null rather than
-      // throwing for an absent file.
-      storedName: await readCustomTitle(deps, { cwd: payload?.cwd, sessionId: payload?.session_id }),
+      // throwing for an absent file. Keyed on the payload's own `transcript_path`, which is
+      // where Claude Code filed the conversation, not on a slug derived from `cwd`.
+      storedName: await readCustomTitle(deps, {
+        slug: transcriptSlug(payload?.transcript_path),
+        cwd: payload?.cwd,
+        sessionId: payload?.session_id
+      }),
       host: deps.hostname,
       now: deps.clock.now(),
       records
@@ -258,7 +263,10 @@ function registration(input: { env: Env; name?: string; storedName?: string; hos
     // read a container pid as if it were one of its own.
     ...field("name", input.storedName ?? input.name),
     ...field("host", input.host),
-    ...field("container", input.env[CONTAINER_ENV])
+    ...field("container", input.env[CONTAINER_ENV]),
+    // Recorded so `resolveNames` can find the stored title at restore time without deriving
+    // the slug from a `cwd` that may have moved since. Pure: the payload hands it over.
+    ...field("slug", transcriptSlug(payload.transcript_path))
   };
 }
 
@@ -277,6 +285,12 @@ function field<K extends string>(key: K, value: string | undefined): Record<K, s
 export interface HookPayload {
   session_id?: string;
   cwd?: string;
+  /**
+   * `<…>/projects/<slug>/<session-id>.jsonl`, and so the one authoritative statement of
+   * which project directory Claude Code filed this conversation under. `transcriptSlug`
+   * takes the slug out of it; nothing here reads the file.
+   */
+  transcript_path?: string;
   hook_event_name?: string;
   /**
    * One of `prompt_input_exit`, `clear`, `resume`, `logout` and `other` — the whole enum

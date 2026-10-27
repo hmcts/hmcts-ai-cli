@@ -13,7 +13,8 @@ const REGISTRY = registryPath({ HOME })!;
 /** In a container, so `launch` hands over in place rather than starting one. */
 const IN_CONTAINER = { "/.dockerenv": "" };
 /** Claude Code's own store for the name `/rename` set, for the record below. */
-const TITLE = customTitlePath({ HOME }, { cwd: "/work", sessionId: "s1" })!;
+const SLUG = "-work";
+const TITLE = customTitlePath({ HOME }, { slug: SLUG, sessionId: "s1" })!;
 
 /** The fake seams' own hostname, so a recorded pid is one `hair` may ask `ps` about. */
 const HOST = "workstation";
@@ -144,13 +145,12 @@ describe("launchHair", () => {
     });
 
     /**
-     * Claude Code writes no title at startup — measured on 2.1.304, the only `OSC 0` in a
-     * `claude -r` stream is the clear-on-exit at the very end of it, with or without a
-     * stored `customTitle` — so without this the engineer's tabs all come back saying
-     * whatever the shell calls them. A title set before the handover lasts the life of the
-     * session. The bytes are asserted exactly, terminator included: `ESC ] 0 ; <text> BEL`.
+     * `--name` is the whole of the tab-title mechanism, because Claude Code sets the title
+     * itself from it as the TUI mounts — measured on 2.1.304, see CLAUDE.md. So a record
+     * that resolves to no name at all resumes with no `--name`, and nothing here writes an
+     * escape sequence of its own for any record.
      */
-    it("should restore the tab title of the conversation it hands back", async () => {
+    it("should write no escape sequence of its own, the title being Claude Code's to set", async () => {
       // Arrange
       const seams = seamsIn({ [REGISTRY]: recordLine(record({ name: "the pcs one" })) });
 
@@ -158,35 +158,17 @@ describe("launchHair", () => {
       await launchHair({ seams, processArgv: ["node", "/bin/hair"] });
 
       // Assert
-      expect(seams.out.join("")).toBe("\u001b]0;the pcs one\u0007");
-    });
-
-    it.each<[string, Partial<SessionRecord>, Parameters<typeof createFakeSeams>[0]]>([
-      ["no name resolves at all, blanking the title being worse than leaving it", {}, {}],
-      ["stdout is a pipe rather than a terminal", { name: "the pcs one" }, { stdoutIsTty: false }],
-      [
-        "the engineer told Claude Code itself not to touch their title",
-        { name: "the pcs one" },
-        { env: { HOME, HAI_NO_UPDATE: "1", AWS_BEARER_TOKEN_BEDROCK: KEY, CLAUDE_CODE_DISABLE_TERMINAL_TITLE: "1" } }
-      ]
-    ])("should write no escape sequence when %s", async (_name, over, seamsOver) => {
-      // Arrange
-      const seams = seamsIn({ [REGISTRY]: recordLine(record(over)) }, seamsOver);
-
-      // Act
-      await launchHair({ seams, processArgv: ["node", "/bin/hair"] });
-
-      // Assert
-      expect(execArgv(seams)).toContain("s1");
       expect(seams.out).toEqual([]);
+      expect(execArgv(seams).slice(-4)).toEqual(["-r", "s1", "--name", "the pcs one"]);
     });
 
     /**
-     * The suppression is on the *resolved* name, not on the record's: a record with no name
-     * whose title file holds one is the whole of the existing registry, every line of it
-     * having been written before the name was read from anywhere.
+     * The existing registry is every line of it written before a name was read from
+     * anywhere, and those are killed sessions that will never fire another hook to fill one
+     * in — so without resolving at restore time they would come back nameless for ever, and
+     * with no `--name` there is nothing for Claude Code to title the tab from.
      */
-    it("should restore the title of a conversation the registry has no name for, the file having one", async () => {
+    it("should name a conversation the registry has no name for, the title file having one", async () => {
       // Arrange
       const seams = seamsIn({ [REGISTRY]: recordLine(record()), [TITLE]: '{"customTitle":"hai-resume"}' });
 
@@ -194,17 +176,16 @@ describe("launchHair", () => {
       await launchHair({ seams, processArgv: ["node", "/bin/hair"] });
 
       // Assert
-      expect(seams.out.join("")).toBe("\u001b]0;hai-resume\u0007");
+      expect(execArgv(seams).slice(-4)).toEqual(["-r", "s1", "--name", "hai-resume"]);
     });
 
     /**
      * The registry's name is a cache of something Claude Code owns and can be up to
      * `ACTIVITY_REFRESH_MS` behind it — `/rename` at 16:55 and the container lost at 17:00.
-     * The file wins, and it has to win for all three consumers at once or a
-     * renamed-then-killed conversation lists under one name, resumes with a second on the
-     * argv and sets a tab title with a third.
+     * The file wins, and it has to win for both consumers at once or `hair --list` disagrees
+     * with the name the conversation then comes back under.
      */
-    it("should take the stored title over a stale record name, for the title and the argv alike", async () => {
+    it("should take the stored title over a stale record name, for the argv and the log line alike", async () => {
       // Arrange
       const seams = seamsIn({ [REGISTRY]: recordLine(record({ name: "the old one" })), [TITLE]: '{"customTitle":"the renamed one"}' });
 
@@ -212,7 +193,6 @@ describe("launchHair", () => {
       await launchHair({ seams, processArgv: ["node", "/bin/hair"] });
 
       // Assert
-      expect(seams.out.join("")).toBe("\u001b]0;the renamed one\u0007");
       expect(execArgv(seams).slice(-4)).toEqual(["-r", "s1", "--name", "the renamed one"]);
       expect(seams.lines.join("")).toContain("restoring the renamed one in /work");
     });
@@ -225,8 +205,28 @@ describe("launchHair", () => {
       await launchHair({ seams, processArgv: ["node", "/bin/hair"] });
 
       // Assert
-      expect(seams.out.join("")).toBe("\u001b]0;the pcs one\u0007");
       expect(execArgv(seams).slice(-4)).toEqual(["-r", "s1", "--name", "the pcs one"]);
+    });
+
+    /**
+     * Claude Code fixes the project slug when the session starts; the record's `cwd` moves
+     * whenever the hook sees the session in a new directory. A conversation that registered
+     * at a workspace root and then `cd`-ed into a worktree has a `cwd` that no longer says
+     * where its transcripts live, so a cwd-derived lookup misses — the recorded slug is what
+     * still finds the title.
+     */
+    it("should find the stored title through the recorded slug when cwd has moved since", async () => {
+      // Arrange
+      const seams = seamsIn({
+        [REGISTRY]: recordLine(record({ cwd: "/elsewhere", slug: SLUG })),
+        [TITLE]: '{"customTitle":"filed under the old directory"}'
+      });
+
+      // Act
+      await launchHair({ seams, processArgv: ["node", "/bin/hair"] });
+
+      // Assert
+      expect(execArgv(seams).slice(-2)).toEqual(["--name", "filed under the old directory"]);
     });
 
     it("should move to the record's directory, resume-by-id not being cwd-scoped", async () => {
@@ -400,7 +400,6 @@ describe("launchHair", () => {
       await launchHair({ seams, processArgv: ["node", "/bin/hair", "--list"] });
 
       // Assert
-      // And `--list` claims nothing, so not a byte of escape sequence either.
       expect(seams.out.join("")).toBe("s1  the renamed one  this directory\n");
     });
 
