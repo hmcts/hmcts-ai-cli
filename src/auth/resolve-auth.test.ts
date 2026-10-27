@@ -113,17 +113,17 @@ describe("resolveAuth", () => {
     expect(seams.fs.store.has(CACHE_PATH)).toBe(false);
   });
 
-  it("should ask az nothing when the environment already settles the route", async () => {
-    // Arrange
-    const seams = createFakeSeams({ env: { HOME, AWS_BEARER_TOKEN_BEDROCK: KEY } });
+  it("should still check the group for a non-member with a key in the environment, and land on it", async () => {
+    // Arrange — the key no longer settles the route on its own: the gateway is ahead of
+    // it now, so the group has to be asked before the key can be the answer.
+    const seams = createFakeSeams({ env: { HOME, AWS_BEARER_TOKEN_BEDROCK: KEY }, respond: notAMember });
 
     // Act
     const { resolution } = await resolveAuth({ seams, agentHub: hub() });
 
     // Assert
     expect(resolution).toMatchObject({ route: "bedrock", credentialSource: "env" });
-    expect(seams.runner.calls).toHaveLength(0);
-    expect(seams.fs.store.has(CACHE_PATH)).toBe(false);
+    expect(askedGraph(seams.runner.calls)).toBe(true);
   });
 
   it("should fail with all three remedies when no signal fires at all", async () => {
@@ -161,7 +161,7 @@ describe("resolveAuth", () => {
     expect(seams.lines.join("")).toContain("could not write the group-membership cache");
   });
 
-  it("should ask az who we are before it asks agent-hub anything", async () => {
+  it("should ask az who we are, then the group, and never trouble agent-hub for a member", async () => {
     // Arrange
     const order: string[] = [];
     const seams = createFakeSeams({
@@ -179,8 +179,10 @@ describe("resolveAuth", () => {
     // Act
     await resolveAuth({ seams, agentHub });
 
-    // Assert
-    expect(order).toEqual(["az account", "hub get"]);
+    // Assert — the identity first, because the group answer is cached under it, then the
+    // group, and then the gateway. "hub get" never appears: a confirmed member is on the
+    // gateway, so the stored-key probe it used to answer is not reached.
+    expect(order).toEqual(["az account", "az rest", "az hosts", "az keyvault"]);
   });
 
   describe("the gateway a group member is put on", () => {

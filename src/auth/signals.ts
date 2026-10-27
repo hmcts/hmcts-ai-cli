@@ -36,11 +36,16 @@ export function needsProbes(env: Env, requested: Route | null): boolean {
  * reaching a personal subscription unawares — and nothing else, now that an explicit route
  * is obeyed rather than refused. So an explicit `HAI_ROUTE` resolves no membership at all,
  * which drops an `az account show` and an `az rest checkMemberGroups` from every run that
- * names its route. It coincides with `needsProbes` deliberately: both questions are "is
- * this the unset path, and has the environment not already settled it".
+ * names its route.
+ *
+ * It deliberately no longer coincides with `needsProbes`. Membership is the *first* branch
+ * of the unset path, so `AWS_BEARER_TOKEN_BEDROCK` being set no longer settles anything —
+ * a member with a Bedrock key in the environment belongs on the gateway. `needsProbes`
+ * still returns false there, because what it gates (the agent-hub key and the claude.ai
+ * login) genuinely cannot change the answer once an env key is in hand.
  */
-export function needsMembership(env: Env, requested: Route | null): boolean {
-  return needsProbes(env, requested);
+export function needsMembership(_env: Env, requested: Route | null): boolean {
+  return requested === null;
 }
 
 /**
@@ -83,24 +88,32 @@ export async function gatherSignals(deps: {
     seams.logger.verbose("HAI_OFFLINE=1, so agent-hub and Graph are not consulted");
   }
 
-  if (probing && !offline) {
-    base.hasStoredBedrockKey = await storedBedrockKeyPresent(deps.agentHub, seams);
-    if (base.hasStoredBedrockKey) {
-      // A stored key settles the route on Bedrock whatever the group answer turns out to
-      // be, and it cannot lead anywhere personal, so there is nothing left to ask.
-      return { signals: base, askedGraph };
-    }
-  }
-
+  // Membership is asked first because it is the first branch of the precedence table: a
+  // member goes to the gateway whatever keys exist, so a confirmed member leaves nothing
+  // for the two probes below to decide. This is also where the ordering stops being a
+  // free choice — asking the hub first and returning on a stored key, as this used to,
+  // would put a member on Bedrock and never look at the group at all.
   if (checkingGroup && !offline) {
     base.isBedrockGroupMember = await checkBedrockGroupMembership(seams);
     askedGraph = true;
   }
+  if (base.isBedrockGroupMember === true) {
+    return { signals: base, askedGraph };
+  }
 
-  // Only read when nobody has confirmed membership: a member is never routed to their own
-  // licence, so for them the answer could not change anything. `probing` is already false
-  // for an explicit route, which is the only other caller this could matter to.
-  if (probing && base.isBedrockGroupMember !== true) {
+  if (probing && !offline) {
+    base.hasStoredBedrockKey = await storedBedrockKeyPresent(deps.agentHub, seams);
+    if (base.hasStoredBedrockKey) {
+      // Nothing personal can follow a stored key, and membership is already settled as
+      // not-a-member or unknown, so there is nothing left to ask.
+      return { signals: base, askedGraph };
+    }
+  }
+
+  // A confirmed member has already returned above, so by here membership is "no" or
+  // "unknown" and a personal login is worth reading. `probing` is already false for an
+  // explicit route, which is the only other caller this could matter to.
+  if (probing) {
     base.hasHostClaudeCredential = await hasHostClaudeCredential(seams);
   }
   return { signals: base, askedGraph };

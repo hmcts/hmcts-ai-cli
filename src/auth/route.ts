@@ -77,17 +77,20 @@ function decided(signals: Signals): Omit<RouteResolution, "byName"> {
   if (signals.requestedRoute !== null) {
     return explicit(signals, signals.requestedRoute);
   }
+  if (signals.isBedrockGroupMember === true) {
+    // First on the unset path, ahead of the Bedrock keys as well as every personal
+    // credential. The gateway is the route HMCTS manages — quotas, model allow-lists,
+    // content safety and per-service cost attribution — so for a member it is the answer
+    // whatever keys happen to be lying around. A member whose gateway cannot be reached
+    // still ends up on Bedrock: `resolveAuth` downgrades, and the key chain it walks is
+    // the same env → agent-hub → prompt as before.
+    return { route: "ai-gateway", credentialSource: "gateway-apim", reasons: ["you are in the Bedrock developer group, so HMCTS pays for this session"] };
+  }
   if (signals.hasBedrockEnvKey) {
     return { route: "bedrock", credentialSource: "env", reasons: ["AWS_BEARER_TOKEN_BEDROCK is set"] };
   }
   if (signals.hasStoredBedrockKey) {
     return { route: "bedrock", credentialSource: "agent-hub", reasons: ["agent-hub holds a Bedrock API key for you"] };
-  }
-  if (signals.isBedrockGroupMember === true) {
-    // Ahead of every personal-credential branch and unconditional: each Claude Code user
-    // has a live claude.ai login, so testing for one first made this unreachable and a
-    // missing Bedrock key quietly became "bill it to them".
-    return { route: "ai-gateway", credentialSource: "gateway-apim", reasons: ["you are in the Bedrock developer group, so HMCTS pays for this session"] };
   }
   if (signals.isBedrockGroupMember === null) {
     return unknownMembership(signals);
