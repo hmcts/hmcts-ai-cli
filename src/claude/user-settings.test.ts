@@ -77,11 +77,6 @@ describe("mergeSettings", () => {
   });
 });
 
-/**
- * A shallow spread would let any user who registers a hook of their own silently discard
- * the session-registry hooks, and the only symptom would be `hair` finding nothing to
- * restore weeks later.
- */
 describe("mergeSettings over hooks", () => {
   const OURS = { hooks: registrationHooks({ bin: ["hair"] }) };
   const THEIRS = { hooks: { PreToolUse: [{ hooks: [{ type: "command", command: "mine.sh" }] }] } };

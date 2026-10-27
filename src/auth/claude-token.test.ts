@@ -27,7 +27,7 @@ describe("resolveHubClaudeToken", () => {
     // Act
     const token = await resolveHubClaudeToken({ seams, agentHub, offline: false });
 
-    // Assert — the bedrock kind is the other route's; this one is `claude`.
+    // Assert
     expect(token).toBe(TOKEN);
     expect(agentHub.kinds).toEqual(["claude"]);
   });
@@ -65,8 +65,7 @@ describe("resolveHubClaudeToken", () => {
   });
 
   it("should name the hub's refusal, which is what an owner gets today", async () => {
-    // Arrange — OWNER_READABLE is ["bedrock", "claude_md", "git_identity"], so this kind
-    // comes back 403 unless a virtual agent with a launch token asks for it.
+    // Arrange
     const agentHub = fakeHub(async () => {
       throw new Error("GET /api/agent/credentials/claude failed: 403");
     });

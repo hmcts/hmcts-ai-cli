@@ -35,10 +35,8 @@ const DOCKERD_ATTEMPTS = 60;
 const DOCKERD_POLL_MS = 1000;
 
 /**
- * Container mode: run Claude Code inside the CFT workspace image with a nested Docker
- * engine, from a bare host. The route is resolved on the host — this is where az, the
- * agent-hub and the Key Vault are reachable, and on macOS a mounted ~/.azure may hold no
- * usable session at all — and the credentials are delivered over a `docker exec` stdin.
+ * Container mode: Claude Code inside the CFT workspace image with a nested Docker engine. The
+ * route is resolved on the host, where az, the agent-hub and the Key Vault are reachable.
  */
 export async function runContainerMode(input: {
   seams: Seams;
@@ -82,8 +80,7 @@ export async function runContainerMode(input: {
     started = await ensureContainer(seams, ctx, dockerArgv);
     await deliverSecrets(seams, ctx, secretEnv);
     await deliverDockerConfig(seams, ctx);
-    // Only the session that started the container watches it: a reattaching one would be a
-    // second watcher racing the first for the same host ports.
+    // Only the session that started the container watches it: two watchers would race for the same ports.
     if (started) {
       watch = await startPortWatch(seams, ctx);
     }
@@ -91,8 +88,7 @@ export async function runContainerMode(input: {
   } finally {
     await watch?.stop();
     if (started) {
-      // The session is over, and a stopped container holds a nested engine whose state
-      // is useless: the image cache it was using lives in the named volume, not here.
+      // The image cache the nested engine was using lives in the named volume, not in the container.
       await seams.runner.run([DOCKER_BIN, "rm", "-f", ctx.sessionName], { timeoutMs: START_TIMEOUT_MS });
       seams.logger.verbose(`removed ${ctx.sessionName}`);
       await sweepSidecars(seams, ctx.sessionName);
@@ -115,8 +111,7 @@ async function gatherContext(input: { seams: Seams; added: Record<string, string
   const session = sessionName({ repoPath, requested: seams.env.HAI_SESSION });
   seams.logger.verbose(`container session ${session} for ${repoPath}`);
 
-  // A sidecar a SIGKILLed session left behind still holds its host port, with nothing
-  // behind it. A session that is up owns its sidecars, so that one is reattached to untouched.
+  // A SIGKILLed session's sidecar still holds its host port; a session that is up owns its own.
   if (!(await sessionRunning(seams, session))) {
     await sweepSidecars(seams, session);
   }
@@ -155,22 +150,15 @@ async function gatherContext(input: { seams: Seams; added: Record<string, string
       ...(await gitIdentity(seams)),
       HAI_IN_CONTAINER: "1",
       HAI_ENV_READY: "1",
-      // So the session-registry hook inside can record which container its pid belongs
-      // to: no --pid=host is passed, so that pid means nothing to a `hair` on the host,
-      // but whether this container is still running does.
+      // No --pid=host, so a pid recorded inside means nothing on the host; the container name does.
       [CONTAINER_ENV]: session,
       HAI_SECRETS_DIR: SECRETS_DIR,
       HAI_NESTED_DNS: dns.servers.join(",")
     },
-    // Per session, not per container: a reattaching terminal must bring its own route with
-    // it rather than inherit whichever one created the container. `docker exec` inherits
-    // the container's environment and these go over the top of it.
     sessionEnv: {
       ...open,
-      // Names only, no values, so this is open: the entrypoint unsets each before it
-      // exports the credentials. The devcontainer image is built for Bedrock and may set
-      // CLAUDE_CODE_USE_BEDROCK itself, which would quietly outrank a personal route's
-      // OAuth credential and make the launch line wrong about who pays.
+      // Names only, so this is open. The image is built for Bedrock and may set
+      // CLAUDE_CODE_USE_BEDROCK itself, which would outrank a personal route's credential.
       HAI_UNSET_ENV: input.removed.join(",")
     },
     secretEnv: secret,
@@ -179,9 +167,8 @@ async function gatherContext(input: { seams: Seams; added: Record<string, string
 }
 
 /**
- * The container's own state directory is not the host's, so the ai-gateway route's
- * apiKeyHelper is named at its container path and installed there by the entrypoint, and
- * the settings go inline rather than as a file the host would have to write inside.
+ * The container's state directory is not the host's, so the apiKeyHelper is named at its
+ * container path and the settings go inline rather than as a file written inside.
  */
 async function containerClaudeArgs(
   input: { seams: Seams; forwarded: string[]; hasGateway: boolean; workspaceRoot: string | null; pluginDirs: string[] },
@@ -192,8 +179,7 @@ async function containerClaudeArgs(
   const ours = buildSettings({
     inWorkspace: input.workspaceRoot !== null,
     apiKeyHelperPath: input.hasGateway ? join(ctx.containerHome, ".local", "state", "hai", HELPER_FILE) : undefined,
-    // `hair` on PATH inside the image: hai's own install is a host path this container
-    // cannot see. The registry it writes is under ~/.claude, which is mounted.
+    // `hair` on PATH inside the image: hai's own install is a host path this container cannot see.
     hooks: sessionRegistryHooks(seams, { forwarded: input.forwarded, forContainer: true })
   });
   const merged = mergeSettings(ours, user.value === undefined ? {} : await readUserSettings(seams, user.value));
@@ -292,9 +278,8 @@ async function deliverSecrets(seams: Seams, ctx: ContainerContext, secretEnv: Re
 }
 
 /**
- * The nested daemon starts with an empty registry config, so every hmctsprod pull inside
- * — cftlib's IDAM simulator, XUI — is refused. The token is minted on the host because
- * that is where the az session reliably is.
+ * The nested daemon starts with an empty registry config, so every hmctsprod pull inside is
+ * refused. The token is minted on the host, where the az session reliably is.
  */
 async function deliverDockerConfig(seams: Seams, ctx: ContainerContext): Promise<void> {
   const token = await acrPullToken(seams);

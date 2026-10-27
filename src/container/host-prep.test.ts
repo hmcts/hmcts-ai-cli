@@ -12,7 +12,7 @@ describe("hostPrepPaths", () => {
     // Act
     const paths = hostPrepPaths({ home: HOME, mounts });
 
-    // Assert — ~/.claude.json has to exist as a file, or Docker creates a directory there.
+    // Assert
     expect(paths).toEqual({
       dirs: [`${HOME}/.azure`, `${HOME}/.claude`, `${HOME}/.config/gh`, `${HOME}/.config/twg`, `${HOME}/.kube`, `${HOME}/.ssh`],
       files: [`${HOME}/.bash_history`, `${HOME}/.claude.json`, `${HOME}/.zsh_history`]

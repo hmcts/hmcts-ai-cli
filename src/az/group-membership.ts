@@ -30,10 +30,8 @@ export function parseCheckMemberGroups(stdout: string, groupId: string): boolean
 }
 
 /**
- * checkMemberGroups rather than `az ad group member check`: the latter needs a directory
- * read many HMCTS accounts do not have, while this endpoint answers for the caller's own
- * membership. Membership never blocks anything — it only decides whether the no-key
- * message asks for a key or for group membership first.
+ * checkMemberGroups rather than `az ad group member check`: the latter needs a directory read
+ * many HMCTS accounts do not have, while this endpoint answers for the caller's own membership.
  */
 export async function checkBedrockGroupMembership(deps: { runner: Runner; env: Env; logger: Logger }): Promise<boolean | null> {
   const groupId = bedrockGroupId(deps.env);

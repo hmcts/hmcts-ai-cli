@@ -13,10 +13,7 @@ export async function sbxMain(processArgv: string[], seams: Seams = createSeams(
   await reported(seams, () => launchSbx({ seams, processArgv }));
 }
 
-/**
- * The `hair` entrypoint: claims a conversation out of the session registry and hands it
- * to `main`'s `launch`, which is what resolves the route and the credentials.
- */
+/** The `hair` entrypoint: claims a conversation out of the session registry and hands it to `launch`. */
 export async function hairMain(processArgv: string[], seams: Seams = createSeams()): Promise<void> {
   await reported(seams, () => launchHair({ seams, processArgv }));
 }
@@ -25,8 +22,7 @@ async function reported(seams: Seams, run: () => Promise<void>): Promise<void> {
   try {
     await run();
   } catch (err) {
-    // Everything user-facing goes through the logger, which redacts: an error carrying a
-    // pasted key or a token from a failed az call must not land in a terminal scrollback.
+    // The logger redacts: an error carrying a pasted key or an az token must not land in a scrollback.
     seams.logger.say(messageOf(err));
     seams.exit(1);
   }

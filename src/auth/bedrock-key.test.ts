@@ -137,8 +137,7 @@ describe("resolveBedrockKey", () => {
 
   describe("a source that is not the hub, which is what a named HAI_ROUTE=bedrock resolves to", () => {
     it("should prompt without asking the hub at all", async () => {
-      // Arrange — the hub holds a key, and a named route must not reach it: its sources are
-      // the environment and a paste, and `prompt` is what the launch line says it took.
+      // Arrange
       const seams = createFakeSeams({ hiddenInput: createFakeHiddenInput([TYPED]) });
       const agentHub = fakeHub({
         getCredential: async () => {
@@ -149,8 +148,7 @@ describe("resolveBedrockKey", () => {
       // Act
       const key = await resolveBedrockKey({ seams, agentHub, offline: false, byName: true });
 
-      // Assert — and it writes nothing either: a wrong or expired key pasted here would
-      // overwrite the working one the hub holds and break every later unset-path session.
+      // Assert
       expect(key).toBe(TYPED);
       expect(agentHub.puts).toEqual([]);
       expect(seams.lines.join("")).toContain("It is not saved to agent-hub");

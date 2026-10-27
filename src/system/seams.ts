@@ -53,10 +53,8 @@ export interface Seams {
   env: Env;
   platform: string;
   /**
-   * Which machine — or which container — this process is on. The session registry records
-   * it beside each pid, because a pid means nothing outside its own PID namespace and the
-   * hook that writes a record is routinely in a different one from the `hair` that reads
-   * it. Same hostname is the cheap, no-plumbing test for "the same namespace".
+   * Which machine — or which container — this process is on. A pid means nothing outside
+   * its own PID namespace, and same hostname is the cheap test for "the same namespace".
    */
   hostname: string;
   cwd: string;
@@ -66,10 +64,8 @@ export interface Seams {
   pid: number;
   exit(code: number): never;
   /**
-   * `hair` resumes a conversation that belongs to a directory, and resume-by-id is not
-   * cwd-scoped: resuming from the wrong one rebinds project settings, hooks and CLAUDE.md
-   * discovery to wherever the terminal happened to be. The handover is an exec, so the
-   * process cwd is what the resumed session inherits.
+   * Resume-by-id is not cwd-scoped, so resuming from the wrong directory rebinds project
+   * settings, hooks and CLAUDE.md discovery to wherever the terminal happened to be.
    */
   chdir(dir: string): void;
   /** A Claude Code hook is handed its payload on stdin and nothing else. */

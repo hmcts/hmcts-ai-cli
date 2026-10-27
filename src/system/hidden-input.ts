@@ -10,9 +10,8 @@ export function createHiddenInput(
     readHidden(promptText) {
       return new Promise((resolve, reject) => {
         const rl = createInterface({ input, output, terminal: true });
-        // readline echoes every keystroke through _writeToOutput. Overriding it to pass
-        // only the prompt through is the one way to get a hidden read without taking a
-        // dependency or driving raw mode by hand.
+        // readline echoes every keystroke through `_writeToOutput`; overriding it to pass
+        // only the prompt is a hidden read without a dependency or raw mode.
         (rl as unknown as { _writeToOutput: (chunk: string) => void })._writeToOutput = (chunk) => {
           if (chunk.includes(promptText)) {
             output.write(promptText);

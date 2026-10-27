@@ -49,7 +49,6 @@ function context(overrides: Partial<ContainerContext> = {}): ContainerContext {
 /** The environment each route injects, with a credential in it, as launch would hand it over. */
 function routeEnv(route: (typeof ROUTES)[number]): Record<string, string> {
   return buildClaudeEnv({
-    // byol injects nothing but an exported token, so without one its rows prove nothing.
     env: { CLAUDE_CODE_OAUTH_TOKEN: OAUTH_TOKEN },
     route,
     bedrockKey: BEDROCK_KEY,
@@ -140,7 +139,7 @@ describe("the container config", () => {
     // Act
     const printed = [...buildDockerArgs(ctx), ...buildSessionExecArgs(ctx, ["claude"])].join(" ");
 
-    // Assert — the values, not just the names: a name in --env with the value elsewhere is fine.
+    // Assert
     for (const value of Object.values(secret)) {
       expect(printed).not.toContain(value);
     }
@@ -150,9 +149,7 @@ describe("the container config", () => {
   });
 
   it.each(ROUTES)("should keep the %s route's environment off the create, which a reattach would inherit", (route) => {
-    // Arrange — `docker run --env` is create-time only and `lockDecision` reattaches a
-    // second terminal to the first's container, so a payer fact here is the previous
-    // session's for every session after it.
+    // Arrange
     const { open } = splitEnv(routeEnv(route));
     const ctx = context({ sessionEnv: { ...open, HAI_UNSET_ENV: conflictingEnv(route).join(",") } });
 
@@ -201,8 +198,7 @@ describe("buildSessionExecArgs", () => {
   });
 
   it.each(ROUTES)("should carry the %s route's own environment and unset names, so a reattach brings its own payer", (route) => {
-    // Arrange — the hole this closes: terminal 2 running HAI_ROUTE=bedrock reattaches to
-    // terminal 1's byol container, and only the exec is per session.
+    // Arrange
     const { open } = splitEnv(routeEnv(route));
     const unset = conflictingEnv(route).join(",");
 

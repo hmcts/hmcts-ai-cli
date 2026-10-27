@@ -5,10 +5,8 @@ export const SESSION_PREFIX = "hai";
 export const NETWORK_NAME = "hai";
 
 /**
- * Claude Code keys a conversation on the workspace path with every non-alphanumeric
- * character replaced, so `~/.claude/projects/<slug>` is shared between a host session and
- * a container one whenever the repo is mounted at its host path. Container mode relies on
- * that for history, and the transcript lock exists because of it.
+ * Claude Code keys a conversation on the workspace path with every non-alphanumeric character
+ * replaced, so a host session and a container one share `~/.claude/projects/<slug>`.
  */
 export function projectSlug(path: string): string {
   return path.replace(/[^a-zA-Z0-9]/g, "-");

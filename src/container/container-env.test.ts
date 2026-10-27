@@ -11,7 +11,6 @@ describe("splitEnv", () => {
   it.each(ROUTES)("should put every credential the %s route injects on the secret side", (route) => {
     // Arrange
     const env = buildClaudeEnv({
-      // byol injects nothing but an exported token, so without one its row proves nothing.
       env: { CLAUDE_CODE_OAUTH_TOKEN: CLAUDE_TOKEN },
       route,
       bedrockKey: BEDROCK_KEY,

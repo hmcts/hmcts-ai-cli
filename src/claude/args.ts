@@ -1,11 +1,6 @@
 export const CLAUDE_BIN = "claude";
 
-/**
- * hai has no arguments of its own: everything after the executable goes to `claude`
- * verbatim, including nothing at all. There is no parsing step to intercept anything,
- * which is the whole point — `hai doctor`, `hai mcp list` and `hai --help` must reach
- * the real CLI untouched.
- */
+/** hai has no arguments of its own: everything after the executable goes to `claude` verbatim, with no parsing step. */
 export function forwardArgv(processArgv: string[]): string[] {
   return processArgv.slice(2);
 }

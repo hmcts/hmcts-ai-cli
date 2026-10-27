@@ -13,9 +13,8 @@ const SIGNALS: ContainerSignal[] = [
 ];
 
 export function isInContainer(probe: ContainerProbe): boolean {
-  // HAI_FORCE_HOST wins over everything, including HAI_FORCE_CONTAINER: it is how
-  // container mode is exercised from inside a devcontainer, which otherwise detects
-  // itself and takes the already-containerised path.
+  // HAI_FORCE_HOST beats HAI_FORCE_CONTAINER: it is the only way to exercise container
+  // mode from inside a devcontainer, which otherwise detects itself.
   if (probe.forcedHost) {
     return false;
   }

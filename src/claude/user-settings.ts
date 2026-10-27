@@ -13,12 +13,8 @@ export const API_KEY_HELPER_OVERRIDE_WARNING =
   "your --settings replaces the apiKeyHelper hai generated for the ai-gateway route, so the Entra token will stop being refreshed and the session will start failing authentication a few minutes in";
 
 /**
- * claude's `--settings` is last-wins, not merged: a second one discards the first
- * entirely. hai passes its own, so a user-supplied `--settings` has to come out of the
- * forwarded argv and be merged in, or whichever of the two loses is silently dropped.
- *
- * A bare `--` ends the options commander parses, so everything after it is prompt text
- * rather than flags: `hai -- --settings x` asks claude to read that literally.
+ * claude's `--settings` is last-wins rather than merged, so a user-supplied one has to come
+ * out of the forwarded argv and be merged in. Everything after a bare `--` is prompt text.
  */
 export function extractUserSettings(argv: string[]): { argv: string[]; value?: string } {
   const kept: string[] = [];
@@ -46,11 +42,8 @@ export function extractUserSettings(argv: string[]): { argv: string[]; value?: s
 }
 
 /**
- * The user's keys win: an explicit `--settings` is their override, and explicit beats
- * implicit. `hooks` is the exception, and has to be: a shallow spread would let a user
- * who registers any hook of their own silently discard hai's session-registry hooks, and
- * the only symptom would be `hair` finding nothing to restore weeks later. Per event the
- * two lists are concatenated, hai's first, so both run.
+ * The user's keys win, except `hooks`: those concatenate per event with hai's first, so a
+ * hook of the user's own cannot discard hai's session-registry hooks.
  */
 export function mergeSettings(ours: Settings, theirs: Settings): { settings: Settings; warnings: string[] } {
   const settings = { ...ours, ...theirs };
@@ -71,8 +64,7 @@ export function mergeSettings(ours: Settings, theirs: Settings): { settings: Set
 /** Undefined when neither side has any, so no empty `hooks` key reaches claude. */
 function mergeHooks(ours: unknown, theirs: unknown): unknown {
   if (!isHookMap(ours) || !isHookMap(theirs)) {
-    // One of them is a shape this cannot reason about — a list, a string, a schema that
-    // changed under us. The user's wins, as every other key does, and the warning says so.
+    // A shape this cannot merge: the user's wins, as every other key does, and the warning says so.
     return theirs ?? ours;
   }
   const merged: Record<string, unknown> = { ...ours, ...theirs };

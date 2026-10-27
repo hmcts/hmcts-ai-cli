@@ -9,24 +9,16 @@ import { claimPath, REGISTRY_FILE_MODE, registryDir, type SessionRecord } from "
 export const CLAIM_DIR_MODE = 0o700;
 
 /**
- * Pure over an existing claim: whose it is and whether its process is still there.
- * Same shape and same ordering as `lockDecision` in src/container/lock.ts, and for the
- * same reason — a stale holder is reclaimed, an unanswerable one is not.
- *
- * This is not the transcript lock widened. That lock keys on the project slug and asks
- * "may this session write these transcripts at all", answering refuse or reclaim for the
- * whole run; a claim keys on one session id and answers "is this conversation mine to
- * resume", where the right response to a no is to try the next conversation. Two keys,
- * two outcomes, two lifetimes.
+ * Pure over an existing claim: whose it is and whether its process is still there. A stale
+ * holder is reclaimed, an unanswerable one is not, the same as `lockDecision`.
  */
 export function claimDecision(input: { existing: ClaimFile | null; host: string; alive: boolean | null }): ClaimOutcome {
   if (input.existing === null) {
     return { action: "take", reason: "nothing holds this conversation" };
   }
   if (input.existing.host !== input.host) {
-    // A claimer's pid is in the claimer's PID namespace, same as a session's. Reclaiming
-    // on a liveness answer from the wrong namespace is how two terminals both decide a
-    // conversation is theirs, and `claude -r` forks rather than attaches.
+    // A claimer's pid means nothing outside its own PID namespace, so a liveness answer
+    // from another one is never grounds to reclaim.
     return { action: "taken", reason: `another terminal on ${input.existing.host ?? "an unnamed host"} claimed it` };
   }
   if (input.alive === false) {
@@ -56,16 +48,10 @@ export function claimContents(input: { pid: number; at: number; host: string }):
 }
 
 /**
- * Walks the candidates in order and returns the first one this process won. The claim is
- * committed *before* the handover, because the resumed session's own hook re-registers it
- * as open within seconds: a claim taken afterwards would let the next terminal pick the
- * same id, and `claude -r` on a live session forks a copy rather than attaching, so the
- * engineer would get duplicates of one conversation instead of their ten distinct ones.
- *
- * There is no shell to run `flock` through, so the primitive is `O_EXCL` on a file named
- * after the session — exactly one creator wins. Reclaiming a stale claim goes through a
- * rename, which is the other atomic operation available: the loser of a rename race finds
- * the file already gone and moves on rather than both terminals deciding it was theirs.
+ * Walks the candidates in order and returns the first one this process won, committed before
+ * the handover because the resumed session re-registers itself as open within seconds.
+ * `O_EXCL` on a file named after the session is the primitive, there being no shell for
+ * `flock`, and reclaiming a stale claim goes through the one other atomic operation, `rename`.
  */
 export async function claimFirst(
   deps: { fs: Fs; clock: Clock; runner: Runner; logger: Logger; env: Env; pid: number; hostname: string },

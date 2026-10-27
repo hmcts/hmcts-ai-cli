@@ -26,10 +26,7 @@ const SLUG = "-filed-here";
 /** What Claude Code hands every hook, and the only authoritative statement of the slug. */
 const TRANSCRIPT = transcriptPath(`${HOME}/.claude/projects/${SLUG}`, "s1");
 
-/**
- * A transcript holding a name, laid out for the hook to find and never read: it is there so
- * the "reads nothing but the registry" test would fail if the hook went looking.
- */
+/** A transcript holding a name, there so the "reads nothing but the registry" test fails if the hook looks. */
 const named = (title: string) => `${JSON.stringify({ type: "custom-title", customTitle: title, sessionId: "s1" })}\n`;
 
 const HOST = "workstation";
@@ -63,14 +60,6 @@ describe("hookDecision", () => {
     });
   });
 
-  /**
-   * `parsePayload` establishes only that the payload is a non-array object, so every field on
-   * it is unverified — and `path.dirname` throws a `TypeError` on a non-string. A throw here
-   * is a throw inside `hookDecision`, which `runHook`'s catch-all turns into the loss of the
-   * **whole registration** for that session rather than just the slug. `hookDecision` is
-   * non-throwing over any JSON object, and the record comes back without a `slug` the same
-   * way one whose payload carried no `transcript_path` does.
-   */
   it.each<[string, unknown]>([
     ["a number", 42],
     ["a null", null],
@@ -88,21 +77,11 @@ describe("hookDecision", () => {
     });
   });
 
-  /**
-   * The argv is the only name the hook has, and the only one it needs: `resolveName`
-   * re-reads the transcript at restore time and overwrites this, so the record's value is
-   * the fallback for a conversation whose transcript is not there to be read.
-   */
   it("should keep the display name hai read off the argv, no payload carrying it", () => {
     // Act / Assert
     expect(decide({ name: "pcs" })).toMatchObject({ action: "register", record: { name: "pcs" } });
   });
 
-  /**
-   * Recorded so the restore can find the transcript by one `stat` rather than by scanning
-   * every project directory. Taken out of the payload rather than computed: Claude Code
-   * fixes the slug at startup and `cwd` does not have to agree with it.
-   */
   it("should record the slug out of the payload's transcript path, not one derived from cwd", () => {
     // Act
     const outcome = decide({ payload: payload({ cwd: "/a-worktree-it-cd-ed-into" }) });
@@ -125,11 +104,6 @@ describe("hookDecision", () => {
     expect(decide({ env: { [ATTENDED_ENV]: "1" } })).toMatchObject({ action: "register", record: { pid: 0 } });
   });
 
-  /**
-   * A pid means nothing outside its own PID namespace, and container mode passes no
-   * `--pid=host`: without these the `hair` on the host would read a container's pid as if
-   * it were one of its own.
-   */
   it("should record the namespace the pid is meaningful in", () => {
     // Act
     const outcome = decide({ env: { ...ATTENDED, [CONTAINER_ENV]: "hai-pcs-123" }, host: "a1b2c3" });
@@ -161,12 +135,6 @@ describe("hookDecision", () => {
     expect(decide({ records: [record()] })).toEqual({ action: "ignore", reason: "the session is already registered and was active recently enough" });
   });
 
-  /**
-   * `at` is last activity, not registration time, because the candidate order is by
-   * recency: a conversation registered at 09:00 and worked in all day has to outrank one
-   * registered at 16:30 and left idle. Throttled to `ACTIVITY_REFRESH_MS`, because a line
-   * per prompt is what `COMPACTION_THRESHOLD` would have to absorb.
-   */
   it.each<[string, number, HookOutcome["action"]]>([
     ["within the interval", ACTIVITY_REFRESH_MS - 1, "ignore"],
     ["exactly at the interval", ACTIVITY_REFRESH_MS, "register"],
@@ -209,15 +177,6 @@ describe("hookDecision", () => {
     });
   });
 
-  /**
-   * Every reason the enum holds, one row each, because the choice between these verdicts
-   * *is* the mechanism and a single example cannot tell "every reason deregisters" from
-   * "only the ones that mean the conversation is over do". Measured on Claude Code
-   * 2.1.304: `SessionEnd` fires on a SIGTERM too, reporting `other`, so deregistering on
-   * every reason closed the record of every session a devcontainer shutdown killed —
-   * precisely the set `hair` exists to hand back. The sixth row stands in for a reason a
-   * later version adds, which must stay restorable until somebody measures it.
-   */
   it.each<[string, string | undefined, HookOutcome["action"]]>([
     ["/exit", "prompt_input_exit", "deregister"],
     ["/clear, that id no longer being a conversation to pick up", "clear", "deregister"],
@@ -231,12 +190,6 @@ describe("hookDecision", () => {
     expect(decide({ event: SESSION_END, payload: payload(reason === undefined ? {} : { reason }) })).toMatchObject({ action });
   });
 
-  /**
-   * The tempting argument, written down so it is not made again: signing out is
-   * deliberate, therefore it must be the person ending the session. It is deliberate about
-   * *credentials*. The conversation is untouched and resumable, so tombstoning it loses it
-   * for someone who logs out and straight back in. Deliberateness is not the test.
-   */
   it("should keep the entry of a session that ended on /logout, the conversation being untouched by signing out", () => {
     // Act / Assert
     expect(CONVERSATION_OVER_REASONS).not.toContain("logout");
@@ -325,12 +278,6 @@ describe("runHook", () => {
     expect(seams.fs.store.has(claimPath({ HOME }, "s1")!)).toBe(false);
   });
 
-  /**
-   * The bug this file is the regression test for: closing the editor stops the
-   * devcontainer, every session gets a SIGTERM, each one's `SessionEnd` fires with
-   * `other`, and the tombstone that used to append left `hair --list` reporting "the
-   * session was closed cleanly" about every conversation the engineer had open.
-   */
   it("should leave the record open when a session was terminated, so hair can still hand it back", async () => {
     // Arrange
     const seams = seamsIn({ stdinText: JSON.stringify(payload({ reason: "other" })), files: { [REGISTRY]: recordLine(record()) } });
@@ -383,14 +330,6 @@ describe("runHook", () => {
     expect(seams.fs.store.get(REGISTRY)).toBe(recordLine({ sessionId: "s1", cwd: "/work", state: "open", at: FIXED_NOW, pid: 900, host: HOST, slug: SLUG }));
   });
 
-  /**
-   * The case the length test alone could not see. With open records permanent, a registry
-   * whose *open* set is past the threshold can never be shrunk by a rewrite, so
-   * `lines >= COMPACTION_THRESHOLD` stays true and the one operation that can lose a
-   * concurrent append would fire on every register and every deregister for ever. Here the
-   * registry is long and entirely open and recent: the hook must append its line and leave
-   * the file alone.
-   */
   it("should not rewrite a long registry whose records are all still open, that being every hook from then on", async () => {
     // Arrange
     const open = Array.from({ length: COMPACTION_THRESHOLD }, (_, index) => recordLine(record({ sessionId: `open-${index}`, pid: 100 + index }))).join("");
@@ -432,15 +371,6 @@ describe("runHook", () => {
     expect(seams.lines.join("")).toContain("did nothing: the disk is full");
   });
 
-  /**
-   * **The registry file is the only thing a hook reads, and this is the test that keeps it
-   * that way.** Reading the conversation's title here cost a full transcript scan on every
-   * prompt — 402 ms measured on a 198 MB conversation, and the fifteen-minute throttle is no
-   * protection because the read happened before the decision that ignores the prompt. It
-   * bought nothing: `resolveName` re-reads the transcript at restore time and overwrites
-   * whatever the registry held. Both rows go through `registration`, so neither the first
-   * prompt nor a later one may touch a transcript.
-   */
   it.each<[string, Record<string, string>]>([
     ["a first prompt", {}],
     ["a prompt in a session already registered and recently active", { [REGISTRY]: recordLine(record()) }]
@@ -467,11 +397,6 @@ describe("runHook", () => {
     expect(seams.fs.store.get(REGISTRY)).toBe(unchanged);
   });
 
-  /**
-   * The slug goes in even though no name does: it is `resolveName`'s fast path to the
-   * transcript at restore time, which is why the hook wants the payload's `transcript_path`
-   * at all. The session here has `cd`-ed away from where Claude Code filed it.
-   */
   it("should record the slug for a session whose cwd has moved away from it", async () => {
     // Arrange
     const seams = seamsIn({ stdinText: JSON.stringify(payload({ cwd: "/a-worktree-it-cd-ed-into" })) });

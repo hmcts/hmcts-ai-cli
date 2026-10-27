@@ -22,10 +22,6 @@ describe("claimDecision", () => {
     expect(claimDecision({ existing, host: HOST, alive: pidAlive }).action).toBe(action);
   });
 
-  /**
-   * A claimer's pid is in the claimer's own PID namespace. Reclaiming on a liveness
-   * answer from the wrong one is how two terminals both decide a conversation is theirs.
-   */
   it.each<[string, ClaimFile]>([
     ["another host", { pid: 7, at: 1, host: "a1b2c3" }],
     ["a claim that names no host, as an older release's would", { pid: 7, at: 1 }]
@@ -107,7 +103,6 @@ describe("claimFirst", () => {
     // Arrange
     const path = claimPath({ HOME }, "a")!;
     const seams = seamsIn({ [path]: held() }, dead);
-    // The rename is the race: the loser finds the file already moved out of the way.
     seams.fs.rename = async () => {
       throw new Error("no such file");
     };

@@ -20,11 +20,6 @@ describe("createFs", () => {
     expect(await fs.readText(root)).toBeNull();
   });
 
-  /**
-   * A Claude Code transcript runs to 198 MB on this engineer's machine, so the title scan
-   * streams it rather than holding it. The trailing newline every transcript ends with is
-   * not a line of its own.
-   */
   it("should read a file a line at a time, without a trailing empty one", async () => {
     // Arrange
     const path = join(root, "transcript.jsonl");
@@ -41,10 +36,6 @@ describe("createFs", () => {
     expect(lines).toEqual(['{"type":"user"}', '{"type":"ai-title"}']);
   });
 
-  /**
-   * The same contract `readText`'s null gives, in iterator form: this is read from a hook,
-   * and a hook never breaks a session.
-   */
   it.each<[string, string[]]>([
     ["a file that is not there", [root, "no-transcript.jsonl"]],
     ["a directory, which is not text", [root]]

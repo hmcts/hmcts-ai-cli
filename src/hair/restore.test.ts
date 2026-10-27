@@ -44,11 +44,6 @@ describe("restoreDecision", () => {
     expect(decide({ alive: null }).reason).toContain("cannot be told");
   });
 
-  /**
-   * Ahead of the probes, because that is the point of it: a retired record costs no `ps`
-   * and no `stat`. It is decided before liveness and before the directory check, so the
-   * `false`/`null` the probes never gathered for it cannot be read as an answer.
-   */
   it("should retire an untouched record ahead of the probes, saying how long it has been", () => {
     // Act / Assert
     expect(decide({ record: record({ at: FIXED_NOW - 21 * DAY }), cwdExists: false, alive: true }).reason).toBe(
@@ -56,11 +51,6 @@ describe("restoreDecision", () => {
     );
   });
 
-  /**
-   * `process.chdir` throws, and the claim is taken first, so a record pointing at a
-   * deleted worktree would end `hair` with the claim held and the next run would reclaim
-   * it and fail again — for every conversation, until the registry was hand-edited.
-   */
   it("should decide a missing directory before liveness, rather than let the chdir throw later", () => {
     // Act / Assert
     expect(decide({ cwdExists: false, alive: false }).reason).toBe("its directory /work is gone, so there is nowhere to resume it");
@@ -94,13 +84,6 @@ describe("restoreCandidates", () => {
     expect(candidates.map((r) => r.sessionId)).toEqual(["here-new", "here-old", "elsewhere-new", "elsewhere-old"]);
   });
 
-  /**
-   * One directory, so nothing but `at` decides, which is what tells newest-first from the
-   * oldest-first this used to do. Nothing retires an open record — a conversation stepped
-   * out of with `/resume` stays open until `RESTORE_WINDOW_MS` retires it, so the pile
-   * holds a week of them. Oldest-first handed an engineer with three tabs the three oldest
-   * things in it and left the three they had actually been in waiting behind them.
-   */
   it("should hand back the conversation that was live most recently, the stale ones sinking to the bottom", () => {
     // Arrange
     const records = [
@@ -165,11 +148,6 @@ describe("describeCandidate", () => {
   });
 });
 
-/**
- * A pid only means something in its own PID namespace, and the hook that records one
- * routinely runs in a different one from the `hair` that reads it: container mode passes
- * no `--pid=host`.
- */
 describe("livenessPlan", () => {
   it.each<[string, Partial<SessionRecord>, string | undefined, "pid" | "container" | "none"]>([
     ["ask ps when the record was written where we are standing", {}, HOST, "pid"],
@@ -212,11 +190,6 @@ describe("probeLiveness", () => {
     expect(liveness.get("a")).toBe(expected);
   });
 
-  /**
-   * Pid 0 cannot be `false`. "No pid recorded" is not "no process": the session may be
-   * the very one running in this terminal, and calling it dead would let a second `hair`
-   * claim it and fork the conversation.
-   */
   it("should treat a registration with no pid as unanswerable rather than as gone", async () => {
     // Arrange
     const seams = seamsFor(() => undefined);
@@ -267,11 +240,6 @@ describe("probeLiveness", () => {
     expect(liveness.size).toBe(0);
   });
 
-  /**
-   * The cost that made retirement necessary. Only an allow-listed reason writes a
-   * tombstone, so without a window every conversation the engineer has ever had is an open
-   * record and each one is a sequential `ps` on every `hair` and every `hair --list`.
-   */
   it("should ask nothing about the records the window has retired, which is what bounds the probe", async () => {
     // Arrange
     const seams = seamsFor(() => ({ code: 1 }));
@@ -317,12 +285,6 @@ describe("resolveName", () => {
   /** A project directory that is nothing like the fixture record's `/work`, which is the point. */
   const SLUG = "-filed-somewhere-else";
 
-  /**
-   * The registry's `name` is a cache of something Claude Code owns, and it can be up to
-   * `ACTIVITY_REFRESH_MS` behind: `/rename` at 16:55 and the container lost at 17:00 leaves
-   * the record holding the old name and the transcript holding the new one. The transcript
-   * is authoritative at the moment the name is wanted.
-   */
   it("should prefer the title the transcript holds over a record name that disagrees with it", async () => {
     // Arrange
     const seams = createFakeSeams({ env: { HOME }, files: { [transcriptOf(SLUG, "a")]: named("the renamed one") } });
@@ -342,13 +304,6 @@ describe("resolveName", () => {
     expect(await resolveName(seams, record({ sessionId: "a" }))).toEqual(record({ sessionId: "a", name: "hai-resume" }));
   });
 
-  /**
-   * The fallback's real case is a transcript that is not there — deleted since the
-   * registration, or filed where `findProjectDir` cannot find it. It is **not** the
-   * `-n/--name` case: measured, `claude -n X` writes
-   * `{"type":"custom-title","customTitle":"X"}` as line 1 of the transcript before the first
-   * prompt, so `readSessionTitle` answers for a `-n` session too.
-   */
   it.each<[string, Record<string, string>]>([
     ["no transcript exists — it has been deleted since the registration", {}],
     ["the transcript carries no title record", { [transcriptOf(SLUG, "a")]: `${JSON.stringify({ type: "user" })}\n` }],
@@ -374,14 +329,6 @@ describe("resolveName", () => {
     expect(Object.keys(resolved)).not.toContain("name");
   });
 
-  /**
-   * The record's `cwd` says nothing about where its transcript is. Measured against the five
-   * open records in one live registry, a slug derived from `cwd` named the right project
-   * directory for two of them: the other three had registered in worktrees and sub-repos
-   * while Claude Code had filed them under the directory the session was started from. None
-   * of those records carries a slug either, so the session-id scan is the only thing that
-   * finds them — and it does, because a session id is unique.
-   */
   it("should find a conversation filed nowhere near its cwd, with no slug recorded to point at it", async () => {
     // Arrange
     const seams = createFakeSeams({ env: { HOME }, files: { [transcriptOf(SLUG, "a")]: named("filed under the workspace root") } });
@@ -394,21 +341,12 @@ describe("resolveName", () => {
   });
 });
 
-/**
- * The list surface. The bare form resolves the claimed record alone, so this is the only
- * caller that reads a name per candidate — and the only one with a line to print for each of
- * them.
- */
 describe("resolveNames", () => {
   const HOME = "/home/dev";
   const transcriptOf = (slug: string, sessionId: string) => transcriptPath(`${HOME}/.claude/projects/${slug}`, sessionId);
   const named = (name: string) => `${JSON.stringify({ type: "custom-title", customTitle: name })}\n`;
   const SLUG = "-filed-somewhere-else";
 
-  /**
-   * One lookup per candidate, keyed on that candidate's own id — a name read for the wrong
-   * conversation is worse than no name at all.
-   */
   it("should resolve each candidate against its own transcript, in the order it was given", async () => {
     // Arrange
     const seams = createFakeSeams({

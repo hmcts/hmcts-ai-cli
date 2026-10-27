@@ -15,26 +15,10 @@ export function canPrompt(seams: Seams): boolean {
 }
 
 /**
- * How far this may look is the route's own `byName`, not a second decision of its own.
- *
- * A named `HAI_ROUTE=bedrock` is one credential from one source — the environment, or a
- * paste — so agent-hub is not one of them. Reading it anyway broke "no fallbacks" and made
- * the launch line say `prompt` for a key that had come off the hub.
- *
- * The unset path keeps the whole chain, env → agent-hub → prompt, whichever branch of
- * `resolveRoute` sent it here. `credentialSource` cannot stand in for this: `prompt` is
- * also what the AI-Gateway downgrade reports, and there a hub read is exactly right —
- * `gatherSignals`' probe may have thrown (a 5xx, or its 15s timeout) while the Key Vault
- * failed separately for a VPN that is down, and asking someone to paste a key the hub
- * already holds both wastes the key and overwrites it on the way back out.
- *
- * The hub read and the hub write stand or fall together. A key pasted on the unset path is
- * saved back when it can be, which is what lets the next run find it; a named route neither
- * reads nor writes it, because an engineer who pastes a wrong or expired key under
- * `HAI_ROUTE=bedrock` would otherwise overwrite the working key the hub holds and break
- * every later unset-path session — the same overwrite hazard that makes the downgrade read
- * the hub first. When a save is attempted and fails, the key is used for this session only
- * and the user is told so.
+ * How far this may look is the route's own `byName`: a named `HAI_ROUTE=bedrock` is the
+ * environment or a paste, while the unset path keeps the whole env → agent-hub → prompt
+ * chain. The read and the write go together, so a key pasted under a named route never
+ * overwrites the one the hub holds.
  */
 export async function resolveBedrockKey(deps: { seams: Seams; agentHub: AgentHub; offline: boolean; byName: boolean }): Promise<string> {
   const { seams, agentHub } = deps;

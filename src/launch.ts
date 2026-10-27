@@ -26,13 +26,11 @@ export async function launch(deps: { seams: Seams; processArgv: string[] }): Pro
   const contained = isInContainer(probe);
   seams.logger.verbose(contained ? `already containerised: ${containerReasons(probe).join("; ")}` : `${hostReason(probe)}, so hai starts the container itself`);
 
-  // Re-exec with the argv as typed, so the new release makes its own decisions about it.
   if (await updatedAndReExeced(deps, forwarded)) {
     return;
   }
 
-  // A nested hai inside an environment we already built has nothing to resolve, and
-  // paying for an agent-hub round trip per nesting level adds up fast.
+  // A nested hai inside an environment we already built has nothing to resolve.
   const envReady = isEnabled(seams.env, "HAI_IN_CONTAINER") && isEnabled(seams.env, "HAI_ENV_READY");
   if (envReady) {
     seams.logger.verbose("HAI_IN_CONTAINER=1 and HAI_ENV_READY=1, so the route is already resolved");
@@ -43,22 +41,18 @@ export async function launch(deps: { seams: Seams; processArgv: string[] }): Pro
   const auth = envReady ? null : await resolveAuth({ seams, agentHub });
   if (auth !== null) {
     const { route, credentialSource, reasons } = auth.resolution;
-    // Unconditional, and before the credential is fetched so it is also the answer to "why
-    // am I being asked to paste a key": two routes bill a personal Claude licence and two
-    // bill HMCTS, and the name does not say which.
+    // Unconditional, and before the credential is fetched, so it also answers "why am I being asked to paste a key".
     seams.logger.say(billingNote(route));
     seams.logger.verbose(`${route} via ${credentialSource}: ${reasons.join("; ")}`);
   }
   const credentials = auth === null ? {} : await collectCredentials({ seams, agentHub }, auth);
   const added = auth === null ? {} : buildClaudeEnv({ env: seams.env, route: auth.resolution.route, ...credentials });
-  // Not setting a variable is not the same as removing one: the handover below is the
-  // process environment with `added` over it, so another payer's credential or switch
-  // would survive and the line just printed would be a lie.
+  // Not setting a variable is not the same as removing one: the handover below is the process
+  // environment with `added` over it, so another payer's credential or switch would survive.
   const removed = auth === null ? [] : conflictingEnv(auth.resolution.route);
   const dropped = removed.filter((name) => isSet(seams.env, name));
-  // A credential of the engineer's own that this route will not use is said out loud rather
-  // than left at verbose: without it the only clue is claude's own "invalid API key", with
-  // nothing anywhere saying hai took it away. A switch is not news in the same way.
+  // Said out loud rather than at verbose: otherwise the only clue is claude's own "invalid API key",
+  // with nothing saying hai took the credential away. A switch is not news in the same way.
   const droppedCredentials = dropped.filter(isSecretEnvKey);
   if (auth !== null && droppedCredentials.length > 0) {
     seams.logger.say(`cleared ${droppedCredentials.join(", ")} — a credential the ${auth.resolution.route} route does not use, so claude will not see it`);
@@ -99,9 +93,8 @@ export async function launch(deps: { seams: Seams; processArgv: string[] }): Pro
     userArgs: user.argv
   });
 
-  // No markers here: this exec replaces the process in place, so HAI_ENV_READY would be
-  // inherited by every shell in the session and short-circuit each nested hai past the
-  // update check for good. Only a container hai starts gets them (src/container/run.ts).
+  // No markers here: this exec replaces the process in place, so HAI_ENV_READY would be inherited
+  // by every shell in the session and short-circuit each nested hai past the update check.
   const env = { ...asProcessEnv(seams.env), ...added };
   for (const name of removed) {
     delete env[name];

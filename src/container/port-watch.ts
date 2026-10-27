@@ -12,9 +12,7 @@ import { createDebounce, listeners, parseProcNet } from "./proc-net.js";
 
 /**
  * One container per port, forwarding to the session over the user-defined network. Docker
- * cannot add a mapping to a running container — `docker update` has no `--publish`, and
- * mappings are create-time only — so a port a server in the session starts listening on can
- * only be published by something that is itself created with a `-p`.
+ * mappings are create-time only, so a new listener can only be published by a new container.
  */
 export const SOCAT_IMAGE = "alpine/socat";
 
@@ -36,12 +34,6 @@ export function sidecarName(session: string, port: number): string {
   return `${session}-port-${port}`;
 }
 
-/**
- * A host-side TCP proxy to the session's own address was the alternative and is dead on
- * Docker Desktop, where the bridge lives inside the VM and 172.17.x.x is unreachable from
- * the Mac. A sidecar is a container with a real `-p`, so Docker Desktop forwards it like
- * any other.
- */
 export function buildSidecarArgs(input: { sessionName: string; network: string; port: number; publicPorts: boolean }): string[] {
   return [
     DOCKER_BIN,
@@ -93,12 +85,7 @@ export function portsStatePath(env: Env, sessionName: string): string {
   return join(statePath(env, "ports"), `${sessionName}.ports.json`);
 }
 
-/**
- * Which of the ports now listening still need a decision. A port is decided once and never
- * revisited, so a host number another process holds is reported once rather than every
- * tick. One in the host's ephemeral range is nothing to hold, which is what bounds the
- * sidecars.
- */
+/** Which of the ports now listening still need a decision. A port is decided once and never revisited. */
 export function pendingPorts(input: { open: number[]; local: number[]; decided: number[]; noted: number[]; ephemeralLow: number }): PendingPorts {
   const decided = new Set(input.decided);
   const noted = new Set(input.noted);
@@ -120,8 +107,6 @@ export function describePortEntry(entry: PortEntry): string {
     case "loopback-only":
       return `skipped ${entry.port}: it listens on 127.0.0.1 inside the session, which nothing outside can reach. Bind it to 0.0.0.0 to have it published.`;
     default:
-      // The probe cannot close the race with whatever else is starting on this host, and the
-      // raw daemon error reads like a hai bug. A timed-out `docker run` says nothing at all.
       return ALLOCATED.test(entry.detail ?? "")
         ? `could not publish ${entry.port}: it was free moments earlier, when hai checked, and something else took it before the sidecar could bind it.`
         : `could not publish ${entry.port}: ${firstLine(entry.detail ?? "")}`;
@@ -150,9 +135,8 @@ export async function ensureSocatImage(deps: { runner: Runner; logger: Logger })
 }
 
 /**
- * Every sidecar this session's name is on, removed. A sidecar outliving its session would
- * hold a host port whose server died with the session, so this runs both before a container
- * is created and once its session has ended.
+ * Every sidecar this session's name is on, removed. One outliving its session holds a host
+ * port whose server is gone, so this runs before a container is created and after it ends.
  */
 export async function sweepSidecars(deps: { runner: Runner; logger: Logger }, sessionName: string): Promise<number> {
   const listed = await deps.runner.run(buildSweepListArgs(sessionName));
@@ -169,11 +153,7 @@ export async function sweepSidecars(deps: { runner: Runner; logger: Logger }, se
   return ids.length;
 }
 
-/**
- * The log and the two copies of the state: one in the state directory and one inside the
- * session. A write that fails is logged and dropped — the session is worth more than the
- * record of it, and the next note writes the whole state again.
- */
+/** The log and the two copies of the state: one in the state directory, one inside the session. */
 export function createPortRecord(deps: { fs: Fs; runner: Runner; clock: Clock; env: Env; logger: Logger }, ctx: SessionRef): PortRecord {
   const path = portsStatePath(deps.env, ctx.sessionName);
   const entries = new Map<number, PortEntry>();
@@ -197,8 +177,6 @@ export function createPortRecord(deps: { fs: Fs; runner: Runner; clock: Clock; e
 
   return {
     path,
-    // The session name is stable per repo, so without this a session that publishes nothing
-    // leaves the last one's URLs in the state dir, advertised as current.
     reset: write,
     async note(entry) {
       entries.set(entry.port, { ...entry, at: stamp(deps.clock) });
@@ -225,8 +203,7 @@ export function createPortPublisher(
   return async function tick() {
     const read = await deps.runner.run(buildReadTablesArgs(ctx));
     const sockets = parseProcNet(read.stdout);
-    // No socket at all means the output was a message rather than a table: the session is
-    // still starting, is stopping, or has gone. The round is skipped and nothing is decided.
+    // No socket at all means the output was a message, not a table: the session is starting, stopping or gone.
     if (sockets.length === 0) {
       return "unread";
     }
@@ -268,10 +245,8 @@ export function createPortPublisher(
 }
 
 /**
- * The watch, for the life of the session. Claude Code's TUI owns the terminal from the
- * moment this returns, so nothing here writes to it: every decision goes to the log in the
- * state directory and to the two copies of the state. The last thing the session's own
- * logger says is anything that stopped the watch from starting at all.
+ * The watch, for the life of the session. Claude Code's TUI owns the terminal from the moment
+ * this returns, so every decision goes to the log rather than to it.
  */
 export async function startPortWatch(deps: { runner: Runner; fs: Fs; net: Net; clock: Clock; env: Env; logger: Logger }, ctx: PublishRef): Promise<PortWatch> {
   const idle: PortWatch = { stop: async () => undefined };
@@ -336,8 +311,7 @@ async function createWatchLog(deps: { fs: Fs; clock: Clock; env: Env }, sessionN
   let tail = Promise.resolve();
   const logger = createLogger({
     isVerbose: true,
-    // Appends are queued behind one another rather than awaited, because Logger is
-    // synchronous; a failed one is dropped, the log being the least of what is at stake.
+    // Queued rather than awaited, because Logger is synchronous.
     write: (text) => {
       tail = tail.then(() => deps.fs.appendText(path, `${stamp(deps.clock)} ${text}`, { mode: STATE_FILE_MODE })).catch(() => undefined);
     }

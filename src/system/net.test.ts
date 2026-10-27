@@ -2,8 +2,7 @@ import { createServer, type Server } from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
 import { createNet } from "./net.js";
 
-// A real listener, arranged with node:http so the probe under test is not the thing that
-// also sets the port up. Any TCP listener makes the bind fail the same way.
+// A real listener, arranged with node:http so the probe under test is not what sets the port up.
 async function listening(): Promise<{ server: Server; port: number }> {
   const server = createServer();
   await new Promise<void>((resolve) => server.listen(0, "0.0.0.0", resolve));

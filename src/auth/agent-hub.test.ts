@@ -48,8 +48,7 @@ describe("createAgentHub", () => {
     // Act
     await api.getCredential(kind);
 
-    // Assert — the kind was hardcoded to bedrock, which is why the agent-hub route could
-    // not ask for the claude one at all.
+    // Assert
     expect(fetches[0]?.url).toBe(`${DEFAULT_AGENT_HUB_URL}/api/agent/credentials/${kind}`);
   });
 

@@ -5,15 +5,10 @@ import type { HookSettings } from "./hooks.js";
 
 export const SETTINGS_FILE = "settings.json";
 
-/**
- * `Settings` rather than `Record<string, string>`: the session-registry hooks are a
- * nested object, and claude's settings schema was never flat anyway.
- */
 export function buildSettings(input: { inWorkspace: boolean; apiKeyHelperPath?: string; hooks?: HookSettings }): Settings {
   const settings: Settings = {};
   if (input.inWorkspace) {
-    // Claude Code ignores crossSessionInbound in project settings, so it has to come in
-    // through --settings.
+    // Claude Code ignores crossSessionInbound in project settings, so it has to come in through --settings.
     settings.crossSessionInbound = "accept";
   }
   if (input.apiKeyHelperPath !== undefined) {
@@ -25,11 +20,7 @@ export function buildSettings(input: { inWorkspace: boolean; apiKeyHelperPath?: 
   return settings;
 }
 
-/**
- * `--settings` takes either JSON or a path. A path is only worth the write when the
- * settings carry the apiKeyHelper, which has to live next to the helper script in the
- * 0700 state dir anyway.
- */
+/** `--settings` takes either JSON or a path; a path is only worth the write when the settings carry the apiKeyHelper. */
 export async function materialiseSettings(deps: { fs: Fs; env: Env }, settings: Settings, asFile: boolean): Promise<string | undefined> {
   if (Object.keys(settings).length === 0) {
     return undefined;
@@ -44,5 +35,5 @@ export async function materialiseSettings(deps: { fs: Fs; env: Env }, settings: 
   return path;
 }
 
-/** A user-supplied `--settings` can carry any shape claude accepts, not just hai's strings. */
+/** A user-supplied `--settings` can carry any shape claude accepts. */
 export type Settings = Record<string, unknown>;

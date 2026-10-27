@@ -145,7 +145,7 @@ describe("takeLock", () => {
   });
 
   it("should refuse rather than guess when ps itself could not run", async () => {
-    // Arrange — an unanswerable question is not grounds to take someone else's lock.
+    // Arrange
     const seams = seamsWith({ [PATH]: JSON.stringify(HELD) }, (argv) =>
       argv[0] === "docker" ? { code: 125, stderr: "daemon unreachable" } : { code: 127, stderr: "ps: not found" }
     );

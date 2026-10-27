@@ -18,8 +18,7 @@ export function createFs(): Fs {
 
     async writeText(path, content, opts = {}) {
       await writeFile(path, content, { encoding: "utf8", mode: opts.mode });
-      // writeFile only applies `mode` when it creates the file, so a pre-existing one
-      // keeps whatever permissions it had. These files hold tokens, so set it either way.
+      // writeFile applies `mode` only when it creates the file, and these files hold tokens.
       if (opts.mode !== undefined) {
         await chmod(path, opts.mode);
       }
@@ -86,12 +85,8 @@ export function createFs(): Fs {
 }
 
 /**
- * A line at a time off a read stream, so a file far larger than anything worth holding can
- * still be scanned. Claude Code's transcripts are the case: the largest on one engineer's
- * machine is 198 MB, and `readText` would turn that into a single string.
- *
- * Errors stop the iteration rather than propagating, which is `readText`'s "null rather
- * than a throw" in iterator form — an absent file and a directory both yield nothing.
+ * A line at a time off a read stream, so a file too large to hold can still be scanned.
+ * Errors stop the iteration rather than propagating: an absent file yields nothing.
  */
 async function* streamLines(path: string): AsyncGenerator<string> {
   const stream = createReadStream(path, { encoding: "utf8" });
@@ -102,8 +97,7 @@ async function* streamLines(path: string): AsyncGenerator<string> {
   } catch {
     return;
   } finally {
-    // A consumer that stops early — and every caller here may — leaves the fd open
-    // otherwise.
+    // A consumer that stops early would otherwise leave the fd open.
     stream.destroy();
   }
 }
@@ -116,25 +110,11 @@ export interface DirEntry {
 export interface Fs {
   /** Null rather than a throw when the path is absent or unreadable: every caller treats both as "no signal". */
   readText(path: string): Promise<string | null>;
-  /**
-   * One line at a time, for the files that are too big to hold: a Claude Code transcript
-   * runs to hundreds of megabytes. Nothing is thrown — an absent or unreadable path yields
-   * no lines, the same signal `readText`'s null gives.
-   */
+  /** One line at a time, for the files too big to hold; an absent or unreadable path yields no lines. */
   readLines(path: string): AsyncIterable<string>;
   writeText(path: string, content: string, opts?: { mode?: number }): Promise<void>;
-  /**
-   * The port watcher's log, which is a running record rather than a state file — and the
-   * session registry, where an O_APPEND write of one short line is what lets ten sessions
-   * record themselves without a lock.
-   */
   appendText(path: string, content: string, opts?: { mode?: number }): Promise<void>;
-  /**
-   * `O_EXCL`: creates the file or reports that someone else already had. The only atomic
-   * "exactly one of us wins" primitive available without a shell to run `flock`, and what
-   * the restore claim is built on — ten terminals starting at once must not resume the
-   * same conversation, because `claude -r` on a live session forks a copy of it.
-   */
+  /** `O_EXCL`: creates the file, or reports that someone else already had. */
   createExclusive(path: string, content: string, opts?: { mode?: number }): Promise<boolean>;
   mkdirp(path: string, opts?: { mode?: number }): Promise<void>;
   /** Atomic within a filesystem, so a config seeded by writing a temp file next to it is never half-written. */

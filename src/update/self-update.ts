@@ -15,40 +15,31 @@ const INSTALL_TIMEOUT_MS = 120_000;
 /** The placeholder version in the repo; CI owns the real one and bumps it on publish. */
 export const UNPUBLISHED_VERSION = "0.0.0";
 
-/**
- * Whether to leave the installed version alone, and what to say about it. First match
- * wins, so the precedence between the switches is this one table.
- */
+/** Whether to leave the installed version alone, and what to say about it. First match wins. */
 export function skipUpdateCheck(input: { env: Env; currentVersion: string }): SkipUpdateCheck {
   const { env } = input;
   if (isEnabled(env, "HAI_NO_UPDATE")) {
     return { skip: true, reason: "HAI_NO_UPDATE=1, so the update check is skipped" };
   }
   if (isEnabled(env, "HAI_UPDATED")) {
-    // We are the re-exec after an update. Checking again here is how a broken release
-    // turns into a loop, and saying anything would be noise on every post-update run.
+    // The re-exec after an update: checking again is how a broken release turns into a loop.
     return { skip: true, reason: null };
   }
   if (isEnabled(env, "HAI_DRY_RUN")) {
-    // A dry run shows what would happen, so it may not install anything or even ask.
+    // A dry run shows what would happen, so it may not install anything.
     return { skip: true, reason: "HAI_DRY_RUN=1, so the update check is skipped" };
   }
   if (isEnabled(env, "HAI_OFFLINE")) {
     return { skip: true, reason: "HAI_OFFLINE=1, so the update check is skipped" };
   }
   if (input.currentVersion === UNPUBLISHED_VERSION) {
-    // An unpublished local build: every published version looks newer, so a working copy
-    // would replace itself with the feed's copy on every single run.
+    // Every published version looks newer than 0.0.0, so a working copy would replace itself on every run.
     return { skip: true, reason: `running an unpublished ${UNPUBLISHED_VERSION} build, so the update check is skipped` };
   }
   return { skip: false, reason: null };
 }
 
-/**
- * Automatic and quiet: there is no subcommand because every name worth taking already
- * belongs to `claude`. Any network trouble is invisible unless HAI_VERBOSE=1, because an
- * unreachable feed is not the engineer's problem right now.
- */
+/** Automatic and quiet: there is no subcommand because `claude` owns every name worth taking, and network trouble is silent unless HAI_VERBOSE=1. */
 export async function maybeSelfUpdate(deps: { seams: Seams; currentVersion: string }): Promise<SelfUpdateOutcome> {
   const { seams } = deps;
   const skip = skipUpdateCheck({ env: seams.env, currentVersion: deps.currentVersion });
@@ -68,8 +59,7 @@ export async function maybeSelfUpdate(deps: { seams: Seams; currentVersion: stri
     execPath: seams.execPath,
     packagePath: packageRoot(),
     npmCommand: seams.env.npm_command,
-    // Checked up front so an unwritable prefix becomes a printed command rather than a
-    // failed install. Never sudo.
+    // Checked up front so an unwritable prefix is a decision, not a failed install.
     prefixWritable: await seams.fs.isWritable(packageRoot())
   });
   if (plan.manualCommand !== null) {
@@ -107,11 +97,7 @@ export async function readCurrentVersion(deps: { fs: Fs }): Promise<string> {
   }
 }
 
-/**
- * Never cached. One GET behind a short timeout is cheaper than the state file it would
- * take, and a cached answer is how a published release stays invisible for hours. The
- * feed allows anonymous reads.
- */
+/** Never cached: a cached answer is how a published release stays invisible for hours. */
 async function latestVersion(deps: { seams: Seams }): Promise<string | null> {
   const { seams } = deps;
   try {

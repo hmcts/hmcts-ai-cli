@@ -23,11 +23,8 @@ const MIB_PER_GIB = 1024;
 const BYTES_PER_MIB = 1048576;
 
 /**
- * Once the sbx package is upgraded under a running sandboxd, sbx holds every command until
- * the daemon is restarted onto the installed version. It says so on a stderr prompt and
- * then reads stdin, so a piped or captured call throws the prompt away and waits for an
- * answer that never comes: the call hangs for good, having printed nothing. `sbx version`
- * is the one command that answers without the gate, which is why it is the probe.
+ * With the CLI and a running sandboxd on different versions, sbx holds every command behind a
+ * stderr prompt it then waits on. `sbx version` is the one command that answers without that gate.
  */
 export function parseSbxVersion(stdout: string): SbxVersion {
   try {
@@ -43,9 +40,8 @@ export function parseSbxVersion(stdout: string): SbxVersion {
 }
 
 /**
- * The restart stops every running sandbox, other sessions' included, so it is reported
- * rather than done. A probe that cannot tell says nothing: the usual case is no mismatch,
- * and wrongly refusing to start would cost more than the hang this is here to prevent.
+ * The restart stops every running sandbox, other sessions' included, so it is reported rather
+ * than done. A probe that cannot tell says nothing.
  */
 export function daemonMismatch(version: SbxVersion): string | null {
   const { client, server, state } = version;
@@ -90,9 +86,8 @@ export function sizeMib(value: string | null): number {
 }
 
 /**
- * Host-wide, and read only as a sandbox is created, so this is the one moment it can be
- * put right. **Only ever raised**: a bigger size someone chose for their own sandboxes
- * stays. Anything unparseable reads as 0 and is therefore raised.
+ * Host-wide, and read only as a sandbox is created, so this is the one moment it can be put
+ * right. Only ever raised: a bigger size someone chose for their own sandboxes stays.
  */
 export function volumeSizeDecision(current: string | null): { needed: boolean; reason: string } {
   if (sizeMib(current) >= sizeMib(DOCKER_VOLUME_SIZE)) {
@@ -139,10 +134,8 @@ export function kitComparable(record: KitRecord | null): { yes: boolean; reason:
 }
 
 /**
- * `latest` is the tag's digest and `indexDigests` the children of the multi-arch index it
- * points at. A sandbox records the digest of the one arch that was pulled, so a difference
- * from the tag is not staleness by itself — that is a real false positive. Nothing here may
- * stop a launch, so every path that cannot tell reports not stale.
+ * A sandbox records the digest of the one architecture it pulled, so a difference from the
+ * tag's own digest is not staleness by itself. Every path that cannot tell reports not stale.
  */
 export function kitStaleness(input: { recorded: string; latest: string | null; indexDigests: string[] | null }): { stale: boolean; reason: string } {
   if (input.latest === null || input.latest === "") {

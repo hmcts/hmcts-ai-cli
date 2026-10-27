@@ -48,13 +48,7 @@ const CREDENTIAL_NOTE =
 
 /**
  * Docker Sandboxes mode: the session runs in an sbx microVM built from the published
- * cft-workspace kit, rather than in a container hai starts itself. A port of
- * cft-workspace's scripts/sbx-claude, minus the port watcher, the --update state
- * snapshot/restore and the host settings denylist.
- *
- * Nothing secret travels: sbx injects the Anthropic credential itself from its own secret
- * store, and the one token hai does mint — the hmctsprod pull token — goes in on a
- * `sbx secret set --password-stdin` stdin.
+ * cft-workspace kit. sbx injects the Anthropic credential itself from its own secret store.
  */
 export async function runSbxMode(input: { seams: Seams; forwarded: string[]; workspaceRoot: string | null }): Promise<void> {
   const { seams } = input;
@@ -80,8 +74,7 @@ export async function runSbxMode(input: { seams: Seams; forwarded: string[]; wor
 
   await allowKitSource(seams);
   await raiseDockerVolume(seams);
-  // Only the create pulls, so only the create needs a fresh token; a reattach refreshes
-  // neither scope, which is why a long-running sandbox needs scripts/sbx-setup re-run.
+  // Only the create pulls, so only the create needs a fresh token.
   await refreshRegistrySecret(seams);
   await prepareHost(seams, ctx);
   seams.logger.say(`creating sandbox ${ctx.name} from ${ctx.kit}`);
@@ -96,8 +89,7 @@ async function gatherContext(input: { seams: Seams; forwarded: string[]; workspa
   }
   const workspace = input.workspaceRoot ?? (await gitToplevel(seams));
   const name = sessionName({ repoPath: workspace, requested: seams.env.HAI_SESSION });
-  // Shared with the host, so conversations outlive the sandbox and are the same history a
-  // host session reads. Do not run Claude on the host in this checkout at the same time.
+  // Shared with the host, so conversations outlive the sandbox; there is no transcript lock.
   const historyDir = join(home, ".claude", "projects");
   return {
     name,
@@ -110,9 +102,8 @@ async function gatherContext(input: { seams: Seams; forwarded: string[]; workspa
 }
 
 /**
- * `sbx version --json` answers without the version gate, so it is both the "is sbx here"
- * probe and the mismatch probe. The Runner closes stdin on every call, which is what keeps
- * a prompt sbx does not know about from becoming a silent hang.
+ * `sbx version --json` answers without the version gate, so it is both the "is sbx here" probe
+ * and the mismatch probe. The Runner closes stdin, so an unexpected prompt cannot hang.
  */
 async function requireSbxDaemon(seams: Seams): Promise<void> {
   const result = await seams.runner.run(buildVersionArgs(), { timeoutMs: SBX_TIMEOUT_MS });
@@ -194,9 +185,8 @@ async function raiseDockerVolume(seams: Seams): Promise<void> {
 }
 
 /**
- * One token, stored in both of sbx's registry scopes. sbx keeps its own secret store, so
- * `az acr login` on the host does nothing for it. The token lasts about 3h, so the create
- * refreshes it rather than trusting whatever is there.
+ * One token, stored in both of sbx's registry scopes: sbx keeps its own secret store, so
+ * `az acr login` on the host does nothing for it. It lasts about 3h, so the create refreshes it.
  */
 async function refreshRegistrySecret(seams: Seams): Promise<void> {
   const token = await acrPullToken(seams);
@@ -231,9 +221,8 @@ async function gitToplevel(seams: Seams): Promise<string> {
 }
 
 /**
- * Read from the checkout rather than from the home directory, so an `includeIf
- * "gitdir:"` overlay that gives this workspace its own identity is the one forwarded.
- * Both or neither: the kit's launch script fills only what the sandbox has no value for.
+ * Read from the checkout, not the home directory, so an `includeIf "gitdir:"` overlay giving
+ * this workspace its own identity is the one forwarded. Both or neither.
  */
 async function gitIdentity(seams: Seams, workspace: string): Promise<Record<string, string>> {
   const out: Record<string, string> = {};
