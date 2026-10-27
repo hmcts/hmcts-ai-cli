@@ -64,10 +64,34 @@ describe("hookDecision", () => {
   });
 
   /**
-   * The argv is the only name the hook has, and the only one it needs: `resolveNames`
+   * `parsePayload` establishes only that the payload is a non-array object, so every field on
+   * it is unverified — and `path.dirname` throws a `TypeError` on a non-string. A throw here
+   * is a throw inside `hookDecision`, which `runHook`'s catch-all turns into the loss of the
+   * **whole registration** for that session rather than just the slug. `hookDecision` is
+   * non-throwing over any JSON object, and the record comes back without a `slug` the same
+   * way one whose payload carried no `transcript_path` does.
+   */
+  it.each<[string, unknown]>([
+    ["a number", 42],
+    ["a null", null],
+    ["an object", { path: TRANSCRIPT }],
+    ["an array", [TRANSCRIPT]]
+  ])("should register the session, less the slug, when transcript_path is %s", (_name, path) => {
+    // Act
+    const outcome = decide({ payload: { ...payload(), transcript_path: path as string } });
+
+    // Assert
+    expect(outcome).toEqual({
+      action: "register",
+      reason: "a human drove this session for the first time",
+      record: { sessionId: "s1", cwd: "/work", state: "open", at: FIXED_NOW, pid: 900, host: HOST }
+    });
+  });
+
+  /**
+   * The argv is the only name the hook has, and the only one it needs: `resolveName`
    * re-reads the transcript at restore time and overwrites this, so the record's value is
-   * the fallback for a conversation whose transcript holds no title record — which is
-   * precisely the `-n/--name` case.
+   * the fallback for a conversation whose transcript is not there to be read.
    */
   it("should keep the display name hai read off the argv, no payload carrying it", () => {
     // Act / Assert
@@ -413,7 +437,7 @@ describe("runHook", () => {
    * that way.** Reading the conversation's title here cost a full transcript scan on every
    * prompt — 402 ms measured on a 198 MB conversation, and the fifteen-minute throttle is no
    * protection because the read happened before the decision that ignores the prompt. It
-   * bought nothing: `resolveNames` re-reads the transcript at restore time and overwrites
+   * bought nothing: `resolveName` re-reads the transcript at restore time and overwrites
    * whatever the registry held. Both rows go through `registration`, so neither the first
    * prompt nor a later one may touch a transcript.
    */
@@ -444,7 +468,7 @@ describe("runHook", () => {
   });
 
   /**
-   * The slug goes in even though no name does: it is `resolveNames`' fast path to the
+   * The slug goes in even though no name does: it is `resolveName`'s fast path to the
    * transcript at restore time, which is why the hook wants the payload's `transcript_path`
    * at all. The session here has `cd`-ed away from where Claude Code filed it.
    */

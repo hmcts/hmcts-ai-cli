@@ -15,6 +15,7 @@ const IN_CONTAINER = { "/.dockerenv": "" };
 /** Where Claude Code filed the record below, which is where its name is kept. */
 const SLUG = "-work";
 const TRANSCRIPT = transcriptPath(`${HOME}/.claude/projects/${SLUG}`, "s1");
+const TRANSCRIPT_S2 = transcriptPath(`${HOME}/.claude/projects/${SLUG}`, "s2");
 /** One title record, the shape Claude Code appends on a `/rename`. */
 const titled = (name: string) => `${JSON.stringify({ type: "custom-title", customTitle: name })}\n`;
 
@@ -81,11 +82,11 @@ describe("launchHair", () => {
     });
 
     /**
-     * The one field that makes `hair --list` usable. The resumed session's own hook reads
-     * the name off the argv, so without this a session started as `hai -n pcs` comes back
-     * nameless and shows as "(unnamed)" for ever after.
+     * `--name` is what Claude Code titles the tab from, and the resumed session's own hook
+     * reads it off the argv too, so the registry's copy stays in step. This record has no
+     * transcript left to read, which is the one case its `name` is the answer for.
      */
-    it("should put the record's name back on the argv, so the re-registration keeps it", async () => {
+    it("should put the record's name back on the argv when no transcript can answer", async () => {
       // Arrange
       const seams = seamsIn({ [REGISTRY]: recordLine(record({ name: "the pcs one" })) });
 
@@ -197,6 +198,34 @@ describe("launchHair", () => {
       // Assert
       expect(execArgv(seams).slice(-4)).toEqual(["-r", "s1", "--name", "the renamed one"]);
       expect(seams.lines.join("")).toContain("restoring the renamed one in /work");
+    });
+
+    /**
+     * One transcript scan per restore, not one per candidate. A scan is a full streamed pass
+     * — 402 ms on the 198 MB conversation measured here — and the bare form uses exactly one
+     * name: the claimed record's. Resolving the whole list first made every restoring
+     * terminal after a reboot pay a pass per waiting conversation, before the claim was even
+     * taken, to throw all but one of the answers away.
+     *
+     * Safe because the candidate order is `rank(cwd)`, then `at`, then `sessionId` — the
+     * name is not an input to it, so resolving after the claim cannot change what is
+     * claimed. Asserted on reads rather than on timing, because the cost is invisible to
+     * every other kind of test.
+     */
+    it("should read only the claimed conversation's transcript, not every candidate's", async () => {
+      // Arrange
+      const seams = seamsIn({
+        [REGISTRY]: `${recordLine(record({ sessionId: "s1" }))}${recordLine(record({ sessionId: "s2", at: FIXED_NOW - MINUTE }))}`,
+        [TRANSCRIPT]: titled("the one it takes"),
+        [TRANSCRIPT_S2]: titled("the one it leaves")
+      });
+
+      // Act
+      await launchHair({ seams, processArgv: ["node", "/bin/hair"] });
+
+      // Assert
+      expect(execArgv(seams).slice(-4)).toEqual(["-r", "s1", "--name", "the one it takes"]);
+      expect(seams.fs.reads.filter((path) => path.endsWith(".jsonl") && path.includes("/projects/"))).toEqual([TRANSCRIPT]);
     });
 
     it("should keep the name the record holds when there is no transcript left to read", async () => {
@@ -364,8 +393,10 @@ describe("launchHair", () => {
     /**
      * The list is what someone eyeballs before deciding whether to run the bare form, so
      * it has to be in the order the bare form would claim in — newest first, so the top
-     * line is the conversation `hair` is about to hand back. Both read the same
-     * `candidates` array today; this is what would catch a sort added for display alone.
+     * line is the conversation `hair` is about to hand back. The two walk the same ordered
+     * array out of `restoreCandidates` — only the name resolution differs between them, and
+     * the order does not depend on a name — so this is what would catch a sort added for
+     * display alone.
      */
     it("should print the candidates in the order it would claim them, the top line being the one hair takes", async () => {
       // Arrange
@@ -389,10 +420,10 @@ describe("launchHair", () => {
 
     /**
      * The listing is what someone reads before running the bare form, so it has to agree
-     * with what the bare form would do about the same conversation — the name is resolved
-     * once over the candidates and all three consumers read that one value. A list showing
-     * the old name while `hair` sets a tab title with the new one is the kind of
-     * disagreement nobody would think to look for.
+     * with what the bare form would do about the same conversation. It reads the same
+     * transcript the same way rather than sharing an array with it: a list showing the old
+     * name while `hair` sets a tab title with the new one is the kind of disagreement nobody
+     * would think to look for.
      */
     it("should list a conversation under the transcript's title, not the stale name in the registry", async () => {
       // Arrange
@@ -403,6 +434,27 @@ describe("launchHair", () => {
 
       // Assert
       expect(seams.out.join("")).toBe("s1  the renamed one  this directory\n");
+    });
+
+    /**
+     * Where `--list` does pay a scan per candidate, and the reason that is right here: every
+     * line it prints carries a name, so every candidate's transcript has something to show
+     * for having been read. The bare form reads one — see the assertion on reads above.
+     */
+    it("should read every candidate's transcript, having a name to print for each of them", async () => {
+      // Arrange
+      const seams = seamsIn({
+        [REGISTRY]: `${recordLine(record({ sessionId: "s1" }))}${recordLine(record({ sessionId: "s2", at: FIXED_NOW - MINUTE }))}`,
+        [TRANSCRIPT]: titled("the first one"),
+        [TRANSCRIPT_S2]: titled("the second one")
+      });
+
+      // Act
+      await launchHair({ seams, processArgv: ["node", "/bin/hair", "--list"] });
+
+      // Assert
+      expect(seams.out.join("")).toBe("s1  the first one  this directory\ns2  the second one  this directory\n");
+      expect(seams.fs.reads.filter((path) => path.endsWith(".jsonl") && path.includes("/projects/"))).toEqual([TRANSCRIPT, TRANSCRIPT_S2]);
     });
 
     /**

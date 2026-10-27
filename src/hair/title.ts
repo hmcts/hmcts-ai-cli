@@ -7,16 +7,17 @@ import { registryDir } from "./registry.js";
 export const PROJECTS_DIR = "projects";
 export const TRANSCRIPT_SUFFIX = ".jsonl";
 
-/** Claude Code's own per-conversation title file, a sibling directory of the transcript. */
-export const CUSTOM_TITLE_FILE = "custom-title.json";
-
 /**
  * The two record types a transcript carries a name in. `custom-title` is what `/rename`
  * writes; `ai-title` is the name Claude Code generates for itself, and it is the one that
- * makes this worth reading at all — measured over 1171 conversations on one machine, 278
- * carry an `ai-title` record, 67 a `custom-title` record and 305 at least one, against 63
- * that have a `custom-title.json` file. Most conversations nobody ever renamed still have a
- * name.
+ * makes this worth reading at all — measured over the 946 conversations on one machine (every
+ * `-tmp-*` project directory excluded, those being probe artefacts), 194 carry an `ai-title`
+ * record, 66 a `custom-title` record and 220 at least one. Most conversations nobody ever
+ * renamed still have a name.
+ *
+ * A transcript carries a third name record, `{"type":"agent-name","agentName":…}`, and
+ * nothing here reads it: measured over those same 946, it never once disagreed with the name
+ * this file already picks. See the rule in CLAUDE.md before adding it.
  */
 export const AI_TITLE_TYPE = "ai-title";
 export const CUSTOM_TITLE_TYPE = "custom-title";
@@ -40,8 +41,15 @@ export const CUSTOM_TITLE_TYPE = "custom-title";
  * `claimPath` already do. This is the path form of the rule that a pid is never read across
  * a PID namespace.
  */
-export function transcriptSlug(transcriptPath: string | undefined): string | undefined {
-  if (transcriptPath === undefined || transcriptPath === "") {
+export function transcriptSlug(transcriptPath: unknown): string | undefined {
+  // `unknown` rather than `string | undefined`, because this is a boundary: `parsePayload`
+  // establishes only that the payload is a non-array object, so every field on it is a cast
+  // and not a fact. `dirname` throws a `TypeError` on anything that is not a string, and a
+  // throw in here is a throw inside `hookDecision` — which `runHook` catches, losing the
+  // whole registration for that session rather than just the slug. Every other field
+  // crossing this boundary is guarded the same way (`text()` in `parseRecord`,
+  // `Number(...) || 0` for a pid), and `hookDecision` is non-throwing over any JSON object.
+  if (typeof transcriptPath !== "string" || transcriptPath === "") {
     return undefined;
   }
   const slug = basename(dirname(transcriptPath));
@@ -59,11 +67,6 @@ export function projectsDir(env: Env): string | null {
 /** Pure. One conversation's transcript inside a project directory. */
 export function transcriptPath(projectDir: string, sessionId: string): string {
   return join(projectDir, `${sessionId}${TRANSCRIPT_SUFFIX}`);
-}
-
-/** Pure. The title file `/rename` writes, a sibling of the transcript rather than of its project. */
-export function customTitlePath(projectDir: string, sessionId: string): string {
-  return join(projectDir, sessionId, CUSTOM_TITLE_FILE);
 }
 
 /**
@@ -101,31 +104,19 @@ export function parseTitleRecord(line: string): TitleRecord | null {
  *
  * Measured in one transcript: the last `custom-title` record sits at byte 10,697,664 and the
  * last `ai-title` at 10,697,766, so the ai-title is *later* — yet the conversation's real
- * name is the custom one, `hai-resume`, which its `custom-title.json` independently confirms.
- * Claude Code keeps generating a name of its own after a `/rename`, so a positional
- * last-of-either rule hands back a name the engineer has already replaced. `/rename` is a
- * person saying what this conversation is; an `ai-title` is a guess, and it only wins where
- * nobody has said.
+ * name is the custom one, `hai-resume`. Claude Code keeps generating a name of its own after
+ * a `/rename`, so a positional last-of-either rule hands back a name the engineer has
+ * already replaced. `/rename` is a person saying what this conversation is; an `ai-title` is
+ * a guess, and it only wins where nobody has said.
+ *
+ * An **empty** last `custom-title` is a person saying the conversation has no chosen name
+ * any more, so it does not win — it lets the `ai-title` through, which is what Claude Code
+ * itself would then show. That is why it is a record the scan keeps rather than one
+ * `parseTitleRecord` drops: dropping it kept the last *non-empty* custom title, so a title
+ * cleared after a rename came back under the pre-clear name and shadowed the generated one.
  */
 export function pickTitle(found: TranscriptTitles): string | undefined {
-  return found.custom ?? found.ai;
-}
-
-/**
- * Pure. A file that is absent, unparseable or carries no usable `customTitle` is a silent
- * no-name rather than an error: this is read from a hook, and a hook never breaks a
- * session.
- */
-export function parseCustomTitle(text: string | null): string | undefined {
-  if (text === null) {
-    return undefined;
-  }
-  try {
-    const { customTitle } = JSON.parse(text) as { customTitle?: unknown };
-    return typeof customTitle === "string" && customTitle !== "" ? customTitle : undefined;
-  } catch {
-    return undefined;
-  }
+  return named(found.custom) ?? named(found.ai);
 }
 
 /**
@@ -183,13 +174,12 @@ export async function scanTranscriptTitles(deps: { fs: Fs }, path: string): Prom
 /**
  * What a conversation is called, or undefined for every way of not having a name.
  *
- * The transcript is the source: of the five open records in one live registry it answers for
- * all five, where `custom-title.json` answers for three. That file stays as the last
- * fallback because it is not quite a subset — one conversation of the 1171 on this machine
- * has the file and no `custom-title` record in its transcript — and because a title Claude
- * Code wrote and hai cannot read is worse than a second `readText`. It is read, never
- * written: it is Claude Code's private store, and writing into it would make a format change
- * hai's bug to own.
+ * **The transcript is the only source.** There used to be a `custom-title.json` fallback —
+ * Claude Code's own per-conversation title file, a sibling directory of the transcript — and
+ * the measurement that justified it was an artefact of the probe that took it. See the rule
+ * in CLAUDE.md: of the 946 real conversations here, 62 have that file and not one of them has
+ * it *without* the matching `custom-title` record in the transcript beside it. Re-adding a
+ * fallback needs a real conversation the transcript cannot name, not a planted one.
  *
  * Every read goes through `Fs`, which answers "nothing" rather than throwing for an absent
  * or unreadable path, so this cannot be what breaks a hook or a resume.
@@ -199,14 +189,22 @@ export async function readSessionTitle(deps: { fs: Fs; env: Env }, input: { slug
   if (projectDir === null) {
     return undefined;
   }
-  const sessionId = input.sessionId!;
-  const titled = pickTitle(await scanTranscriptTitles(deps, transcriptPath(projectDir, sessionId)));
-  return titled ?? parseCustomTitle(await deps.fs.readText(customTitlePath(projectDir, sessionId)));
+  return pickTitle(await scanTranscriptTitles(deps, transcriptPath(projectDir, input.sessionId!)));
 }
 
-/** Absent or empty is no record at all, the same way `parseCustomTitle` reads an empty title. */
+/**
+ * A record with no title *field* is not a title record — a half-written line, or a shape a
+ * later Claude Code invents. An **empty** one is: `""` is how a cleared title is written, and
+ * `pickTitle` reads it as "nobody has chosen a name", which is the whole reason it is kept
+ * rather than skipped.
+ */
 function titleRecord(kind: TitleKind, value: unknown): TitleRecord | null {
-  return typeof value === "string" && value !== "" ? { kind, title: value } : null;
+  return typeof value === "string" ? { kind, title: value } : null;
+}
+
+/** An empty title names nothing, whichever record it came off. */
+function named(title: string | undefined): string | undefined {
+  return title === undefined || title === "" ? undefined : title;
 }
 
 export type TitleKind = "custom" | "ai";
@@ -216,7 +214,11 @@ export interface TitleRecord {
   title: string;
 }
 
-/** The last record of each type the transcript carries, which is all a pass has to keep. */
+/**
+ * The last record of each type the transcript carries, which is all a pass has to keep. A
+ * value may be `""` — that is a title the person cleared, and it is a statement rather than
+ * an absence, which `pickTitle` is where the difference is read.
+ */
 export interface TranscriptTitles {
   custom?: string;
   ai?: string;

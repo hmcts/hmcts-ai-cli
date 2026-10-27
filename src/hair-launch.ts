@@ -3,7 +3,7 @@ import { forwardsItsOwnSession, NAME_FLAG, parseHairArgs } from "./hair/args.js"
 import { claimFirst } from "./hair/claim.js";
 import { runHook } from "./hair/hook.js";
 import { readRegistry } from "./hair/registry.js";
-import { describeCandidate, probeDirs, probeLiveness, resolveNames, restoreCandidates } from "./hair/restore.js";
+import { describeCandidate, probeDirs, probeLiveness, resolveName, resolveNames, restoreCandidates } from "./hair/restore.js";
 import { launch } from "./launch.js";
 import type { Seams } from "./system/seams.js";
 
@@ -56,14 +56,12 @@ export async function launchHair(deps: { seams: Seams; processArgv: string[] }):
     seams.logger.verbose(`${record.sessionId}: ${reason}`);
   }
 
-  // What a conversation is called is Claude Code's to change, and the registry only holds a
-  // copy that a `/rename` shortly before the session was lost leaves behind. Settled once,
-  // over the candidates alone, so the tab title, the `--name` that goes back on the argv and
-  // `hair --list` cannot disagree about the same conversation.
-  const candidates = await resolveNames(seams, offered);
-
   if (mode.kind === "list") {
-    seams.stdout(candidates.length === 0 ? `${NOTHING_TO_RESTORE}\n` : `${candidates.map((record) => describeCandidate(record, seams.cwd)).join("\n")}\n`);
+    // Every candidate's name, because every line is printed. This is the one surface that
+    // pays a transcript scan per candidate, and it is the one that has something to show for
+    // each of them.
+    const named = await resolveNames(seams, offered);
+    seams.stdout(named.length === 0 ? `${NOTHING_TO_RESTORE}\n` : `${named.map((record) => describeCandidate(record, seams.cwd)).join("\n")}\n`);
     return;
   }
 
@@ -72,13 +70,21 @@ export async function launchHair(deps: { seams: Seams; processArgv: string[] }):
   // session forks a copy of the conversation rather than attaching to it. Every reason a
   // record cannot be resumed — a closed session, a live pid, a directory that is gone —
   // is decided before this point, so nothing after the claim can fail and leave it held.
-  const claimed = await claimFirst(seams, candidates);
+  const claimed = await claimFirst(seams, offered);
   if (claimed === null) {
     seams.logger.say(NOTHING_TO_RESTORE);
     return await launch({ seams: handover, processArgv: forwarding(mode.forward) });
   }
 
-  seams.logger.say(`restoring ${claimed.name ?? claimed.sessionId} in ${claimed.cwd}`);
+  // What a conversation is called is Claude Code's to change, and the registry only holds a
+  // copy that a `/rename` shortly before the session was lost leaves behind — so the name is
+  // read off the transcript, and read **after** the claim, for the one record that was
+  // claimed. The candidate order does not depend on a name (`rank(cwd)`, then `at`, then
+  // `sessionId`), so this cannot change which conversation is taken, and it is the whole
+  // difference between one transcript scan per restore and one per candidate.
+  const resolved = await resolveName(seams, claimed);
+
+  seams.logger.say(`restoring ${resolved.name ?? resolved.sessionId} in ${resolved.cwd}`);
   // Nothing here writes the terminal title. Claude Code sets it itself as the TUI mounts,
   // from the name on the argv, and rewrites it as the session's status changes — so a title
   // written here would be overwritten within about a second. See the `--name` note below:
@@ -86,19 +92,24 @@ export async function launchHair(deps: { seams: Seams; processArgv: string[] }):
   // Resume-by-id is not cwd-scoped, so resuming from the wrong directory would rebind the
   // conversation's project settings, hooks and CLAUDE.md discovery to wherever this
   // terminal happened to be sitting.
-  seams.chdir(claimed.cwd);
+  seams.chdir(resolved.cwd);
   return await launch({
-    seams: { ...handover, cwd: claimed.cwd },
-    // The resolved name goes back on the argv, and it does two things. The re-registration
-    // the resumed session's own hook writes reads it from there, so without it a session
-    // started as `hai -n pcs` comes back nameless and every later `hair --list` shows it as
-    // "(unnamed)"; and Claude Code sets the terminal tab title from it as the TUI mounts, so
-    // this is also what puts the tab title back. Measured on 2.1.304 — see CLAUDE.md.
-    processArgv: forwarding([RESUME_FLAG, claimed.sessionId, ...named(claimed.name), ...mode.forward])
+    seams: { ...handover, cwd: resolved.cwd },
+    // The resolved name goes back on the argv, and that is what puts the tab title back:
+    // Claude Code sets the title from `--name` as the TUI mounts and reasserts it as the
+    // session's status changes. Measured on 2.1.304 — see CLAUDE.md. The resumed session's
+    // own hook also reads it from there, so the registry's copy stays in step; that copy is
+    // only ever the fallback, the transcript being where a name is read from.
+    //
+    // `--name` is itself written to the transcript as a `custom-title` record, so a
+    // conversation that only ever had an `ai-title` is pinned to it from the first restore
+    // on. That is deliberate and documented in CLAUDE.md — it is what naming a session
+    // means, and Claude Code's own `customTitle || aiTitle` shows the same name.
+    processArgv: forwarding([RESUME_FLAG, resolved.sessionId, ...nameArgs(resolved.name), ...mode.forward])
   });
 }
 
-function named(name: string | undefined): string[] {
+function nameArgs(name: string | undefined): string[] {
   return name === undefined ? [] : [NAME_FLAG, name];
 }
 

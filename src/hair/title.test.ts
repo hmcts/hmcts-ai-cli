@@ -4,9 +4,7 @@ import type { DirEntry } from "../system/fs.js";
 import {
   AI_TITLE_TYPE,
   CUSTOM_TITLE_TYPE,
-  customTitlePath,
   findProjectDir,
-  parseCustomTitle,
   parseTitleRecord,
   pickTitle,
   projectsDir,
@@ -23,7 +21,6 @@ const SLUG = "-home-dev-work-pcs-api";
 const PROJECTS = `${HOME}/.claude/projects`;
 const PROJECT_DIR = `${PROJECTS}/${SLUG}`;
 const TRANSCRIPT = `${PROJECT_DIR}/${SESSION}.jsonl`;
-const TITLE_FILE = `${PROJECT_DIR}/${SESSION}/custom-title.json`;
 
 /** The two record shapes, exactly as Claude Code appends them. */
 const aiTitle = (title: string) => JSON.stringify({ type: AI_TITLE_TYPE, aiTitle: title, sessionId: SESSION });
@@ -52,12 +49,30 @@ describe("transcriptSlug", () => {
     expect(transcriptSlug(`/home/hmcts/.claude/projects/${SLUG}/${SESSION}.jsonl`)).toBe(SLUG);
   });
 
-  it.each<[string, string | undefined]>([
+  it.each<[string, unknown]>([
     ["no transcript path at all", undefined],
     ["an empty transcript path", ""],
     ["a bare filename, which names no project directory", `${SESSION}.jsonl`],
     ["a root-level filename", `/${SESSION}.jsonl`]
   ])("should answer undefined for %s", (_name, path) => {
+    // Act / Assert
+    expect(transcriptSlug(path)).toBeUndefined();
+  });
+
+  /**
+   * `parsePayload` establishes only that the payload is a non-array object, so the field is
+   * a cast and not a fact — and `dirname` throws a `TypeError` on a non-string, which inside
+   * `hookDecision` costs `runHook`'s catch-all the whole registration for that session
+   * rather than just the slug. `hookDecision` is non-throwing over any JSON object, and this
+   * is the row that keeps it so.
+   */
+  it.each<[string, unknown]>([
+    ["a number, as a hand-written hook payload can carry", 42],
+    ["a JSON null", null],
+    ["an object, as a later Claude Code might send instead of a path", { path: TRANSCRIPT }],
+    ["an array of paths", [TRANSCRIPT]],
+    ["a boolean", true]
+  ])("should answer undefined rather than throw for %s", (_name, path) => {
     // Act / Assert
     expect(transcriptSlug(path)).toBeUndefined();
   });
@@ -75,10 +90,9 @@ describe("the paths under ~/.claude/projects", () => {
     expect(projectsDir({})).toBeNull();
   });
 
-  it("should name the conversation's transcript and the title file beside it", () => {
+  it("should name the conversation's transcript", () => {
     // Act / Assert
     expect(transcriptPath(PROJECT_DIR, SESSION)).toBe(TRANSCRIPT);
-    expect(customTitlePath(PROJECT_DIR, SESSION)).toBe(TITLE_FILE);
   });
 });
 
@@ -107,11 +121,25 @@ describe("parseTitleRecord", () => {
     ["a JSON string where an object was expected", '"ai-title"'],
     ["a record of a type nothing here reads", JSON.stringify({ type: "summary", summary: "ai-title" })],
     ["a custom-title record carrying no title", JSON.stringify({ type: CUSTOM_TITLE_TYPE, sessionId: SESSION })],
-    ["an ai-title record whose title is not a string", JSON.stringify({ type: AI_TITLE_TYPE, aiTitle: 42 })],
-    ["an empty title, which names nothing", customTitle("")]
+    ["an ai-title record whose title is not a string", JSON.stringify({ type: AI_TITLE_TYPE, aiTitle: 42 })]
   ])("should read %s as no title record", (_name, line) => {
     // Act / Assert
     expect(parseTitleRecord(line)).toBeNull();
+  });
+
+  /**
+   * An empty title is a record and not an absence, and the difference is the whole of
+   * `pickTitle`'s second half. Claude Code takes the **last** `custom-title` line and reads
+   * `""` as "no custom title" — it deletes `custom-title.json` on one — so a title cleared
+   * after a rename has to let the `ai-title` through. Dropping the record here kept the last
+   * *non-empty* custom title, which brought the conversation back under the pre-clear name.
+   */
+  it.each<[string, string, TitleRecord]>([
+    ["a cleared custom title", customTitle(""), { kind: "custom", title: "" }],
+    ["a cleared ai title", aiTitle(""), { kind: "ai", title: "" }]
+  ])("should read %s as a record saying the conversation has no name of that kind", (_name, line, expected) => {
+    // Act / Assert
+    expect(parseTitleRecord(line)).toEqual(expected);
   });
 });
 
@@ -120,9 +148,8 @@ describe("pickTitle", () => {
    * Custom over ai, and **not** whichever came last. Measured in one live transcript: the
    * last `custom-title` record sits at byte 10,697,664 and the last `ai-title` at
    * 10,697,766, so the generated name is the later of the two — and yet the conversation's
-   * real name is the custom one, `hai-resume`, which its `custom-title.json` independently
-   * confirms. Claude Code goes on generating a name after a `/rename`, so a positional rule
-   * hands back the name the engineer already replaced.
+   * real name is the custom one, `hai-resume`. Claude Code goes on generating a name after a
+   * `/rename`, so a positional rule hands back the name the engineer already replaced.
    */
   it("should prefer the custom title even though the ai title came later in the file", () => {
     // Act / Assert
@@ -134,9 +161,26 @@ describe("pickTitle", () => {
     expect(pickTitle({ ai: "VS Code Claude session restore" })).toBe("VS Code Claude session restore");
   });
 
-  it("should answer undefined for a transcript that named the conversation neither way", () => {
+  /**
+   * The case the custom-over-ai rule must not swallow. An empty last `custom-title` is the
+   * person saying there is no chosen name any more — Claude Code reads it that way and would
+   * show the `ai-title` — so a `??` over the two would shadow the name Claude Code itself is
+   * displaying. Not seen in any of the 946 real conversations measured here, so this is
+   * reachable in principle rather than observed; the asymmetry is that getting it wrong hands
+   * back a name the engineer has already cleared.
+   */
+  it("should let the generated name through when the custom title was cleared", () => {
     // Act / Assert
-    expect(pickTitle({})).toBeUndefined();
+    expect(pickTitle({ custom: "", ai: "VS Code Claude session restore" })).toBe("VS Code Claude session restore");
+  });
+
+  it.each<[string, Parameters<typeof pickTitle>[0]]>([
+    ["named the conversation neither way", {}],
+    ["had its custom title cleared and never generated one", { custom: "" }],
+    ["has an empty record of both kinds", { custom: "", ai: "" }]
+  ])("should answer undefined for a transcript that %s", (_name, found) => {
+    // Act / Assert
+    expect(pickTitle(found)).toBeUndefined();
   });
 });
 
@@ -177,6 +221,21 @@ describe("scanTranscriptTitles", () => {
 
     // Act / Assert
     await expect(scanTranscriptTitles(seams, TRANSCRIPT)).resolves.toEqual({ custom: "named on the first prompt" });
+  });
+
+  /**
+   * The last record of a type wins even when it is empty, which is what makes a cleared
+   * title visible to `pickTitle` at all: keeping the last *non-empty* one would leave the
+   * pre-clear name in place with nothing saying it had been cleared.
+   */
+  it("should let a cleared custom title replace the name it was clearing", async () => {
+    // Arrange
+    const seams = createFakeSeams({
+      files: { [TRANSCRIPT]: transcript(customTitle("hai-resume"), chatter, aiTitle("a later guess"), customTitle("")) }
+    });
+
+    // Act / Assert
+    await expect(scanTranscriptTitles(seams, TRANSCRIPT)).resolves.toEqual({ custom: "", ai: "a later guess" });
   });
 
   it("should answer nothing at all for a transcript that is not there, rather than throw", async () => {
@@ -278,9 +337,9 @@ describe("readSessionTitle", () => {
   });
 
   /**
-   * The case that makes this worth reading at all: of 1171 conversations on one machine 278
-   * carry an `ai-title` record against 67 a `custom-title` one, so most conversations with a
-   * name have one nobody typed.
+   * The case that makes this worth reading at all: of the 946 real conversations on one
+   * machine 194 carry an `ai-title` record against 66 a `custom-title` one, so most
+   * conversations with a name have one nobody typed.
    */
   it("should name a conversation nobody renamed, from the title Claude Code generated", async () => {
     // Arrange
@@ -291,27 +350,36 @@ describe("readSessionTitle", () => {
   });
 
   /**
-   * Last, and only when the transcript named nothing. Exactly one conversation of the 1171
-   * measured is in that state — a `custom-title.json` with no `custom-title` record in its
-   * transcript — which is why the file is still read and why it is not read first.
+   * End to end over the whole chain, because this is the one place the scan, the empty
+   * record and the precedence meet: a conversation renamed and then cleared comes back under
+   * the name Claude Code is itself showing, not the one it was renamed to.
    */
-  it("should fall back to the title file beside the transcript", async () => {
-    // Arrange
-    const seams = createFakeSeams({ env: { HOME }, files: { [TRANSCRIPT]: transcript(chatter), [TITLE_FILE]: '{"customTitle":"hai-resume"}' } });
-
-    // Act / Assert
-    await expect(readSessionTitle(seams, { slug: SLUG, sessionId: SESSION })).resolves.toBe("hai-resume");
-  });
-
-  it("should prefer the transcript over a title file that disagrees with it", async () => {
+  it("should name a conversation whose custom title was cleared from the generated one", async () => {
     // Arrange
     const seams = createFakeSeams({
       env: { HOME },
-      files: { [TRANSCRIPT]: transcript(customTitle("the renamed one")), [TITLE_FILE]: '{"customTitle":"the old one"}' }
+      files: { [TRANSCRIPT]: transcript(aiTitle("VS Code Claude session restore"), customTitle("hai-resume"), chatter, customTitle("")) }
     });
 
     // Act / Assert
-    await expect(readSessionTitle(seams, { slug: SLUG, sessionId: SESSION })).resolves.toBe("the renamed one");
+    await expect(readSessionTitle(seams, { slug: SLUG, sessionId: SESSION })).resolves.toBe("VS Code Claude session restore");
+  });
+
+  /**
+   * There is no second source. `custom-title.json` used to be a fallback on the strength of
+   * "one conversation of the 1171 has the file and no `custom-title` record", and that one
+   * conversation was a probe's own throwaway session. Across the 946 real ones, 62 have the
+   * file and every one of them has the record beside it.
+   */
+  it("should read nothing but the transcript", async () => {
+    // Arrange
+    const seams = createFakeSeams({
+      env: { HOME },
+      files: { [TRANSCRIPT]: transcript(chatter), [`${PROJECT_DIR}/${SESSION}/custom-title.json`]: '{"customTitle":"hai-resume"}' }
+    });
+
+    // Act / Assert
+    await expect(readSessionTitle(seams, { slug: SLUG, sessionId: SESSION })).resolves.toBeUndefined();
   });
 
   /**
@@ -320,10 +388,10 @@ describe("readSessionTitle", () => {
    */
   it.each<[string, Record<string, string>, Parameters<typeof readSessionTitle>[1]]>([
     ["no transcript exists for this session at all", {}, { slug: SLUG, sessionId: SESSION }],
-    ["the transcript names it neither way and no title file exists", { [TRANSCRIPT]: transcript(chatter) }, { slug: SLUG, sessionId: SESSION }],
+    ["the transcript names it neither way", { [TRANSCRIPT]: transcript(chatter) }, { slug: SLUG, sessionId: SESSION }],
     [
-      "the title file is half-written, as a crash mid-write leaves it",
-      { [TRANSCRIPT]: transcript(chatter), [TITLE_FILE]: '{"customTitle":' },
+      "the transcript is half-written, as a crash mid-append leaves it",
+      { [TRANSCRIPT]: `${JSON.stringify({ type: CUSTOM_TITLE_TYPE, customTitle: "hai-resume" }).slice(0, 30)}` },
       { slug: SLUG, sessionId: SESSION }
     ],
     ["there is no session id to look anything up by", { [TRANSCRIPT]: transcript(customTitle("hai-resume")) }, { slug: SLUG }]
@@ -333,29 +401,5 @@ describe("readSessionTitle", () => {
 
     // Act / Assert
     await expect(readSessionTitle(seams, input)).resolves.toBeUndefined();
-  });
-});
-
-describe("parseCustomTitle", () => {
-  it("should read the name /rename persisted", () => {
-    // Act / Assert
-    expect(parseCustomTitle('{"customTitle":"hai-resume"}')).toBe("hai-resume");
-  });
-
-  /**
-   * Read from a hook, where a hook never breaks a session: every malformed shape is a
-   * silent no-name. The `null` row is the one that would throw on a property read.
-   */
-  it.each<[string, string | null]>([
-    ["no file at all", null],
-    ["half a file, as a crash mid-write leaves one", '{"customTitle":'],
-    ["a JSON null", "null"],
-    ["a JSON string where an object was expected", '"hai-resume"'],
-    ["an object with no customTitle", '{"other":"hai-resume"}'],
-    ["a customTitle that is not a string", '{"customTitle":42}'],
-    ["an empty customTitle", '{"customTitle":""}']
-  ])("should read %s as no name", (_name, text) => {
-    // Act / Assert
-    expect(parseCustomTitle(text)).toBeUndefined();
   });
 });

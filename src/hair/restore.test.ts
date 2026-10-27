@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createFakeSeams, FIXED_NOW, type RunResponder } from "../__fixtures__/fake-seams.js";
 import type { SessionRecord } from "./registry.js";
-import { describeCandidate, livenessPlan, probeDirs, probeLiveness, resolveNames, restoreCandidates, restoreDecision } from "./restore.js";
+import { describeCandidate, livenessPlan, probeDirs, probeLiveness, resolveName, resolveNames, restoreCandidates, restoreDecision } from "./restore.js";
 import { transcriptPath } from "./title.js";
 
 const HOST = "workstation";
@@ -310,7 +310,7 @@ describe("probeDirs", () => {
   });
 });
 
-describe("resolveNames", () => {
+describe("resolveName", () => {
   const HOME = "/home/dev";
   const transcriptOf = (slug: string, sessionId: string) => transcriptPath(`${HOME}/.claude/projects/${slug}`, sessionId);
   const named = (name: string) => `${JSON.stringify({ type: "custom-title", customTitle: name })}\n`;
@@ -328,10 +328,10 @@ describe("resolveNames", () => {
     const seams = createFakeSeams({ env: { HOME }, files: { [transcriptOf(SLUG, "a")]: named("the renamed one") } });
 
     // Act
-    const resolved = await resolveNames(seams, [record({ sessionId: "a", name: "the old one" })]);
+    const resolved = await resolveName(seams, record({ sessionId: "a", name: "the old one" }));
 
     // Assert
-    expect(resolved).toEqual([record({ sessionId: "a", name: "the renamed one" })]);
+    expect(resolved).toEqual(record({ sessionId: "a", name: "the renamed one" }));
   });
 
   it("should name a conversation the registry never had a name for, which is every record written before this", async () => {
@@ -339,16 +339,18 @@ describe("resolveNames", () => {
     const seams = createFakeSeams({ env: { HOME }, files: { [transcriptOf(SLUG, "a")]: named("hai-resume") } });
 
     // Act / Assert
-    expect(await resolveNames(seams, [record({ sessionId: "a" })])).toEqual([record({ sessionId: "a", name: "hai-resume" })]);
+    expect(await resolveName(seams, record({ sessionId: "a" }))).toEqual(record({ sessionId: "a", name: "hai-resume" }));
   });
 
   /**
-   * The fallback is not a formality: it is the `-n/--name` case, where nothing was ever
-   * written to a transcript, and the conversation whose transcript has been deleted since it
-   * was registered.
+   * The fallback's real case is a transcript that is not there — deleted since the
+   * registration, or filed where `findProjectDir` cannot find it. It is **not** the
+   * `-n/--name` case: measured, `claude -n X` writes
+   * `{"type":"custom-title","customTitle":"X"}` as line 1 of the transcript before the first
+   * prompt, so `readSessionTitle` answers for a `-n` session too.
    */
   it.each<[string, Record<string, string>]>([
-    ["no transcript exists — either none was written or it has been deleted since", {}],
+    ["no transcript exists — it has been deleted since the registration", {}],
     ["the transcript carries no title record", { [transcriptOf(SLUG, "a")]: `${JSON.stringify({ type: "user" })}\n` }],
     ["the transcript's title record holds no usable name", { [transcriptOf(SLUG, "a")]: `${JSON.stringify({ type: "custom-title" })}\n` }]
   ])("should fall back to the name the record holds when %s", async (_name, files) => {
@@ -356,7 +358,7 @@ describe("resolveNames", () => {
     const seams = createFakeSeams({ env: { HOME }, files });
 
     // Act / Assert
-    expect(await resolveNames(seams, [record({ sessionId: "a", name: "pcs" })])).toEqual([record({ sessionId: "a", name: "pcs" })]);
+    expect(await resolveName(seams, record({ sessionId: "a", name: "pcs" }))).toEqual(record({ sessionId: "a", name: "pcs" }));
   });
 
   it("should leave a record with no name anywhere exactly as it was, rather than give it an undefined one", async () => {
@@ -365,11 +367,11 @@ describe("resolveNames", () => {
     const unnamed = record({ sessionId: "a" });
 
     // Act
-    const resolved = await resolveNames(seams, [unnamed]);
+    const resolved = await resolveName(seams, unnamed);
 
     // Assert
-    expect(resolved[0]).toBe(unnamed);
-    expect(Object.keys(resolved[0]!)).not.toContain("name");
+    expect(resolved).toBe(unnamed);
+    expect(Object.keys(resolved)).not.toContain("name");
   });
 
   /**
@@ -385,11 +387,23 @@ describe("resolveNames", () => {
     const seams = createFakeSeams({ env: { HOME }, files: { [transcriptOf(SLUG, "a")]: named("filed under the workspace root") } });
 
     // Act
-    const resolved = await resolveNames(seams, [record({ sessionId: "a", cwd: "/a-worktree-it-cd-ed-into" })]);
+    const resolved = await resolveName(seams, record({ sessionId: "a", cwd: "/a-worktree-it-cd-ed-into" }));
 
     // Assert
-    expect(resolved[0]!.name).toBe("filed under the workspace root");
+    expect(resolved.name).toBe("filed under the workspace root");
   });
+});
+
+/**
+ * The list surface. The bare form resolves the claimed record alone, so this is the only
+ * caller that reads a name per candidate — and the only one with a line to print for each of
+ * them.
+ */
+describe("resolveNames", () => {
+  const HOME = "/home/dev";
+  const transcriptOf = (slug: string, sessionId: string) => transcriptPath(`${HOME}/.claude/projects/${slug}`, sessionId);
+  const named = (name: string) => `${JSON.stringify({ type: "custom-title", customTitle: name })}\n`;
+  const SLUG = "-filed-somewhere-else";
 
   /**
    * One lookup per candidate, keyed on that candidate's own id — a name read for the wrong

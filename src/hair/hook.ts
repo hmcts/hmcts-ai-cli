@@ -111,17 +111,19 @@ export const ACTIVITY_REFRESH_MS = 15 * 60 * 1000;
  * that mean the conversation is over, because `SessionEnd` fires on a kill too.
  *
  * **The hook reads no title.** What a record carries as `name` is the `-n/--name` hai read
- * off the argv and nothing else, because `resolveNames` re-reads the conversation's own
+ * off the argv and nothing else, because `resolveName` re-reads the conversation's own
  * transcript at restore time — transcript first, its last `custom-title` record over its
  * last `ai-title` one, the record's `name` only as the fallback — and that read is the one
  * the resumed `--name` and `hair --list` both come from. So a name in the registry is
  * overwritten at the only moment it is used, which leaves the record's value doing one job:
- * naming a conversation whose transcript holds no title record at all, which is the
- * `-n/--name` case, and argv supplies that without reading anything. Reading a title here
- * bought that one value at the price of a full transcript scan on **every prompt** — 402 ms
- * measured on a 198 MB conversation. Do not put it back, and do not reintroduce
- * rename-detection in any form: there is nothing to detect, because the registry's name is
- * never what a restored tab is titled from.
+ * naming a conversation whose transcript is **not there** to be read. Not the `-n/--name`
+ * case — measured, `claude -n X` writes a `custom-title` record as line 1 of the transcript
+ * before the first prompt, so the transcript answers for that too. Reading a title here
+ * bought nothing at the price of a full transcript scan on **every prompt** — 402 ms
+ * measured on a 198 MB conversation, and on the throttled ignore path as well, the read
+ * feeding the decision that then ignores the prompt. Do not put it back, and do not
+ * reintroduce rename-detection in any form: there is nothing to detect, because the
+ * registry's name is never what a restored tab is titled from.
  */
 export function hookDecision(input: {
   event: string;
@@ -247,8 +249,10 @@ function registration(input: { env: Env; name?: string; host: string; now: numbe
     ...field("name", input.name),
     ...field("host", input.host),
     ...field("container", input.env[CONTAINER_ENV]),
-    // Recorded so `resolveNames` can find the transcript at restore time without deriving
-    // the slug from a `cwd` that may have moved since. Pure: the payload hands it over.
+    // Recorded so `resolveName` can find the transcript at restore time without deriving
+    // the slug from a `cwd` that may have moved since. Pure: the payload hands it over, and
+    // `transcriptSlug` guards the type, so a payload whose `transcript_path` is not a string
+    // costs the slug rather than the whole registration.
     ...field("slug", transcriptSlug(payload.transcript_path))
   };
 }
@@ -259,7 +263,10 @@ function field<K extends string>(key: K, value: string | undefined): Record<K, s
 }
 
 /**
- * The fields Claude Code 2.1.304 actually sends, measured. `UserPromptSubmit` carries
+ * The fields Claude Code 2.1.304 actually sends, measured — and a *description* of them
+ * rather than a check on them: `parsePayload` casts, having established only that the JSON
+ * was a non-array object, so anything reading a field here has to guard its own type.
+ * `UserPromptSubmit` carries
  * `session_id`, `transcript_path`, `cwd`, `prompt_id`, `permission_mode`,
  * `hook_event_name` and `prompt`; `SessionEnd` carries `session_id`, `transcript_path`,
  * `cwd`, `prompt_id`, `hook_event_name` and `reason`. Neither carries the session's
