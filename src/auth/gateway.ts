@@ -7,7 +7,7 @@ import { STATE_DIR_MODE, stateDir, statePath } from "../system/state-dir.js";
 export const HELPER_FILE = "gateway-token.sh";
 export const HELPER_MODE = 0o700;
 
-const GATEWAY_TOKEN_SCOPE = "api://b3bfa0f5-faa5-4d10-bba0-e284144aea89/.default";
+const GATEWAY_TOKEN_SCOPE = "api://97f4f377-1eda-417b-8367-17c2c64cecd8/.default";
 
 export const API_KEY_HELPER_SCRIPT = `#!/usr/bin/env bash
 set -euo pipefail

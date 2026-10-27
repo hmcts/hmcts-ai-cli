@@ -517,7 +517,7 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
   The 12h TTL is deliberate now that it expires, and is discussed next to `CACHE_TTL_MS`.
 - **`sbx-hai`'s route note is decide-only.** `resolveAuth({ decideOnly: true })` stops at
   the decision — no VPN probe, no `az keyvault secret show` against the private
-  `sps-ai-kv-sbox`, no `gateway-token.sh` and nothing through `logger.say`. The note is one
+  `sps-ai-kv-stg`, no `gateway-token.sh` and nothing through `logger.say`. The note is one
   `logger.verbose` line, so settling the gateway for it put real I/O behind a line most runs
   never print, and when the Key Vault read failed (off the VPN, the common case for
   `sbx-hai`) it announced a Bedrock fallback that is untrue there: `sbx-hai` forwards no
