@@ -46,10 +46,24 @@ jobs:
       - name: Build
         run: yarn build
 
-      - name: Bump the patch version
+      # A version set by hand on master is published as it stands; anything else gets a
+      # patch bump. The tag is the test for "already released", because every release makes
+      # one and `fetch-depth: 0` means they are all here — asking the feed instead would
+      # make the decision depend on a network call that can fail open.
+      #
+      # Without this the only reachable version was the next patch, so a deliberate major or
+      # minor could not be published at all: setting 1.0.0 in package.json would publish
+      # 1.0.1 and leave 1.0.0 as a version that never existed.
+      - name: Resolve the version to publish
         id: bump
         run: |
-          npm version patch --no-git-tag-version
+          current="$(node -p 'require("./package.json").version')"
+          if git rev-parse -q --verify "refs/tags/v${current}" >/dev/null; then
+            npm version patch --no-git-tag-version
+            echo "v${current} is already released, so this is a patch bump"
+          else
+            echo "publishing v${current}, the version master asks for"
+          fi
           echo "version=$(node -p 'require("./package.json").version')" >> "$GITHUB_OUTPUT"
 
       # Kept line-for-line from cnp-githubactions-library/npm-publish-library so that moving
