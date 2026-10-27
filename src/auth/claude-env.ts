@@ -10,7 +10,7 @@ export const DEFAULT_MODELS: Record<string, string> = {
   ANTHROPIC_DEFAULT_SONNET_MODEL: "eu.anthropic.claude-sonnet-5-5[1m]"
 };
 
-export const GATEWAY_BEDROCK_BASE_URL = "https://ai-gateway.sandbox.platform.hmcts.net/ai/platform/v1/bedrock";
+export const GATEWAY_BEDROCK_BASE_URL = "https://ai-gateway.staging.platform.hmcts.net/ai/platform/v1/bedrock";
 
 const API_KEY_HELPER_TTL_MS = "300000";
 

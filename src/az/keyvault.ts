@@ -2,7 +2,7 @@ import { asProcessEnv, type Env } from "../system/env.js";
 import type { Runner } from "../system/runner.js";
 import { azFailureHint } from "./token.js";
 
-export const GATEWAY_VAULT = "sps-ai-kv-sbox";
+export const GATEWAY_VAULT = "sps-ai-kv-stg";
 export const DEFAULT_GATEWAY_APIM_SECRET = "apim-subscription-dtsse-ai-gateway-bedrock-swe";
 
 const AZ_TIMEOUT_MS = 30_000;
@@ -13,7 +13,7 @@ export function gatewayApimSecretName(env: Env): string {
 }
 
 /**
- * sps-ai-kv-sbox has no public endpoint, so this is the one call in the whole CLI that
+ * sps-ai-kv-stg has no public endpoint, so this is the one call in the whole CLI that
  * genuinely needs the F5 VPN. `vpnUp` is only consulted to explain a failure.
  */
 export async function readGatewayApimKey(deps: { runner: Runner; env: Env }, vpnUp: boolean | null): Promise<string> {

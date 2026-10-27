@@ -23,7 +23,7 @@ describe("API_KEY_HELPER_SCRIPT", () => {
   it("should be exactly the az token call cath-service uses", () => {
     // Assert
     expect(API_KEY_HELPER_SCRIPT).toContain(
-      'az account get-access-token --scope "api://b3bfa0f5-faa5-4d10-bba0-e284144aea89/.default" --query accessToken -o tsv'
+      'az account get-access-token --scope "api://97f4f377-1eda-417b-8367-17c2c64cecd8/.default" --query accessToken -o tsv'
     );
   });
 
