@@ -3,7 +3,7 @@ import { forwardsItsOwnSession, NAME_FLAG, parseHairArgs } from "./hair/args.js"
 import { claimFirst } from "./hair/claim.js";
 import { runHook } from "./hair/hook.js";
 import { readRegistry } from "./hair/registry.js";
-import { describeCandidate, probeDirs, probeLiveness, resolveName, resolveNames, restoreCandidates } from "./hair/restore.js";
+import { describeCandidate, probeDirs, probeLiveness, resolveName, resolveNames, resolveResumeDir, restoreCandidates } from "./hair/restore.js";
 import { launch } from "./launch.js";
 import type { Seams } from "./system/seams.js";
 
@@ -48,10 +48,14 @@ export async function launchHair(deps: { seams: Seams; processArgv: string[] }):
   }
 
   if (mode.kind === "list") {
-    // Every candidate's name: this is the one surface that pays a transcript scan per
-    // candidate, because every line it prints carries a name.
+    // Every candidate's name and resume directory: this is the one surface that pays a
+    // transcript scan per candidate, because every line it prints carries both.
     const named = await resolveNames(seams, offered);
-    seams.stdout(named.length === 0 ? `${NOTHING_TO_RESTORE}\n` : `${named.map((record) => describeCandidate(record, seams.cwd)).join("\n")}\n`);
+    const described: string[] = [];
+    for (const record of named) {
+      described.push(describeCandidate(record, seams.cwd, await resolveResumeDir(seams, record)));
+    }
+    seams.stdout(described.length === 0 ? `${NOTHING_TO_RESTORE}\n` : `${described.join("\n")}\n`);
     return;
   }
 
@@ -64,15 +68,19 @@ export async function launchHair(deps: { seams: Seams; processArgv: string[] }):
   }
 
   // Read after the claim, for the one record claimed: the candidate order does not depend
-  // on a name, so one transcript scan per restore rather than one per candidate.
+  // on a name, so one transcript scan per restore rather than one per candidate. The same
+  // pass carries back the directory the conversation was opened in.
   const resolved = await resolveName(seams, claimed);
+  // The opening directory where it is still there, else the record's own — which `probeDirs`
+  // checked before the claim, so this chdir cannot throw and strand it.
+  const resumeIn = await resolveResumeDir(seams, resolved);
 
-  seams.logger.say(`restoring ${resolved.name ?? resolved.sessionId} in ${resolved.cwd}`);
+  seams.logger.say(`restoring ${resolved.name ?? resolved.sessionId} in ${resumeIn}`);
   // Resume-by-id is not cwd-scoped, so resuming from the wrong directory would rebind the
   // conversation's project settings, hooks and CLAUDE.md discovery to this terminal's.
-  seams.chdir(resolved.cwd);
+  seams.chdir(resumeIn);
   return await launch({
-    seams: { ...handover, cwd: resolved.cwd },
+    seams: { ...handover, cwd: resumeIn },
     // `--name` is what Claude Code titles the tab from.
     processArgv: forwarding([RESUME_FLAG, resolved.sessionId, ...nameArgs(resolved.name), ...mode.forward])
   });

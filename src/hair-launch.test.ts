@@ -16,6 +16,8 @@ const SLUG = "-work";
 const TRANSCRIPT = transcriptPath(`${HOME}/.claude/projects/${SLUG}`, "s1");
 const TRANSCRIPT_S2 = transcriptPath(`${HOME}/.claude/projects/${SLUG}`, "s2");
 const titled = (name: string) => `${JSON.stringify({ type: "custom-title", customTitle: name })}\n`;
+/** An ordinary transcript record, carrying the directory the session was in when it was written. */
+const inDir = (cwd: string) => `${JSON.stringify({ type: "user", cwd, message: { role: "user", content: "go on" } })}\n`;
 
 /** The fake seams' own hostname, so a recorded pid is one `hair` may ask `ps` about. */
 const HOST = "workstation";
@@ -221,6 +223,72 @@ describe("launchHair", () => {
       expect(seams.chdirs).toEqual(["/elsewhere"]);
     });
 
+    it("should resume in the directory the conversation was opened in, not the worktree it later moved into", async () => {
+      // Arrange
+      // `/elsewhere` is where the engineer opened it and is trusted; `/work` is a fresh worktree.
+      const seams = seamsIn({
+        [REGISTRY]: recordLine(record({ cwd: "/work" })),
+        [TRANSCRIPT]: `${inDir("/elsewhere")}${titled("the pcs one")}${inDir("/work")}`
+      });
+
+      // Act
+      await launchHair({ seams, processArgv: ["node", "/bin/hair"] });
+
+      // Assert
+      expect(seams.chdirs).toEqual(["/elsewhere"]);
+      expect(seams.lines.join("")).toContain("restoring the pcs one in /elsewhere");
+    });
+
+    it("should fall back to the record's cwd when the opening directory has been deleted since", async () => {
+      // Arrange
+      const seams = seamsIn({
+        [REGISTRY]: recordLine(record({ cwd: "/work" })),
+        [TRANSCRIPT]: `${inDir("/a-deleted-worktree")}${titled("the pcs one")}`
+      });
+
+      // Act
+      await launchHair({ seams, processArgv: ["node", "/bin/hair"] });
+
+      // Assert
+      expect(seams.chdirs).toEqual(["/work"]);
+      expect(seams.lines.join("")).toContain("restoring the pcs one in /work");
+    });
+
+    it("should fall back to the record's cwd for a transcript carrying no cwd field at all", async () => {
+      // Arrange
+      const seams = seamsIn({ [REGISTRY]: recordLine(record({ cwd: "/other" })), [TRANSCRIPT]: titled("the pcs one") });
+
+      // Act
+      await launchHair({ seams, processArgv: ["node", "/bin/hair"] });
+
+      // Assert
+      expect(seams.chdirs).toEqual(["/other"]);
+      expect(seams.lines.join("")).toContain("restoring the pcs one in /other");
+    });
+
+    it("should never leave the claim held by a chdir that throws, the opening directory having had no check before it", async () => {
+      // Arrange
+      const seams = seamsIn({
+        [REGISTRY]: recordLine(record({ cwd: "/work" })),
+        [TRANSCRIPT]: `${inDir("/a-deleted-worktree")}${titled("the pcs one")}`
+      });
+      const chdirs: string[] = [];
+      // `process.chdir` throws on a directory that is not there, and the claim is held by now.
+      seams.chdir = (dir): void => {
+        if (!seams.fs.dirs.has(dir)) {
+          throw new Error(`ENOENT: no such file or directory, chdir '${dir}'`);
+        }
+        chdirs.push(dir);
+      };
+
+      // Act
+      await launchHair({ seams, processArgv: ["node", "/bin/hair"] });
+
+      // Assert
+      expect(chdirs).toEqual(["/work"]);
+      expect(execArgv(seams).slice(-4)).toEqual(["-r", "s1", "--name", "the pcs one"]);
+    });
+
     it("should claim before handing over, so the resumed session's own hook cannot be read as free", async () => {
       // Arrange
       const seams = seamsIn({ [REGISTRY]: recordLine(record()) });
@@ -376,6 +444,21 @@ describe("launchHair", () => {
       // Assert
       expect(seams.out.join("")).toBe("s1  the first one  this directory\ns2  the second one  this directory\n");
       expect(seams.fs.reads.filter((path) => path.endsWith(".jsonl") && path.includes("/projects/"))).toEqual([TRANSCRIPT, TRANSCRIPT_S2]);
+    });
+
+    it("should list the directory each candidate would be resumed in, not its last-seen cwd", async () => {
+      // Arrange
+      const seams = seamsIn({
+        [REGISTRY]: `${recordLine(record({ sessionId: "s1", cwd: "/other" }))}${recordLine(record({ sessionId: "s2", cwd: "/other", at: FIXED_NOW - MINUTE }))}`,
+        [TRANSCRIPT]: `${inDir("/elsewhere")}${titled("moved into a worktree")}`,
+        [TRANSCRIPT_S2]: `${inDir("/a-deleted-worktree")}${titled("opened somewhere gone")}`
+      });
+
+      // Act
+      await launchHair({ seams, processArgv: ["node", "/bin/hair", "--list"] });
+
+      // Assert
+      expect(seams.out.join("")).toBe("s1  moved into a worktree  /elsewhere\ns2  opened somewhere gone  /other\n");
     });
 
     it("should list a conversation by the name the registry holds when no transcript is there", async () => {
