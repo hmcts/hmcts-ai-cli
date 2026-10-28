@@ -73,10 +73,17 @@ export function restoreCandidates(input: {
  * Pure, and both the name and the directory are data: `resolveName` and `resolveResumeDir`
  * have already settled them. `resumeIn` and not `record.cwd`, so the listing names the
  * directory `hair` would actually resume the conversation in.
+ *
+ * The `(last here)` note is what makes the **ordering** legible, and it is there because the
+ * two are now different fields: `rank` sorts on `record.cwd` while this prints `resumeIn`, so
+ * without it a record that sorted to the top and one that did not print the identical
+ * `this directory` whenever both were opened where `hair` is being run — which, inside a
+ * worktree, is most of them. The note marks exactly the records `rank` put first.
  */
 export function describeCandidate(record: SessionRecord, cwd: string, resumeIn: string): string {
   const here = resumeIn === cwd ? "this directory" : resumeIn;
-  return `${record.sessionId}  ${record.name ?? "(unnamed)"}  ${here}`;
+  const lastHere = record.cwd === cwd ? "  (last here)" : "";
+  return `${record.sessionId}  ${record.name ?? "(unnamed)"}  ${here}${lastHere}`;
 }
 
 /**
@@ -88,12 +95,17 @@ export function describeCandidate(record: SessionRecord, cwd: string, resumeIn: 
  *
  * The fallback is not optional. `probeDirs` verifies `record.cwd` **before** the claim, which
  * is what "everything that can stop a record being resumed is decided before the claim" buys;
- * the opening directory has had no such check, and this runs after the claim is held, where a
- * `process.chdir` that throws would strand the claim and fail every later run. So the opening
- * directory is attempted and the already-verified `record.cwd` catches it.
+ * the opening directory has had no such check, and this is settled after the claim is held.
+ * So the opening directory is preferred only when it probes as one, and the already-verified
+ * `record.cwd` is what the decision lands on otherwise. This is half the safety net; the other
+ * half is `moveTo` in `src/hair-launch.ts`, which catches a chdir that throws regardless.
+ *
+ * `openingIsDir` and not "openingExists": the answer is about to be `chdir`-ed into, and a
+ * `chdir` onto a *file* throws ENOTDIR as surely as onto nothing. A worktree path deleted and
+ * later reused as a file is exactly the shape this registry sees.
  */
-export function resumeDir(input: { cwd: string; openedIn: string | undefined; openingExists: boolean }): string {
-  return input.openedIn !== undefined && input.openingExists ? input.openedIn : input.cwd;
+export function resumeDir(input: { cwd: string; openedIn: string | undefined; openingIsDir: boolean }): string {
+  return input.openedIn !== undefined && input.openingIsDir ? input.openedIn : input.cwd;
 }
 
 /**
@@ -115,12 +127,14 @@ export async function resolveName(deps: { fs: Fs; env: Env }, record: SessionRec
 }
 
 /**
- * The one `stat` `resumeDir` needs, beside it. Nothing here throws: `Fs.exists` answers false
- * for an unreadable path as much as an absent one, which is the right answer either way.
+ * The one `stat` `resumeDir` needs, beside it. `Fs.isDirectory` answers false for an absent
+ * path, a file and a directory this process cannot `stat` alike, so this settles on a
+ * directory or on the fallback. It is still only a point-in-time answer — what stops the
+ * remaining window stranding a claim is the chdir fallback in `src/hair-launch.ts`, not this.
  */
 export async function resolveResumeDir(deps: { fs: Fs }, record: ResolvedRecord): Promise<string> {
   const openedIn = record.openedIn;
-  return resumeDir({ cwd: record.cwd, openedIn, openingExists: openedIn === undefined ? false : await deps.fs.exists(openedIn) });
+  return resumeDir({ cwd: record.cwd, openedIn, openingIsDir: openedIn === undefined ? false : await deps.fs.isDirectory(openedIn) });
 }
 
 /**

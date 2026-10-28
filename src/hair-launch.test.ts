@@ -289,6 +289,61 @@ describe("launchHair", () => {
       expect(execArgv(seams).slice(-4)).toEqual(["-r", "s1", "--name", "the pcs one"]);
     });
 
+    it("should fall back when the opening path is a file, which a bare existence check would have passed", async () => {
+      // Arrange
+      // `/a-reused-path` exists but is not a directory, so a `chdir` onto it throws ENOTDIR.
+      const seams = seamsIn({
+        [REGISTRY]: recordLine(record({ cwd: "/work" })),
+        [TRANSCRIPT]: `${inDir("/a-reused-path")}${titled("the pcs one")}`,
+        "/a-reused-path": "not a directory"
+      });
+
+      // Act
+      await launchHair({ seams, processArgv: ["node", "/bin/hair"] });
+
+      // Assert
+      expect(seams.chdirs).toEqual(["/work"]);
+      expect(seams.lines.join("")).toContain("restoring the pcs one in /work");
+    });
+
+    it("should fall back when the opening directory goes between the stat and the chdir, rather than strand the claim", async () => {
+      // Arrange
+      // The stat passes, so `/elsewhere` is chosen — and then it is gone by the chdir.
+      const seams = seamsIn({
+        [REGISTRY]: recordLine(record({ cwd: "/work" })),
+        [TRANSCRIPT]: `${inDir("/elsewhere")}${titled("the pcs one")}`
+      });
+      const chdirs: string[] = [];
+      seams.chdir = (dir): void => {
+        chdirs.push(dir);
+        if (dir === "/elsewhere") {
+          throw new Error(`ENOENT: no such file or directory, chdir '${dir}'`);
+        }
+      };
+
+      // Act
+      await launchHair({ seams, processArgv: ["node", "/bin/hair"] });
+
+      // Assert
+      expect(chdirs).toEqual(["/elsewhere", "/work"]);
+      expect(seams.lines.join("")).toContain("/elsewhere could not be entered (ENOENT");
+      expect(seams.lines.join("")).toContain("so this resumes in /work instead");
+      expect(seams.lines.join("")).toContain("restoring the pcs one in /work");
+      expect(execArgv(seams).slice(-4)).toEqual(["-r", "s1", "--name", "the pcs one"]);
+    });
+
+    it("should let a chdir onto the record's own cwd throw, that race being the one probeDirs already has", async () => {
+      // Arrange
+      const seams = seamsIn({ [REGISTRY]: recordLine(record({ cwd: "/work" })) });
+      seams.chdir = (dir): void => {
+        throw new Error(`ENOENT: no such file or directory, chdir '${dir}'`);
+      };
+
+      // Act / Assert
+      await expect(launchHair({ seams, processArgv: ["node", "/bin/hair"] })).rejects.toThrow("chdir '/work'");
+      expect(seams.runner.execCalls).toEqual([]);
+    });
+
     it("should claim before handing over, so the resumed session's own hook cannot be read as free", async () => {
       // Arrange
       const seams = seamsIn({ [REGISTRY]: recordLine(record()) });
@@ -394,7 +449,7 @@ describe("launchHair", () => {
       await launchHair({ seams, processArgv: ["node", "/bin/hair", "--list"] });
 
       // Assert
-      expect(seams.out.join("")).toBe("s1  pcs  this directory\ns2  (unnamed)  /other\n");
+      expect(seams.out.join("")).toBe("s1  pcs  this directory  (last here)\ns2  (unnamed)  /other\n");
       expect(seams.fs.store.has(claimPath({ HOME }, "s1")!)).toBe(false);
       expect(seams.runner.execCalls).toEqual([]);
     });
@@ -414,7 +469,9 @@ describe("launchHair", () => {
       await launchHair({ seams: claiming, processArgv: ["node", "/bin/hair"] });
 
       // Assert
-      expect(listing.out.join("")).toBe("latest  a minute ago  this directory\nmiddle  two days ago  this directory\nstale  six days ago  this directory\n");
+      expect(listing.out.join("")).toBe(
+        "latest  a minute ago  this directory  (last here)\nmiddle  two days ago  this directory  (last here)\nstale  six days ago  this directory  (last here)\n"
+      );
       expect(execArgv(claiming).slice(-2)).toEqual(["--name", "a minute ago"]);
       expect(execArgv(claiming)).toContain("latest");
     });
@@ -427,7 +484,7 @@ describe("launchHair", () => {
       await launchHair({ seams, processArgv: ["node", "/bin/hair", "--list"] });
 
       // Assert
-      expect(seams.out.join("")).toBe("s1  the renamed one  this directory\n");
+      expect(seams.out.join("")).toBe("s1  the renamed one  this directory  (last here)\n");
     });
 
     it("should read every candidate's transcript, having a name to print for each of them", async () => {
@@ -442,7 +499,7 @@ describe("launchHair", () => {
       await launchHair({ seams, processArgv: ["node", "/bin/hair", "--list"] });
 
       // Assert
-      expect(seams.out.join("")).toBe("s1  the first one  this directory\ns2  the second one  this directory\n");
+      expect(seams.out.join("")).toBe("s1  the first one  this directory  (last here)\ns2  the second one  this directory  (last here)\n");
       expect(seams.fs.reads.filter((path) => path.endsWith(".jsonl") && path.includes("/projects/"))).toEqual([TRANSCRIPT, TRANSCRIPT_S2]);
     });
 
@@ -461,6 +518,23 @@ describe("launchHair", () => {
       expect(seams.out.join("")).toBe("s1  moved into a worktree  /elsewhere\ns2  opened somewhere gone  /other\n");
     });
 
+    it("should mark the candidate the ordering put first, when both would resume in this directory", async () => {
+      // Arrange
+      // Both opened in /work, which is where `hair --list` is being run; only s1 was last
+      // seen there, which is what `rank` sorts on and the only thing distinguishing the two.
+      const seams = seamsIn({
+        [REGISTRY]: `${recordLine(record({ sessionId: "s1", cwd: "/work" }))}${recordLine(record({ sessionId: "s2", cwd: "/elsewhere", at: FIXED_NOW - MINUTE }))}`,
+        [TRANSCRIPT]: `${inDir("/work")}${titled("last used here")}`,
+        [TRANSCRIPT_S2]: `${inDir("/work")}${titled("opened here, used elsewhere")}`
+      });
+
+      // Act
+      await launchHair({ seams, processArgv: ["node", "/bin/hair", "--list"] });
+
+      // Assert
+      expect(seams.out.join("")).toBe("s1  last used here  this directory  (last here)\ns2  opened here, used elsewhere  this directory\n");
+    });
+
     it("should list a conversation by the name the registry holds when no transcript is there", async () => {
       // Arrange
       const seams = seamsIn({ [REGISTRY]: recordLine(record({ name: "the pcs one" })) });
@@ -469,7 +543,7 @@ describe("launchHair", () => {
       await launchHair({ seams, processArgv: ["node", "/bin/hair", "--list"] });
 
       // Assert
-      expect(seams.out.join("")).toBe("s1  the pcs one  this directory\n");
+      expect(seams.out.join("")).toBe("s1  the pcs one  this directory  (last here)\n");
     });
 
     it("should say so when nothing is waiting", async () => {

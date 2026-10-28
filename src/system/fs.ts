@@ -64,6 +64,14 @@ export function createFs(): Fs {
       }
     },
 
+    async isDirectory(path) {
+      try {
+        return (await stat(path)).isDirectory();
+      } catch {
+        return false;
+      }
+    },
+
     async isWritable(path) {
       try {
         await access(path, constants.W_OK);
@@ -121,6 +129,12 @@ export interface Fs {
   rename(from: string, to: string): Promise<void>;
   remove(path: string): Promise<void>;
   exists(path: string): Promise<boolean>;
+  /**
+   * A directory, and not merely something at that path: `exists` is a bare `stat`, so it
+   * answers true for a file. Anywhere the answer is about to be `chdir`-ed into or joined
+   * onto, "exists" is the wrong question — a file there makes the `chdir` throw ENOTDIR.
+   */
+  isDirectory(path: string): Promise<boolean>;
   isWritable(path: string): Promise<boolean>;
   listDir(path: string): Promise<DirEntry[]>;
 }

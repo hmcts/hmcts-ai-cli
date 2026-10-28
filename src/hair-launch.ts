@@ -5,6 +5,7 @@ import { runHook } from "./hair/hook.js";
 import { readRegistry } from "./hair/registry.js";
 import { describeCandidate, probeDirs, probeLiveness, resolveName, resolveNames, resolveResumeDir, restoreCandidates } from "./hair/restore.js";
 import { launch } from "./launch.js";
+import { messageOf } from "./log/error-message.js";
 import type { Seams } from "./system/seams.js";
 
 export const RESUME_FLAG = "-r";
@@ -71,19 +72,50 @@ export async function launchHair(deps: { seams: Seams; processArgv: string[] }):
   // on a name, so one transcript scan per restore rather than one per candidate. The same
   // pass carries back the directory the conversation was opened in.
   const resolved = await resolveName(seams, claimed);
-  // The opening directory where it is still there, else the record's own — which `probeDirs`
-  // checked before the claim, so this chdir cannot throw and strand it.
+  // The opening directory where that is still a directory, else the record's own.
   const resumeIn = await resolveResumeDir(seams, resolved);
-
-  seams.logger.say(`restoring ${resolved.name ?? resolved.sessionId} in ${resumeIn}`);
   // Resume-by-id is not cwd-scoped, so resuming from the wrong directory would rebind the
   // conversation's project settings, hooks and CLAUDE.md discovery to this terminal's.
-  seams.chdir(resumeIn);
+  const movedTo = moveTo(seams, resumeIn, claimed.cwd);
+
+  // Said after the move, so the directory named is the one the session actually gets.
+  seams.logger.say(`restoring ${resolved.name ?? resolved.sessionId} in ${movedTo}`);
   return await launch({
-    seams: { ...handover, cwd: resumeIn },
+    seams: { ...handover, cwd: movedTo },
     // `--name` is what Claude Code titles the tab from.
     processArgv: forwarding([RESUME_FLAG, resolved.sessionId, ...nameArgs(resolved.name), ...mode.forward])
   });
+}
+
+/**
+ * The chdir, and the one thing resuming somewhere other than `record.cwd` must not do is
+ * strand the claim — which is held by now, so a throw here ends `hair` through `reported`
+ * with the claim in place and every later run reclaims the same record and fails again.
+ * `resolveResumeDir`'s `stat` narrows that but cannot close it: it is a point-in-time answer
+ * and the directory can be removed or replaced in the window after it. So the opening
+ * directory is *attempted*, and a throw falls back to `record.cwd` — the directory
+ * `probeDirs` verified before the claim was taken.
+ *
+ * The catch is deliberately only around that window. A `record.cwd` that throws too
+ * propagates: that is the pre-existing race `probeDirs` has always had, the claim it strands
+ * is one `hair` could not have avoided taking, and swallowing it would resume the conversation
+ * in whatever directory this terminal happens to be in — the rebinding this whole change
+ * exists to stop.
+ */
+function moveTo(seams: Seams, resumeIn: string, fallback: string): string {
+  if (resumeIn === fallback) {
+    // Nothing else to try, and this is the directory checked before the claim.
+    seams.chdir(fallback);
+    return fallback;
+  }
+  try {
+    seams.chdir(resumeIn);
+    return resumeIn;
+  } catch (err) {
+    seams.logger.say(`${resumeIn} could not be entered (${messageOf(err)}), so this resumes in ${fallback} instead`);
+    seams.chdir(fallback);
+    return fallback;
+  }
 }
 
 function nameArgs(name: string | undefined): string[] {

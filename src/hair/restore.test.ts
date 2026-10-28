@@ -151,7 +151,7 @@ describe("restoreCandidates", () => {
 
 describe("describeCandidate", () => {
   it.each<[string, Partial<SessionRecord>, string, string, string]>([
-    ["this directory by name", {}, "/work", "/work", "a  (unnamed)  this directory"],
+    ["this directory by name, marked because the record was last used here too", {}, "/work", "/work", "a  (unnamed)  this directory  (last here)"],
     ["another directory in full", { cwd: "/other", name: "pcs" }, "/work", "/other", "a  pcs  /other"],
     [
       "the directory it will resume in rather than the one last seen",
@@ -166,10 +166,33 @@ describe("describeCandidate", () => {
       "/work",
       "/work",
       "a  (unnamed)  this directory"
+    ],
+    [
+      "a record that sorted to the top because it was last used here, resuming elsewhere",
+      { cwd: "/work", name: "pcs" },
+      "/work",
+      "/opened-in",
+      "a  pcs  /opened-in  (last here)"
     ]
   ])("should describe %s", (_name, over, cwd, resumeIn, expected) => {
     // Act / Assert
     expect(describeCandidate(record(over), cwd, resumeIn)).toBe(expected);
+  });
+
+  it("should tell apart the two records that both resume in this directory, so the ordering is legible", () => {
+    // Arrange
+    // `rank` sorts the first above the second, and both resume where `hair` is being run.
+    const lastHere = record({ sessionId: "ranked-first", cwd: "/work", name: "pcs" });
+    const openedHere = record({ sessionId: "ranked-second", cwd: "/work/.claude/worktrees/a-feature", name: "pcs" });
+
+    // Act
+    const first = describeCandidate(lastHere, "/work", "/work");
+    const second = describeCandidate(openedHere, "/work", "/work");
+
+    // Assert
+    expect(first).toBe("ranked-first  pcs  this directory  (last here)");
+    expect(second).toBe("ranked-second  pcs  this directory");
+    expect(first.endsWith("(last here)")).not.toBe(second.endsWith("(last here)"));
   });
 });
 
@@ -178,10 +201,14 @@ describe("resumeDir", () => {
   const MOVED_TO = "/work/.claude/worktrees/a-feature";
 
   it.each<[string, Parameters<typeof resumeDir>[0], string]>([
-    ["the opening directory, which is the one Claude Code fixed the project slug from", { cwd: MOVED_TO, openedIn: OPENED_IN, openingExists: true }, OPENED_IN],
-    ["the record's own cwd when the opening directory has been deleted since", { cwd: MOVED_TO, openedIn: OPENED_IN, openingExists: false }, MOVED_TO],
-    ["the record's own cwd when the transcript said nothing about where it was opened", { cwd: MOVED_TO, openedIn: undefined, openingExists: false }, MOVED_TO],
-    ["the one directory when the session never moved out of it", { cwd: OPENED_IN, openedIn: OPENED_IN, openingExists: true }, OPENED_IN]
+    ["the opening directory, which is the one Claude Code fixed the project slug from", { cwd: MOVED_TO, openedIn: OPENED_IN, openingIsDir: true }, OPENED_IN],
+    [
+      "the record's own cwd when the opening directory is no longer a directory — deleted, or deleted and reused as a file",
+      { cwd: MOVED_TO, openedIn: OPENED_IN, openingIsDir: false },
+      MOVED_TO
+    ],
+    ["the record's own cwd when the transcript said nothing about where it was opened", { cwd: MOVED_TO, openedIn: undefined, openingIsDir: false }, MOVED_TO],
+    ["the one directory when the session never moved out of it", { cwd: OPENED_IN, openedIn: OPENED_IN, openingIsDir: true }, OPENED_IN]
   ])("should resume in %s", (_name, input, expected) => {
     // Act / Assert
     expect(resumeDir(input)).toBe(expected);
@@ -209,11 +236,22 @@ describe("resolveResumeDir", () => {
     await expect(resolveResumeDir(seams, { ...record({ cwd: MOVED_TO }), openedIn: "/a-deleted-worktree" })).resolves.toBe(MOVED_TO);
   });
 
+  it("should fall back when the opening path is a file, which a bare existence check would have passed", async () => {
+    // Arrange
+    // A deleted worktree path later reused for something that is not a directory: `stat`
+    // succeeds, and a `chdir` onto it throws ENOTDIR.
+    const seams = createFakeSeams({ files: { [OPENED_IN]: "not a directory" } });
+
+    // Act / Assert
+    await expect(seams.fs.exists(OPENED_IN)).resolves.toBe(true);
+    await expect(resolveResumeDir(seams, { ...record({ cwd: MOVED_TO }), openedIn: OPENED_IN })).resolves.toBe(MOVED_TO);
+  });
+
   it("should stat nothing for a record whose transcript named no opening directory", async () => {
     // Arrange
     const seams = createFakeSeams();
     const statted: string[] = [];
-    seams.fs.exists = async (path): Promise<boolean> => {
+    seams.fs.isDirectory = async (path): Promise<boolean> => {
       statted.push(path);
       return true;
     };
