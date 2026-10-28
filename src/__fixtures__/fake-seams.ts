@@ -120,6 +120,10 @@ export function createFakeFs(files: Record<string, string> = {}): FakeFs {
     async exists(path) {
       return store.has(path) || dirs.has(path);
     },
+    /** Only the directories: a path in `store` is a file, which is the distinction this exists for. */
+    async isDirectory(path) {
+      return dirs.has(path);
+    },
     async isWritable(path) {
       return !unwritable.has(path);
     },

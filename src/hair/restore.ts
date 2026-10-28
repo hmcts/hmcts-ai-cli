@@ -3,7 +3,7 @@ import type { Env } from "../system/env.js";
 import type { Fs } from "../system/fs.js";
 import type { Runner } from "../system/runner.js";
 import { keptRecords, retired, type SessionRecord } from "./registry.js";
-import { readSessionTitle } from "./title.js";
+import { readSessionFacts } from "./title.js";
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
@@ -69,23 +69,72 @@ export function restoreCandidates(input: {
   return { candidates: candidates.sort((a, b) => rank(a, input.cwd) - rank(b, input.cwd) || b.at - a.at || compare(a.sessionId, b.sessionId)), skipped };
 }
 
-/** Pure, and the name is data: `resolveName` has already settled which one it is. */
-export function describeCandidate(record: SessionRecord, cwd: string): string {
-  const here = record.cwd === cwd ? "this directory" : record.cwd;
-  return `${record.sessionId}  ${record.name ?? "(unnamed)"}  ${here}`;
+/**
+ * Pure, and both the name and the directory are data: `resolveName` and `resolveResumeDir`
+ * have already settled them. `resumeIn` and not `record.cwd`, so the listing names the
+ * directory `hair` would actually resume the conversation in.
+ *
+ * The `(last here)` note is what makes the **ordering** legible, and it is there because the
+ * two are now different fields: `rank` sorts on `record.cwd` while this prints `resumeIn`, so
+ * without it a record that sorted to the top and one that did not print the identical
+ * `this directory` whenever both were opened where `hair` is being run — which, inside a
+ * worktree, is most of them. The note marks exactly the records `rank` put first.
+ */
+export function describeCandidate(record: SessionRecord, cwd: string, resumeIn: string): string {
+  const here = resumeIn === cwd ? "this directory" : resumeIn;
+  const lastHere = record.cwd === cwd ? "  (last here)" : "";
+  return `${record.sessionId}  ${record.name ?? "(unnamed)"}  ${here}${lastHere}`;
+}
+
+/**
+ * Pure. Which directory a conversation is resumed in. The opening directory is the one Claude
+ * Code fixed the project slug from, so resuming there is what makes the conversation's
+ * `CLAUDE.md`, `.claude/settings.json` and hook discovery resolve as they did originally —
+ * where `record.cwd` is only the last directory the session was seen in, which for a session
+ * that moved into a worktree is a directory the engineer is then asked to trust again.
+ *
+ * The fallback is not optional. `probeDirs` verifies `record.cwd` **before** the claim, which
+ * is what "everything that can stop a record being resumed is decided before the claim" buys;
+ * the opening directory has had no such check, and this is settled after the claim is held.
+ * So the opening directory is preferred only when it probes as one, and the already-verified
+ * `record.cwd` is what the decision lands on otherwise. This is half the safety net; the other
+ * half is `moveTo` in `src/hair-launch.ts`, which catches a chdir that throws regardless.
+ *
+ * `openingIsDir` and not "openingExists": the answer is about to be `chdir`-ed into, and a
+ * `chdir` onto a *file* throws ENOTDIR as surely as onto nothing. A worktree path deleted and
+ * later reused as a file is exactly the shape this registry sees.
+ */
+export function resumeDir(input: { cwd: string; openedIn: string | undefined; openingIsDir: boolean }): string {
+  return input.openedIn !== undefined && input.openingIsDir ? input.openedIn : input.cwd;
 }
 
 /**
  * One record with its name read from the conversation's own transcript, which is where Claude
- * Code keeps it, and from the record's `name` only when there is no transcript to read. The
- * transcript is found by the recorded `slug`, otherwise by scanning the project directories.
- * Read-only: the transcripts are Claude Code's own store and hai never writes them.
+ * Code keeps it, and from the record's `name` only when there is no transcript to read — plus
+ * the directory the conversation was opened in, out of the same pass. The transcript is found
+ * by the recorded `slug`, otherwise by scanning the project directories. Read-only: the
+ * transcripts are Claude Code's own store and hai never writes them.
  */
-export async function resolveName(deps: { fs: Fs; env: Env }, record: SessionRecord): Promise<SessionRecord> {
-  const name = (await readSessionTitle(deps, { slug: record.slug, sessionId: record.sessionId })) ?? record.name;
-  // Left byte-identical when nothing resolved, rather than given a `name: undefined` the
-  // record never carried.
-  return name === undefined ? record : { ...record, name };
+export async function resolveName(deps: { fs: Fs; env: Env }, record: SessionRecord): Promise<ResolvedRecord> {
+  const facts = await readSessionFacts(deps, { slug: record.slug, sessionId: record.sessionId });
+  const name = facts.name ?? record.name;
+  // Left byte-identical when the transcript answered nothing, rather than given a
+  // `name: undefined` or an `openedIn: undefined` the record never carried.
+  if (name === undefined && facts.openedIn === undefined) {
+    return record;
+  }
+  return { ...record, ...(name === undefined ? {} : { name }), ...(facts.openedIn === undefined ? {} : { openedIn: facts.openedIn }) };
+}
+
+/**
+ * The one `stat` `resumeDir` needs, beside it. `Fs.isDirectory` answers false for an absent
+ * path, a file and a directory this process cannot `stat` alike, so this settles on a
+ * directory or on the fallback. It is still only a point-in-time answer — what stops the
+ * remaining window stranding a claim is the chdir fallback in `src/hair-launch.ts`, not this.
+ */
+export async function resolveResumeDir(deps: { fs: Fs }, record: ResolvedRecord): Promise<string> {
+  const openedIn = record.openedIn;
+  return resumeDir({ cwd: record.cwd, openedIn, openingIsDir: openedIn === undefined ? false : await deps.fs.isDirectory(openedIn) });
 }
 
 /**
@@ -93,8 +142,8 @@ export async function resolveName(deps: { fs: Fs; env: Env }, record: SessionRec
  * form resolves the claimed record alone, each candidate costing a full streamed transcript
  * pass. Safe either way because the candidate order does not depend on a name.
  */
-export async function resolveNames(deps: { fs: Fs; env: Env }, candidates: SessionRecord[]): Promise<SessionRecord[]> {
-  const resolved: SessionRecord[] = [];
+export async function resolveNames(deps: { fs: Fs; env: Env }, candidates: SessionRecord[]): Promise<ResolvedRecord[]> {
+  const resolved: ResolvedRecord[] = [];
   for (const record of candidates) {
     resolved.push(await resolveName(deps, record));
   }
@@ -161,6 +210,15 @@ async function answer(deps: { runner: Runner }, record: SessionRecord, plan: Liv
   return null;
 }
 
+/**
+ * `record.cwd` and deliberately not the opening directory, even though that is what the
+ * conversation is resumed in. Ranking happens before the claim and before any transcript is
+ * read, so ranking on the opening directory would put a streamed transcript pass back behind
+ * every candidate — the cost the commit that split `resolveName` out of `resolveNames`
+ * removed, measured at 601ms before a claim was taken. What it costs is that the preference is
+ * weak in practice: most records' last-seen cwd matches no terminal, so the comparison is 1
+ * against 1 and the ordering falls through to recency, which is a fine answer here.
+ */
 function rank(record: SessionRecord, cwd: string): number {
   return record.cwd === cwd ? 0 : 1;
 }
@@ -173,6 +231,16 @@ function days(elapsed: number): number {
 /** Only to break a tie, so two terminals walk the candidates in the same order. */
 function compare(a: string, b: string): number {
   return a.localeCompare(b);
+}
+
+/**
+ * A record with what its transcript added. `openedIn` is a second directory and not a
+ * correction of `cwd`: `cwd` stays "last seen", which is the meaning `probeDirs`, `livenessPlan`
+ * and `rank` all read it with.
+ */
+export interface ResolvedRecord extends SessionRecord {
+  /** Where the conversation was opened, off the first transcript record carrying a `cwd`. */
+  openedIn?: string;
 }
 
 export interface LivenessPlan {

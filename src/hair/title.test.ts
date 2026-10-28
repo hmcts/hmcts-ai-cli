@@ -5,11 +5,12 @@ import {
   AI_TITLE_TYPE,
   CUSTOM_TITLE_TYPE,
   findProjectDir,
+  parseRecordCwd,
   parseTitleRecord,
   pickTitle,
   projectsDir,
-  readSessionTitle,
-  scanTranscriptTitles,
+  readSessionFacts,
+  scanTranscript,
   type TitleRecord,
   transcriptPath,
   transcriptSlug
@@ -28,6 +29,10 @@ const customTitle = (title: string) => JSON.stringify({ type: CUSTOM_TITLE_TYPE,
 const transcript = (...lines: string[]) => `${lines.join("\n")}\n`;
 /** The bulk of a real transcript: tens of thousands of lines that are not title records. */
 const chatter = JSON.stringify({ type: "user", message: { role: "user", content: "what does this do" } });
+/** An ordinary record as Claude Code writes it, carrying the directory the session was in at the time. */
+const inDir = (cwd: string) => JSON.stringify({ type: "user", cwd, sessionId: SESSION, message: { role: "user", content: "go on" } });
+const OPENED_IN = "/home/dev/work";
+const MOVED_TO = "/home/dev/work/.claude/worktrees/a-feature";
 
 describe("transcriptSlug", () => {
   it("should take the slug out of the transcript path the payload carries", () => {
@@ -115,6 +120,25 @@ describe("parseTitleRecord", () => {
   });
 });
 
+describe("parseRecordCwd", () => {
+  it("should read the directory off an ordinary transcript record", () => {
+    // Act / Assert
+    expect(parseRecordCwd(inDir(OPENED_IN))).toBe(OPENED_IN);
+  });
+
+  it.each<[string, string]>([
+    ["a line carrying no cwd at all, which the title records do not", chatter],
+    ["a line that quotes the field name but carries no such field", JSON.stringify({ type: "user", message: 'the "cwd" moves as the session does' })],
+    ["a half-written record, as a crash mid-append leaves one", '{"type":"user","cwd":"/home/dev'],
+    ["a JSON string where an object was expected", '"cwd"'],
+    ["a record whose cwd is not a string", JSON.stringify({ type: "user", cwd: 42 })],
+    ["a record whose cwd is empty, which names no directory", JSON.stringify({ type: "user", cwd: "" })]
+  ])("should answer undefined for %s", (_name, line) => {
+    // Act / Assert
+    expect(parseRecordCwd(line)).toBeUndefined();
+  });
+});
+
 describe("pickTitle", () => {
   it("should prefer the custom title even though the ai title came later in the file", () => {
     // Act / Assert
@@ -141,7 +165,35 @@ describe("pickTitle", () => {
   });
 });
 
-describe("scanTranscriptTitles", () => {
+describe("scanTranscript", () => {
+  it("should keep the first cwd, which is where the session was opened, not the last", async () => {
+    // Arrange
+    const seams = createFakeSeams({ files: { [TRANSCRIPT]: transcript(inDir(OPENED_IN), chatter, inDir(MOVED_TO), inDir(MOVED_TO)) } });
+
+    // Act / Assert
+    await expect(scanTranscript(seams, TRANSCRIPT)).resolves.toEqual({ openedIn: OPENED_IN });
+  });
+
+  it("should find both facts in the one pass", async () => {
+    // Arrange
+    const seams = createFakeSeams({ files: { [TRANSCRIPT]: transcript(inDir(OPENED_IN), customTitle("hai-resume"), inDir(MOVED_TO)) } });
+
+    // Act / Assert
+    await expect(scanTranscript(seams, TRANSCRIPT)).resolves.toEqual({ custom: "hai-resume", openedIn: OPENED_IN });
+  });
+
+  it("should answer no opening directory for a transcript whose records carry none", async () => {
+    // Arrange
+    const seams = createFakeSeams({ files: { [TRANSCRIPT]: transcript(chatter, customTitle("hai-resume")) } });
+
+    // Act
+    const found = await scanTranscript(seams, TRANSCRIPT);
+
+    // Assert
+    expect(found.openedIn).toBeUndefined();
+    expect(Object.keys(found)).toEqual(["custom"]);
+  });
+
   it("should keep the last record of each type", async () => {
     // Arrange
     const seams = createFakeSeams({
@@ -159,7 +211,7 @@ describe("scanTranscriptTitles", () => {
     });
 
     // Act / Assert
-    await expect(scanTranscriptTitles(seams, TRANSCRIPT)).resolves.toEqual({ custom: "hai-resume-2", ai: "a later guess" });
+    await expect(scanTranscript(seams, TRANSCRIPT)).resolves.toEqual({ custom: "hai-resume-2", ai: "a later guess" });
   });
 
   it("should find a title record at the very start of a long transcript", async () => {
@@ -168,7 +220,7 @@ describe("scanTranscriptTitles", () => {
     const seams = createFakeSeams({ files: { [TRANSCRIPT]: transcript(...lines) } });
 
     // Act / Assert
-    await expect(scanTranscriptTitles(seams, TRANSCRIPT)).resolves.toEqual({ custom: "named on the first prompt" });
+    await expect(scanTranscript(seams, TRANSCRIPT)).resolves.toEqual({ custom: "named on the first prompt" });
   });
 
   it("should let a cleared custom title replace the name it was clearing", async () => {
@@ -178,7 +230,7 @@ describe("scanTranscriptTitles", () => {
     });
 
     // Act / Assert
-    await expect(scanTranscriptTitles(seams, TRANSCRIPT)).resolves.toEqual({ custom: "", ai: "a later guess" });
+    await expect(scanTranscript(seams, TRANSCRIPT)).resolves.toEqual({ custom: "", ai: "a later guess" });
   });
 
   it("should answer nothing at all for a transcript that is not there, rather than throw", async () => {
@@ -186,7 +238,7 @@ describe("scanTranscriptTitles", () => {
     const seams = createFakeSeams({});
 
     // Act / Assert
-    await expect(scanTranscriptTitles(seams, TRANSCRIPT)).resolves.toEqual({});
+    await expect(scanTranscript(seams, TRANSCRIPT)).resolves.toEqual({});
   });
 });
 
@@ -255,13 +307,16 @@ describe("findProjectDir", () => {
   });
 });
 
-describe("readSessionTitle", () => {
-  it("should name a conversation from its transcript", async () => {
+describe("readSessionFacts", () => {
+  it("should name a conversation from its transcript and say where it was opened", async () => {
     // Arrange
-    const seams = createFakeSeams({ env: { HOME }, files: { [TRANSCRIPT]: transcript(chatter, customTitle("hai-resume")) } });
+    const seams = createFakeSeams({
+      env: { HOME },
+      files: { [TRANSCRIPT]: transcript(inDir(OPENED_IN), customTitle("hai-resume"), inDir(MOVED_TO)) }
+    });
 
     // Act / Assert
-    await expect(readSessionTitle(seams, { slug: SLUG, sessionId: SESSION })).resolves.toBe("hai-resume");
+    await expect(readSessionFacts(seams, { slug: SLUG, sessionId: SESSION })).resolves.toEqual({ name: "hai-resume", openedIn: OPENED_IN });
   });
 
   it("should name a conversation nobody renamed, from the title Claude Code generated", async () => {
@@ -269,7 +324,7 @@ describe("readSessionTitle", () => {
     const seams = createFakeSeams({ env: { HOME }, files: { [TRANSCRIPT]: transcript(chatter, aiTitle("VS Code Claude session restore")) } });
 
     // Act / Assert
-    await expect(readSessionTitle(seams, { slug: SLUG, sessionId: SESSION })).resolves.toBe("VS Code Claude session restore");
+    await expect(readSessionFacts(seams, { slug: SLUG, sessionId: SESSION })).resolves.toEqual({ name: "VS Code Claude session restore" });
   });
 
   it("should name a conversation whose custom title was cleared from the generated one", async () => {
@@ -280,7 +335,7 @@ describe("readSessionTitle", () => {
     });
 
     // Act / Assert
-    await expect(readSessionTitle(seams, { slug: SLUG, sessionId: SESSION })).resolves.toBe("VS Code Claude session restore");
+    await expect(readSessionFacts(seams, { slug: SLUG, sessionId: SESSION })).resolves.toEqual({ name: "VS Code Claude session restore" });
   });
 
   it("should read nothing but the transcript", async () => {
@@ -291,23 +346,31 @@ describe("readSessionTitle", () => {
     });
 
     // Act / Assert
-    await expect(readSessionTitle(seams, { slug: SLUG, sessionId: SESSION })).resolves.toBeUndefined();
+    await expect(readSessionFacts(seams, { slug: SLUG, sessionId: SESSION })).resolves.toEqual({});
   });
 
-  it.each<[string, Record<string, string>, Parameters<typeof readSessionTitle>[1]]>([
+  it("should say where an unnamed conversation was opened, naming nothing it has no name for", async () => {
+    // Arrange
+    const seams = createFakeSeams({ env: { HOME }, files: { [TRANSCRIPT]: transcript(inDir(OPENED_IN), chatter) } });
+
+    // Act / Assert
+    await expect(readSessionFacts(seams, { slug: SLUG, sessionId: SESSION })).resolves.toEqual({ openedIn: OPENED_IN });
+  });
+
+  it.each<[string, Record<string, string>, Parameters<typeof readSessionFacts>[1]]>([
     ["no transcript exists for this session at all", {}, { slug: SLUG, sessionId: SESSION }],
-    ["the transcript names it neither way", { [TRANSCRIPT]: transcript(chatter) }, { slug: SLUG, sessionId: SESSION }],
+    ["the transcript neither names it nor says where it was opened", { [TRANSCRIPT]: transcript(chatter) }, { slug: SLUG, sessionId: SESSION }],
     [
       "the transcript is half-written, as a crash mid-append leaves it",
       { [TRANSCRIPT]: `${JSON.stringify({ type: CUSTOM_TITLE_TYPE, customTitle: "hai-resume" }).slice(0, 30)}` },
       { slug: SLUG, sessionId: SESSION }
     ],
     ["there is no session id to look anything up by", { [TRANSCRIPT]: transcript(customTitle("hai-resume")) }, { slug: SLUG }]
-  ])("should answer undefined when %s", async (_name, files, input) => {
+  ])("should answer nothing at all when %s", async (_name, files, input) => {
     // Arrange
     const seams = createFakeSeams({ env: { HOME }, files });
 
     // Act / Assert
-    await expect(readSessionTitle(seams, input)).resolves.toBeUndefined();
+    await expect(readSessionFacts(seams, input)).resolves.toEqual({});
   });
 });

@@ -375,6 +375,18 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
   through `reported` with the claim in place, so the next run reclaims the same record and
   fails again, for every conversation, until someone hand-edits the registry. A worktree or
   a clone disappearing under a registered conversation is routine here.
+  The one thing settled *after* the claim is **which** directory to resume in, and it is only
+  safe because it cannot stop the resume: `resolveResumeDir` prefers the opening directory and
+  falls back to the `record.cwd` `probeDirs` already verified, and `moveTo` in
+  `src/hair-launch.ts` catches a throw from the preferred one and takes that fallback. Nothing
+  may be added after the claim that has no verified-before-the-claim answer to fall back to.
+- **`Fs.exists` is a bare `stat`, so it is the wrong question about a directory.** It answers
+  true for a file at that path and for a directory this process cannot `stat`, and a `chdir`
+  onto a file throws ENOTDIR exactly as onto nothing. `Fs.isDirectory` is the one to use
+  wherever the answer is about to be entered or joined onto — a worktree path deleted and
+  later reused for something else is a shape this registry sees. `probeDirs` still uses
+  `exists`, which is the same latent hole for `record.cwd`; it is left alone only because
+  `record.cwd` is the last fallback and has nothing behind it to catch a throw.
 - **`hair` claims nothing when the argv already names a conversation.** `hair -r abc` is a
   natural typo of `hai -r abc` — without `forwardsItsOwnSession` it would claim an
   unrelated conversation, emit `-r <claimed> -r abc`, open `abc` because claude takes the
@@ -680,8 +692,8 @@ table-testable:
 | `shouldRegisterSession`, `sessionDisplayName`, `hookCommand`, `hairCommand`, `binPath` | `sessionRegistryHooks` |
 | `parseHairArgs`, `forwardsItsOwnSession` | — |
 | `parseRegistry`, `parseRecord`, `retired`, `keptRecords`, `compacted`, `shouldCompact`, `registryPath`, `claimPath` | `readRegistry`, `appendRecord`, `compactRegistry` |
-| `restoreDecision`, `restoreCandidates`, `describeCandidate`, `livenessPlan` | `probeLiveness`, `probeDirs`, `resolveName`, `resolveNames` |
-| `transcriptSlug`, `projectsDir`, `transcriptPath`, `parseTitleRecord`, `pickTitle` | `findProjectDir`, `scanTranscriptTitles`, `readSessionTitle` |
+| `restoreDecision`, `restoreCandidates`, `describeCandidate`, `resumeDir`, `livenessPlan` | `probeLiveness`, `probeDirs`, `resolveName`, `resolveNames`, `resolveResumeDir` |
+| `transcriptSlug`, `projectsDir`, `transcriptPath`, `parseTitleRecord`, `pickTitle`, `parseRecordCwd` | `findProjectDir`, `scanTranscript`, `readSessionFacts` |
 | `claimDecision`, `parseClaim` | `claimFirst` |
 | `hookDecision`, `parsePayload` | `runHook` |
 | `resolvePluginDirs` is the exception — it reads the marketplace itself | — |
@@ -869,22 +881,60 @@ The shape, all in `src/hair-launch.ts`:
    `hair --list` prints the same array `claimFirst` walks, and it has to: the top line is
    the conversation the bare form is about to take, which is what makes the list worth
    eyeballing.
-6. `hair --list` stops here: `resolveNames` reads every candidate's name and
-   `describeCandidate` prints one line each. The bare form resolves nothing yet — the name is
-   not an input to the ordering, so there is nothing to settle before the claim.
+6. `hair --list` stops here: `resolveNames` reads every candidate's name and opening
+   directory and `describeCandidate` prints one line each, naming the directory each one
+   would actually be resumed in. The bare form resolves nothing yet — neither the name nor
+   the opening directory is an input to the ordering, so there is nothing to settle before
+   the claim.
 7. `claimFirst` walks the candidates and takes the first it wins with `O_EXCL`. Then, and only
-   then, `resolveName` reads **that one** record's name from the conversation's own transcript
-   — found by the recorded slug or by scanning the project directories for
-   `<session-id>.jsonl`, taking the last `custom-title` record over the last `ai-title` one,
-   and falling back to the name the record holds only when there is no transcript to read.
-   That is the **only** place a title is read: the hook does not, deliberately. One scan per
-   restore, not one per candidate, which after a reboot is the difference between a pass and a
-   pass per waiting conversation.
-8. `seams.chdir` moves to the record's own directory, then `launch()` runs with
+   then, `resolveName` reads **that one** record's transcript — found by the recorded slug or
+   by scanning the project directories for `<session-id>.jsonl` — for both facts it holds, in
+   one pass: the name, taking the last `custom-title` record over the last `ai-title` one and
+   falling back to the name the record holds only when there is no transcript to read; and the
+   **first** `cwd` in the file, which is the directory the conversation was opened in. That is
+   the **only** place a title is read: the hook does not, deliberately. One scan per restore,
+   not one per candidate, which after a reboot is the difference between a pass and a pass per
+   waiting conversation.
+8. `resolveResumeDir` settles where to go — the opening directory, or the record's `cwd` when
+   that is not a directory any more — and `moveTo` moves there, then `launch()` runs with
    `["-r", id, "--name", <the resolved name>, ...rest]`. `--name` is how the tab title comes
    back: Claude Code sets the title from it as the TUI mounts. The resumed session's own hook
    reads it from there too, so the registry's copy stays in step — though that copy is only
    ever the fallback. Nothing here writes a title itself.
+
+   **The opening directory and not `record.cwd`, and `record.cwd` is still the fallback.**
+   `hookDecision` re-registers whenever cwd changes, so a session that started in the
+   workspace root and later moved into a worktree is recorded against the worktree — a
+   directory created fresh and never trusted, which Claude Code then asks about on every
+   resume. The opening directory is also the one Claude Code fixed the project slug from, so
+   resuming there is what makes the conversation's `CLAUDE.md`, `.claude/settings.json` and
+   hook discovery resolve as they did originally. Measured over one engineer's nine open
+   records, seven were recorded against a directory the conversation was not opened in and all
+   seven had opened in the trusted workspace root. It also puts container mode's transcript
+   lock back on the right key: `lockPath` is `projectSlug(workdir)`, so locking from the
+   worktree guarded a slug the conversation does not write under, while locking from the
+   opening directory guards the transcripts a host session and a container session would
+   actually both write.
+
+   **The fallback is in two places and needs both.** `probeDirs` verifies `record.cwd`
+   **before** the claim and the opening directory has had no such check, so
+   `resolveResumeDir` probes it with `Fs.isDirectory` — a directory, not merely something,
+   because a `chdir` onto a file throws ENOTDIR — and lands on the already-verified
+   `record.cwd` otherwise. That `stat` is still only a point-in-time answer, so `moveTo`
+   *attempts* the chosen directory and on a throw says so and takes `record.cwd`. A throw from
+   `record.cwd` itself propagates: that is the race `probeDirs` has always had, swallowing it
+   would resume the conversation in whatever directory the terminal is in, and that rebinding
+   is the thing this exists to stop.
+
+   `record.cwd` keeps its meaning of **last seen**: `probeDirs`, `livenessPlan` and `rank` all
+   read it that way, and `rank` deliberately still ranks on it, because ranking happens before
+   any transcript is read and ranking on the opening directory would put a streamed pass back
+   behind every candidate. That makes the cwd preference weak in practice — most records' last
+   seen cwd matches no terminal — so the ordering falls through to recency, which is fine.
+   The cost of leaving it there is that the listing sorts on one field and prints another, so
+   `describeCandidate` appends `(last here)` to exactly the records `rank` put first: without
+   it, a record that sorted top and one that did not print an identical `this directory`
+   whenever both opened where `hair` is being run, which inside a worktree is most of them.
 
 The other half is the hook. `sessionRegistryHooks` puts `UserPromptSubmit` and
 `SessionEnd` entries into the settings hai already passes as its single `--settings`, so

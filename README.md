@@ -95,11 +95,23 @@ hair --list   # show what is waiting, claiming nothing
 ```
 
 Run it in each terminal you reopen and each gets a different conversation. It prefers one
-belonging to the directory you are in, and then the one you were working in most recently,
-and moves to that conversation's directory before resuming. `hair --list` shows them in
-that same order, so its top line is the one `hair` would take. Anything else you pass is
-forwarded to `hai`, and if the arguments already name a conversation — `hair -c`,
-`hair -r <id>` — nothing is claimed and `hair` is simply `hai`.
+last used in the directory you are in, and then the one you were working in most recently.
+Anything else you pass is forwarded to `hai`, and if the arguments already name a
+conversation — `hair -c`, `hair -r <id>` — nothing is claimed and `hair` is simply `hai`.
+
+Before resuming, it moves to the directory the conversation was **opened** in, which is
+usually not the one it ended up in: a session that `cd`s into a worktree is recorded against
+the worktree, and resuming there means a "do you trust this folder" prompt every time and a
+different `CLAUDE.md`, `.claude/settings.json` and set of hooks from the ones the
+conversation ran under. The opening directory is the one Claude Code resolved all of those
+from, so going back there is what makes a restored conversation pick up where it left off.
+If that directory has since gone, it falls back to the last one the session was seen in.
+
+`hair --list` shows the candidates in the order `hair` claims them, so its top line is the
+one `hair` would take, and names the directory each one would resume in. A `(last here)` note
+marks the ones that were last used in the directory you are standing in — those are the ones
+sorted to the top, and it is the only thing separating them from a conversation that merely
+happens to resume here.
 
 A restored conversation comes back under its own name, which is also what Claude Code titles
 the terminal tab from. `hair` passes the name on to `claude`, and reads it out of the

@@ -133,6 +133,25 @@ describe("createFs", () => {
     expect(await fs.exists(join(root, "absent"))).toBe(false);
   });
 
+  it("should tell a directory from a file at the same path, which exists cannot", async () => {
+    // Arrange
+    const dir = join(root, "a-directory");
+    const file = join(root, "a-file");
+    await fs.mkdirp(dir);
+    await fs.writeText(file, "not a directory");
+
+    // Act / Assert
+    expect(await fs.isDirectory(dir)).toBe(true);
+    // The distinction this exists for: `chdir` onto the file would throw ENOTDIR.
+    expect(await fs.exists(file)).toBe(true);
+    expect(await fs.isDirectory(file)).toBe(false);
+  });
+
+  it("should report a missing path as not a directory rather than throw", async () => {
+    // Act / Assert
+    expect(await fs.isDirectory(join(root, "absent"))).toBe(false);
+  });
+
   it("should report a writable directory as writable", async () => {
     // Arrange
     await fs.mkdirp(root);

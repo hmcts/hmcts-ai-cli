@@ -15,6 +15,9 @@ export const TRANSCRIPT_SUFFIX = ".jsonl";
 export const AI_TITLE_TYPE = "ai-title";
 export const CUSTOM_TITLE_TYPE = "custom-title";
 
+/** The field almost every transcript record carries, and the one the opening directory is read off. */
+export const CWD_FIELD = "cwd";
+
 /**
  * The project directory Claude Code filed a conversation under, taken out of the
  * `transcript_path` the hook payload carries rather than derived: Claude Code fixes the slug
@@ -71,6 +74,25 @@ export function parseTitleRecord(line: string): TitleRecord | null {
 }
 
 /**
+ * Pure. The `cwd` off one transcript record, or undefined for every line that carries no
+ * usable one. Same shape as `parseTitleRecord`: the `includes` is the cheap reject against a
+ * `JSON.parse` per line, and the field is still what decides.
+ */
+export function parseRecordCwd(line: string): string | undefined {
+  if (!line.includes(`"${CWD_FIELD}"`)) {
+    return undefined;
+  }
+  try {
+    // Inside the `try` for the same reason as the title reads: a line of `null` or a number
+    // parses fine and then throws on a property.
+    const parsed = JSON.parse(line) as { cwd?: unknown };
+    return typeof parsed.cwd === "string" && parsed.cwd !== "" ? parsed.cwd : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Pure, and the rule is custom-over-ai rather than whichever came last: Claude Code goes on
  * generating a name after a `/rename`, so a positional rule hands back a name the engineer
  * has already replaced. An empty last `custom-title` is a cleared name and lets the
@@ -103,32 +125,42 @@ export async function findProjectDir(deps: { fs: Fs; env: Env }, input: { slug?:
 }
 
 /**
- * One pass over the transcript, keeping the last record of each type. Nothing reads a window
- * off the tail, a `/rename` early in a long conversation being a title in the first megabyte
- * of a hundred, and `Fs.readLines` streams, so the pass holds two strings whatever the size.
+ * One pass over the transcript for both facts it holds: the last title record of each type,
+ * and the **first** `cwd`, which is where the session was opened. Nothing reads a window off
+ * the tail, a `/rename` early in a long conversation being a title in the first megabyte of a
+ * hundred, and `Fs.readLines` streams, so the pass holds three strings whatever the size.
  */
-export async function scanTranscriptTitles(deps: { fs: Fs }, path: string): Promise<TranscriptTitles> {
-  const found: TranscriptTitles = {};
+export async function scanTranscript(deps: { fs: Fs }, path: string): Promise<TranscriptFacts> {
+  const found: TranscriptFacts = {};
   for await (const line of deps.fs.readLines(path)) {
     const record = parseTitleRecord(line);
     if (record !== null) {
       found[record.kind] = record.title;
+    }
+    if (found.openedIn === undefined) {
+      const cwd = parseRecordCwd(line);
+      if (cwd !== undefined) {
+        found.openedIn = cwd;
+      }
     }
   }
   return found;
 }
 
 /**
- * What a conversation is called, or undefined for every way of not having a name. The
- * transcript is the only source. Every read goes through `Fs`, which answers "nothing" rather
- * than throwing for an absent or unreadable path, so this cannot break a hook or a resume.
+ * What a conversation is called and where it was opened, each absent for every way of not
+ * having one. The transcript is the only source of both. Every read goes through `Fs`, which
+ * answers "nothing" rather than throwing for an absent or unreadable path, so this cannot
+ * break a hook or a resume.
  */
-export async function readSessionTitle(deps: { fs: Fs; env: Env }, input: { slug?: string; sessionId?: string }): Promise<string | undefined> {
+export async function readSessionFacts(deps: { fs: Fs; env: Env }, input: { slug?: string; sessionId?: string }): Promise<SessionFacts> {
   const projectDir = await findProjectDir(deps, input);
   if (projectDir === null) {
-    return undefined;
+    return {};
   }
-  return pickTitle(await scanTranscriptTitles(deps, transcriptPath(projectDir, input.sessionId!)));
+  const found = await scanTranscript(deps, transcriptPath(projectDir, input.sessionId!));
+  const name = pickTitle(found);
+  return { ...(name === undefined ? {} : { name }), ...(found.openedIn === undefined ? {} : { openedIn: found.openedIn }) };
 }
 
 /**
@@ -159,4 +191,15 @@ export interface TitleRecord {
 export interface TranscriptTitles {
   custom?: string;
   ai?: string;
+}
+
+/** The titles plus the directory the conversation was opened in, which is the whole of one pass. */
+export interface TranscriptFacts extends TranscriptTitles {
+  openedIn?: string;
+}
+
+/** What the transcript settled about a conversation, as its readers want it. */
+export interface SessionFacts {
+  name?: string;
+  openedIn?: string;
 }

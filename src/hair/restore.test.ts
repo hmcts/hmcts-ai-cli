@@ -1,7 +1,18 @@
 import { describe, expect, it } from "vitest";
 import { createFakeSeams, FIXED_NOW, type RunResponder } from "../__fixtures__/fake-seams.js";
 import type { SessionRecord } from "./registry.js";
-import { describeCandidate, livenessPlan, probeDirs, probeLiveness, resolveName, resolveNames, restoreCandidates, restoreDecision } from "./restore.js";
+import {
+  describeCandidate,
+  livenessPlan,
+  probeDirs,
+  probeLiveness,
+  resolveName,
+  resolveNames,
+  resolveResumeDir,
+  restoreCandidates,
+  restoreDecision,
+  resumeDir
+} from "./restore.js";
 import { transcriptPath } from "./title.js";
 
 const HOST = "workstation";
@@ -139,12 +150,118 @@ describe("restoreCandidates", () => {
 });
 
 describe("describeCandidate", () => {
-  it.each<[string, Partial<SessionRecord>, string, string]>([
-    ["this directory by name", {}, "/work", "a  (unnamed)  this directory"],
-    ["another directory in full", { cwd: "/other", name: "pcs" }, "/work", "a  pcs  /other"]
-  ])("should describe %s", (_name, over, cwd, expected) => {
+  it.each<[string, Partial<SessionRecord>, string, string, string]>([
+    ["this directory by name, marked because the record was last used here too", {}, "/work", "/work", "a  (unnamed)  this directory  (last here)"],
+    ["another directory in full", { cwd: "/other", name: "pcs" }, "/work", "/other", "a  pcs  /other"],
+    [
+      "the directory it will resume in rather than the one last seen",
+      { cwd: "/work/.claude/worktrees/a-feature", name: "pcs" },
+      "/elsewhere",
+      "/work",
+      "a  pcs  /work"
+    ],
+    [
+      "the resume directory as this one, even though the record's cwd is not",
+      { cwd: "/work/.claude/worktrees/a-feature" },
+      "/work",
+      "/work",
+      "a  (unnamed)  this directory"
+    ],
+    [
+      "a record that sorted to the top because it was last used here, resuming elsewhere",
+      { cwd: "/work", name: "pcs" },
+      "/work",
+      "/opened-in",
+      "a  pcs  /opened-in  (last here)"
+    ]
+  ])("should describe %s", (_name, over, cwd, resumeIn, expected) => {
     // Act / Assert
-    expect(describeCandidate(record(over), cwd)).toBe(expected);
+    expect(describeCandidate(record(over), cwd, resumeIn)).toBe(expected);
+  });
+
+  it("should tell apart the two records that both resume in this directory, so the ordering is legible", () => {
+    // Arrange
+    // `rank` sorts the first above the second, and both resume where `hair` is being run.
+    const lastHere = record({ sessionId: "ranked-first", cwd: "/work", name: "pcs" });
+    const openedHere = record({ sessionId: "ranked-second", cwd: "/work/.claude/worktrees/a-feature", name: "pcs" });
+
+    // Act
+    const first = describeCandidate(lastHere, "/work", "/work");
+    const second = describeCandidate(openedHere, "/work", "/work");
+
+    // Assert
+    expect(first).toBe("ranked-first  pcs  this directory  (last here)");
+    expect(second).toBe("ranked-second  pcs  this directory");
+    expect(first.endsWith("(last here)")).not.toBe(second.endsWith("(last here)"));
+  });
+});
+
+describe("resumeDir", () => {
+  const OPENED_IN = "/work";
+  const MOVED_TO = "/work/.claude/worktrees/a-feature";
+
+  it.each<[string, Parameters<typeof resumeDir>[0], string]>([
+    ["the opening directory, which is the one Claude Code fixed the project slug from", { cwd: MOVED_TO, openedIn: OPENED_IN, openingIsDir: true }, OPENED_IN],
+    [
+      "the record's own cwd when the opening directory is no longer a directory — deleted, or deleted and reused as a file",
+      { cwd: MOVED_TO, openedIn: OPENED_IN, openingIsDir: false },
+      MOVED_TO
+    ],
+    ["the record's own cwd when the transcript said nothing about where it was opened", { cwd: MOVED_TO, openedIn: undefined, openingIsDir: false }, MOVED_TO],
+    ["the one directory when the session never moved out of it", { cwd: OPENED_IN, openedIn: OPENED_IN, openingIsDir: true }, OPENED_IN]
+  ])("should resume in %s", (_name, input, expected) => {
+    // Act / Assert
+    expect(resumeDir(input)).toBe(expected);
+  });
+});
+
+describe("resolveResumeDir", () => {
+  const OPENED_IN = "/work";
+  const MOVED_TO = "/work/.claude/worktrees/a-feature";
+
+  it("should stat the opening directory, which nothing before the claim has checked", async () => {
+    // Arrange
+    const seams = createFakeSeams();
+    await seams.fs.mkdirp(OPENED_IN);
+
+    // Act / Assert
+    await expect(resolveResumeDir(seams, { ...record({ cwd: MOVED_TO }), openedIn: OPENED_IN })).resolves.toBe(OPENED_IN);
+  });
+
+  it("should fall back to the record's cwd when the opening directory is gone, rather than let the chdir throw", async () => {
+    // Arrange
+    const seams = createFakeSeams();
+
+    // Act / Assert
+    await expect(resolveResumeDir(seams, { ...record({ cwd: MOVED_TO }), openedIn: "/a-deleted-worktree" })).resolves.toBe(MOVED_TO);
+  });
+
+  it("should fall back when the opening path is a file, which a bare existence check would have passed", async () => {
+    // Arrange
+    // A deleted worktree path later reused for something that is not a directory: `stat`
+    // succeeds, and a `chdir` onto it throws ENOTDIR.
+    const seams = createFakeSeams({ files: { [OPENED_IN]: "not a directory" } });
+
+    // Act / Assert
+    await expect(seams.fs.exists(OPENED_IN)).resolves.toBe(true);
+    await expect(resolveResumeDir(seams, { ...record({ cwd: MOVED_TO }), openedIn: OPENED_IN })).resolves.toBe(MOVED_TO);
+  });
+
+  it("should stat nothing for a record whose transcript named no opening directory", async () => {
+    // Arrange
+    const seams = createFakeSeams();
+    const statted: string[] = [];
+    seams.fs.isDirectory = async (path): Promise<boolean> => {
+      statted.push(path);
+      return true;
+    };
+
+    // Act
+    const resolved = await resolveResumeDir(seams, record({ cwd: MOVED_TO }));
+
+    // Assert
+    expect(resolved).toBe(MOVED_TO);
+    expect(statted).toEqual([]);
   });
 });
 
@@ -316,7 +433,7 @@ describe("resolveName", () => {
     expect(await resolveName(seams, record({ sessionId: "a", name: "pcs" }))).toEqual(record({ sessionId: "a", name: "pcs" }));
   });
 
-  it("should leave a record with no name anywhere exactly as it was, rather than give it an undefined one", async () => {
+  it("should leave a record the transcript answered nothing about exactly as it was, rather than give it undefined fields", async () => {
     // Arrange
     const seams = createFakeSeams({ env: { HOME } });
     const unnamed = record({ sessionId: "a" });
@@ -327,6 +444,46 @@ describe("resolveName", () => {
     // Assert
     expect(resolved).toBe(unnamed);
     expect(Object.keys(resolved)).not.toContain("name");
+    expect(Object.keys(resolved)).not.toContain("openedIn");
+  });
+
+  it("should carry back the directory the conversation was opened in, out of the same pass", async () => {
+    // Arrange
+    const openedIn = `${JSON.stringify({ type: "user", cwd: "/work" })}\n`;
+    const movedTo = `${JSON.stringify({ type: "user", cwd: "/work/.claude/worktrees/a-feature" })}\n`;
+    const seams = createFakeSeams({ env: { HOME }, files: { [transcriptOf(SLUG, "a")]: `${openedIn}${named("pcs")}${movedTo}` } });
+
+    // Act
+    const resolved = await resolveName(seams, record({ sessionId: "a", cwd: "/work/.claude/worktrees/a-feature" }));
+
+    // Assert
+    expect(resolved.openedIn).toBe("/work");
+    // The record's own `cwd` stays "last seen": `probeDirs`, `livenessPlan` and `rank` read it that way.
+    expect(resolved.cwd).toBe("/work/.claude/worktrees/a-feature");
+    expect(resolved.name).toBe("pcs");
+  });
+
+  it("should give a record with an opening directory but no name anywhere no name field", async () => {
+    // Arrange
+    const seams = createFakeSeams({ env: { HOME }, files: { [transcriptOf(SLUG, "a")]: `${JSON.stringify({ type: "user", cwd: "/work" })}\n` } });
+
+    // Act
+    const resolved = await resolveName(seams, record({ sessionId: "a" }));
+
+    // Assert
+    expect(resolved.openedIn).toBe("/work");
+    expect(Object.keys(resolved)).not.toContain("name");
+  });
+
+  it("should read one transcript for both facts, not one each", async () => {
+    // Arrange
+    const seams = createFakeSeams({ env: { HOME }, files: { [transcriptOf(SLUG, "a")]: `${JSON.stringify({ type: "user", cwd: "/work" })}\n` } });
+
+    // Act
+    await resolveName(seams, record({ sessionId: "a" }));
+
+    // Assert
+    expect(seams.fs.reads.filter((path) => path.endsWith(".jsonl"))).toEqual([transcriptOf(SLUG, "a")]);
   });
 
   it("should find a conversation filed nowhere near its cwd, with no slug recorded to point at it", async () => {
