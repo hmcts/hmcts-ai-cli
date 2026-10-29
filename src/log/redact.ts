@@ -10,7 +10,7 @@ const SECRET_PATTERNS: RegExp[] = [
 
 // Keyed forms keep the key so a log line still says which setting was involved.
 const KEYED_SECRET_PATTERN =
-  /\b(client_secret|api[_-]?key|password|AccountKey|Ocp-Apim-Subscription-Key|AWS_BEARER_TOKEN_BEDROCK|CLAUDE_CODE_OAUTH_TOKEN)(["':=]\s*|\s+)([^\s"';]{8,})/gi;
+  /\b(client_secret|api[_-]?key|password|AccountKey|Ocp-Apim-Subscription-Key|AWS_BEARER_TOKEN_BEDROCK|CLAUDE_CODE_OAUTH_TOKEN|HAI_GATEWAY_APIM_KEY)(["':=]\s*|\s+)([^\s"';]{8,})/gi;
 
 const SECRET_ENV_KEYS = new Set([
   "AWS_BEARER_TOKEN_BEDROCK",
@@ -19,7 +19,13 @@ const SECRET_ENV_KEYS = new Set([
   "ANTHROPIC_API_KEY",
   // No route of hai's sets this, but it is a credential by definition and every route clears it.
   "ANTHROPIC_AUTH_TOKEN",
-  "AGENT_HUB_LAUNCH_TOKEN"
+  "AGENT_HUB_LAUNCH_TOKEN",
+  // An input rather than something a route sets: the APIM subscription key as a caller that
+  // cannot reach the private vault hands it in. `buildClaudeEnv` never returns it — the key
+  // reaches a session inside `ANTHROPIC_CUSTOM_HEADERS`, which is already here — so it is in
+  // this list for the same reason `ANTHROPIC_AUTH_TOKEN` is: it is a credential by
+  // definition and `redact` should be masking it.
+  "HAI_GATEWAY_APIM_KEY"
 ]);
 
 /**

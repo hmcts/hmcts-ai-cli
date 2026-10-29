@@ -45,7 +45,7 @@ for it on every launch:
 |---|---|---|---|
 | `agent-hub` | a long-lived Claude token | agent-hub (its `claude` credential) | that Claude licence, not HMCTS |
 | `byol` | your Claude OAuth credential | `CLAUDE_CODE_OAUTH_TOKEN`, or the claude.ai login in `~/.claude` | your own licence, not HMCTS |
-| `ai-gateway` | the APIM subscription key | a private Key Vault, so `az login` and the F5 VPN | HMCTS |
+| `ai-gateway` | the APIM subscription key | a private Key Vault, so `az login` and the F5 VPN — or `HAI_GATEWAY_APIM_KEY` | HMCTS |
 | `bedrock` | `AWS_BEARER_TOKEN_BEDROCK` | your environment, or pasted at a hidden prompt | HMCTS |
 
 Setting `HAI_ROUTE` is a choice and `hai` obeys it: that one credential is fetched from
@@ -154,6 +154,7 @@ a real `sbx`, so treat it as unproven.
 | `HAI_NO_UPDATE=1` | skip the self-update check |
 | `HAI_FORCE_CONTAINER=1` | treat this as a container even if nothing was detected |
 | `HAI_GATEWAY_APIM_SECRET` | override the Key Vault secret name for the APIM key |
+| `HAI_GATEWAY_APIM_KEY` | the APIM subscription key itself, used instead of the Key Vault read; an empty value counts as unset |
 
 `HAI_IN_CONTAINER`, `HAI_ENV_READY` and `HAI_UPDATED` are set by `hai` itself. The first
 two go only to the container `hai` starts, so a nested `hai` there need not resolve the

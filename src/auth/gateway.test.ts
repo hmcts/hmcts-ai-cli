@@ -8,6 +8,8 @@ const HOME = "/home/dev";
 const STATE = `${HOME}/.local/state/hai`;
 const HELPER_PATH = `${STATE}/${HELPER_FILE}`;
 const APIM_KEY = "fake-apim-subscription-key";
+/** Distinct from APIM_KEY, so a row proves which of the two sources was taken. */
+const HANDED_IN_KEY = "fake-apim-key-handed-in-by-the-caller";
 
 function respond(argv: string[]) {
   if (argv[1] === "keyvault") {
@@ -111,5 +113,56 @@ describe("prepareGateway", () => {
 
     // Assert
     expect(seams.fs.store.has(HELPER_PATH)).toBe(false);
+  });
+
+  it("should take the key from the environment and reach for no vault when HAI_GATEWAY_APIM_KEY is set", async () => {
+    // Arrange — nothing is scripted, so any process launched at all fails the run: the
+    // point of the variable is a caller that cannot reach sps-ai-kv-stg from where it is.
+    const seams = createFakeSeams({ env: { HOME, HAI_GATEWAY_APIM_KEY: HANDED_IN_KEY } });
+
+    // Act
+    const gateway = await prepareGateway({ seams });
+
+    // Assert
+    expect(gateway).toEqual({ apimKey: HANDED_IN_KEY, helperPath: HELPER_PATH });
+    expect(seams.runner.calls).toEqual([]);
+  });
+
+  it("should trim the key when HAI_GATEWAY_APIM_KEY arrives with a trailing newline", async () => {
+    // Arrange
+    const seams = createFakeSeams({ env: { HOME, HAI_GATEWAY_APIM_KEY: `${HANDED_IN_KEY}\n` } });
+
+    // Act
+    const gateway = await prepareGateway({ seams });
+
+    // Assert — the key goes into an `Ocp-Apim-Subscription-Key` header, where a newline is
+    // not something APIM forgives.
+    expect(gateway.apimKey).toBe(HANDED_IN_KEY);
+  });
+
+  it("should read the vault when HAI_GATEWAY_APIM_KEY is empty", async () => {
+    // Arrange — a Helm value whose source was missing renders as an empty string, and that
+    // has to read as "not set" rather than as an empty subscription key.
+    const seams = createFakeSeams({ env: { HOME, HAI_GATEWAY_APIM_KEY: "" }, respond });
+
+    // Act
+    const gateway = await prepareGateway({ seams });
+
+    // Assert
+    expect(gateway.apimKey).toBe(APIM_KEY);
+    expect(seams.runner.calls.map((call) => call.argv[1])).toContain("keyvault");
+  });
+
+  it("should keep the key out of the log when it came from the environment", async () => {
+    // Arrange
+    const seams = createFakeSeams({ env: { HOME, HAI_VERBOSE: "1", HAI_GATEWAY_APIM_KEY: HANDED_IN_KEY } });
+
+    // Act
+    await prepareGateway({ seams });
+
+    // Assert — the variable is named so the vault read's absence is explicable; its value
+    // is not, and `isSecretEnvKey` holds the same name for the same reason.
+    expect(seams.lines.join("")).toContain("HAI_GATEWAY_APIM_KEY is set");
+    expect(seams.lines.join("")).not.toContain(HANDED_IN_KEY);
   });
 });

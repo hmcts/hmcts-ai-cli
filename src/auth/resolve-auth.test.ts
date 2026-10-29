@@ -247,6 +247,20 @@ describe("resolveAuth", () => {
       // Assert
       await expect(act).rejects.toThrow("could not read the AI Gateway APIM key");
     });
+
+    it("should settle the gateway with no vault and no VPN probe when the caller handed in the key", async () => {
+      // Arrange — the agent-hub pod's shape: an explicit route, a key the hub passed in, and
+      // a cluster from which the private vault's endpoint is in another vnet entirely.
+      const seams = createFakeSeams({ env: { HOME, HAI_ROUTE: "ai-gateway", HAI_GATEWAY_APIM_KEY: APIM_KEY } });
+
+      // Act
+      const auth = await resolveAuth({ seams, agentHub: hub() });
+
+      // Assert — reported as the environment, not as the vault it never touched.
+      expect(auth.resolution).toMatchObject({ route: "ai-gateway", credentialSource: "gateway-apim-env" });
+      expect(auth.gateway?.apimKey).toBe(APIM_KEY);
+      expect(seams.runner.calls).toEqual([]);
+    });
   });
 
   describe("decide-only", () => {

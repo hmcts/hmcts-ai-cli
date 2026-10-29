@@ -1,4 +1,5 @@
 import { checkBedrockGroupMembership } from "../az/group-membership.js";
+import { gatewayApimKeyFromEnv } from "../az/keyvault.js";
 import { messageOf } from "../log/error-message.js";
 import type { Env } from "../system/env.js";
 import type { Seams } from "../system/seams.js";
@@ -65,6 +66,9 @@ export async function gatherSignals(deps: {
     hasStoredBedrockKey: false,
     hasHostClaudeCredential: false,
     isBedrockGroupMember: deps.cachedGroupMembership,
+    // Read through the one reader, so "blank is not a key" is decided in a single place
+    // rather than here and again where the key is used.
+    hasGatewayApimEnvKey: gatewayApimKeyFromEnv(seams.env) !== null,
     offline
   };
   let askedGraph = false;

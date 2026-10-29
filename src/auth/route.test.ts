@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
+import { redact } from "../log/redact.js";
 import {
   BILLED_TO,
   badRouteMessage,
   billingNote,
   type CredentialSource,
+  GATEWAY_APIM_ENV_KEY_REASON,
   isRoute,
   OFFLINE_MEMBERSHIP_REFUSAL,
   REMEDIES,
@@ -22,6 +24,7 @@ const NOTHING: Signals = {
   hasStoredBedrockKey: false,
   hasHostClaudeCredential: false,
   isBedrockGroupMember: false,
+  hasGatewayApimEnvKey: false,
   offline: false
 };
 
@@ -114,6 +117,12 @@ describe("resolveRoute", () => {
       ["byol, from an exported CLAUDE_CODE_OAUTH_TOKEN", { requestedRoute: "byol", hasOauthEnvToken: true }, "byol", "env"],
       ["byol, from the claude.ai login on this machine", { requestedRoute: "byol" }, "byol", "host-oauth"],
       ["ai-gateway, from the APIM key in the Key Vault", { requestedRoute: "ai-gateway" }, "ai-gateway", "gateway-apim"],
+      [
+        "ai-gateway, from an APIM key handed in through the environment",
+        { requestedRoute: "ai-gateway", hasGatewayApimEnvKey: true },
+        "ai-gateway",
+        "gateway-apim-env"
+      ],
       ["bedrock, from AWS_BEARER_TOKEN_BEDROCK", { requestedRoute: "bedrock", hasBedrockEnvKey: true }, "bedrock", "env"],
       ["bedrock, from a key pasted by hand", { requestedRoute: "bedrock" }, "bedrock", "prompt"]
     ])("should resolve %s", (_name, overrides, route, credentialSource) => {
@@ -188,13 +197,39 @@ describe("resolveRoute", () => {
         { ...MEMBER, hasBedrockEnvKey: true, hasStoredBedrockKey: true, hasOauthEnvToken: true, hasHostClaudeCredential: true },
         "ai-gateway",
         "gateway-apim"
-      ]
+      ],
+      ["an APIM key handed in through the environment", { ...MEMBER, hasGatewayApimEnvKey: true }, "ai-gateway", "gateway-apim-env"]
     ])("should resolve %s", (_name, overrides, route, credentialSource) => {
       // Act
       const result = resolveRoute(signals(overrides));
 
       // Assert
       expect(result).toMatchObject({ route, credentialSource });
+    });
+  });
+
+  describe("an APIM key handed in through the environment", () => {
+    it.each<Row>([
+      ["a confirmed non-member with an exported Bedrock key", { ...NON_MEMBER, hasBedrockEnvKey: true }, "bedrock", "env"],
+      ["a confirmed non-member with a claude.ai login", { ...NON_MEMBER, hasHostClaudeCredential: true }, "byol", "host-oauth"],
+      ["membership that could not be checked", UNKNOWN, "bedrock", "prompt"],
+      ["a named HAI_ROUTE=bedrock", { requestedRoute: "bedrock", hasBedrockEnvKey: true }, "bedrock", "env"]
+    ])("should decide no route of its own for %s", (_name, overrides, route, credentialSource) => {
+      // Act
+      const result = resolveRoute(signals({ ...overrides, hasGatewayApimEnvKey: true }));
+
+      // Assert — holding the gateway's key is not a reason to be on the gateway: who pays
+      // is still the group's answer or the typed route, and only membership or HAI_ROUTE
+      // puts a session there.
+      expect(result).toMatchObject({ route, credentialSource });
+    });
+
+    it("should report the vault when the key was not handed in, for every route that reaches the gateway", () => {
+      // Act
+      const results = [resolveRoute(signals({ requestedRoute: "ai-gateway" })), resolveRoute(signals(MEMBER))];
+
+      // Assert — the laptop path is unchanged, and `gateway-apim` still means the vault.
+      expect(results.map((result) => result.credentialSource)).toEqual(["gateway-apim", "gateway-apim"]);
     });
   });
 
@@ -324,12 +359,40 @@ describe("resolveRoute", () => {
       expect(result.reasons).toEqual(["HAI_ROUTE=bedrock", "AWS_BEARER_TOKEN_BEDROCK is set"]);
     });
 
-    it("should say nothing but the request for a route whose source cannot vary", () => {
+    it("should say nothing but the request when the gateway's key comes from the vault", () => {
       // Act
       const result = resolveRoute(signals({ ...EVERYTHING, requestedRoute: "ai-gateway" }));
 
-      // Assert
+      // Assert — the vault read is the default, so there is nothing to add about it.
       expect(result.reasons).toEqual(["HAI_ROUTE=ai-gateway"]);
+    });
+
+    it("should name the variable when the gateway's key came from the environment", () => {
+      // Act
+      const result = resolveRoute(signals({ ...EVERYTHING, requestedRoute: "ai-gateway", hasGatewayApimEnvKey: true }));
+
+      // Assert — a line that said only `HAI_ROUTE=ai-gateway` would leave an engineer
+      // looking for the `az keyvault` call that never happened.
+      expect(result.reasons).toEqual(["HAI_ROUTE=ai-gateway", GATEWAY_APIM_ENV_KEY_REASON]);
+      expect(GATEWAY_APIM_ENV_KEY_REASON).toContain("HAI_GATEWAY_APIM_KEY");
+    });
+
+    it("should word that reason so the redactor leaves it whole", () => {
+      // Act — `launch` prints the reasons through the logger, and the redactor masks
+      // whatever follows this variable's name. A reason reading "HAI_GATEWAY_APIM_KEY
+      // overrides ..." would reach the terminal as "HAI_GATEWAY_APIM_KEY [redacted]".
+      const printed = redact(GATEWAY_APIM_ENV_KEY_REASON);
+
+      // Assert
+      expect(printed).toBe(GATEWAY_APIM_ENV_KEY_REASON);
+    });
+
+    it("should name the variable alongside the group when a member's key came from the environment", () => {
+      // Act
+      const result = resolveRoute(signals({ ...MEMBER, hasGatewayApimEnvKey: true }));
+
+      // Assert
+      expect(result.reasons).toEqual(["you are in the Bedrock developer group, so HMCTS pays for this session", GATEWAY_APIM_ENV_KEY_REASON]);
     });
 
     it("should say HMCTS is paying when the group put the session on the gateway", () => {
