@@ -21,8 +21,14 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Before setup-node, because `cache: yarn` below runs `yarn --version` itself and fails
+      # if yarn is not on PATH yet. Installed from npm rather than relied on from the Node
+      # distribution: Node 26 ships no corepack, so neither the runner's default Node nor the
+      # .nvmrc one can be assumed to carry it.
       - name: Enable corepack
-        run: corepack enable
+        run: |
+          npm install -g corepack@latest
+          corepack enable
 
       - uses: actions/setup-node@v7
         with:

@@ -21,8 +21,12 @@ jobs:
         with:
           node-version-file: .nvmrc
 
+      # Node 26 ships no corepack — only node, npm and npx — so `corepack enable` on its own
+      # is a command-not-found, and with it `packageManager` cannot put yarn on PATH at all.
       - name: Enable corepack
-        run: corepack enable
+        run: |
+          npm install -g corepack@latest
+          corepack enable
 
       - name: Install
         run: yarn install --immutable
