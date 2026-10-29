@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildClaudeEnv, conflictingEnv, DEFAULT_AWS_REGION, DEFAULT_MODELS, GATEWAY_BEDROCK_BASE_URL } from "./claude-env.js";
+import { API_KEY_HELPER_VAR } from "./gateway.js";
 import { ROUTES, type Route } from "./route.js";
 
 const BEDROCK_KEY = "ABSKQmVkcm9jay1mYWtlLWtleS0wMDAwMDAwMDAw";
@@ -190,6 +191,17 @@ describe("buildClaudeEnv", () => {
     it.each(ROUTES)("should clear ANTHROPIC_BASE_URL on %s, which no route of ours uses", (route) => {
       // Assert
       expect(conflictingEnv(route)).toContain("ANTHROPIC_BASE_URL");
+    });
+
+    it.each<Route>(["byol", "agent-hub", "bedrock"])("should clear the published apiKeyHelper path on %s, which has no helper", (route) => {
+      // Assert — a tool reading an inherited one would run the gateway's helper on a route that
+      // does not use one, and send an Entra token to whatever endpoint that route is on.
+      expect(conflictingEnv(route)).toContain(API_KEY_HELPER_VAR);
+    });
+
+    it("should leave the published apiKeyHelper path on ai-gateway, the one route that has a helper", () => {
+      // Assert
+      expect(conflictingEnv("ai-gateway")).not.toContain(API_KEY_HELPER_VAR);
     });
   });
 

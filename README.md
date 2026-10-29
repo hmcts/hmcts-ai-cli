@@ -156,9 +156,19 @@ a real `sbx`, so treat it as unproven.
 | `HAI_GATEWAY_APIM_SECRET` | override the Key Vault secret name for the APIM key |
 | `HAI_GATEWAY_APIM_KEY` | the APIM subscription key itself, used instead of the Key Vault read; an empty value counts as unset |
 
-`HAI_IN_CONTAINER`, `HAI_ENV_READY` and `HAI_UPDATED` are set by `hai` itself. The first
-two go only to the container `hai` starts, so a nested `hai` there need not resolve the
-route again; the last stops a broken release looping after an update.
+`HAI_IN_CONTAINER`, `HAI_ENV_READY`, `HAI_UPDATED` and `HAI_API_KEY_HELPER` are set by
+`hai` itself. The first two go only to the container `hai` starts, so a nested `hai` there
+need not resolve the route again; the third stops a broken release looping after an update.
+
+`HAI_API_KEY_HELPER` is the exception: it is set for the session to read rather than for
+`hai`, and only on the `ai-gateway` route, where it holds the path of the `apiKeyHelper`
+that mints your token. `claude --settings` keeps only the last one it is given, so anything
+inside a session that spawns its own `claude` — dtsse-agent-hub's stop-worker summariser is
+the one that does — has to name the helper in its own settings, and the gateway's base URL
+and APIM header it inherits are no use without it. Every other route *clears* the variable,
+because those routes have no helper and the gateway's would be the wrong credential for
+them. Read it if it is there and carry on as before if it is not: a session may be running
+a `hai` older than this.
 
 ## Developing
 

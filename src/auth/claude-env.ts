@@ -1,5 +1,5 @@
 import type { Env } from "../system/env.js";
-import type { Gateway } from "./gateway.js";
+import { API_KEY_HELPER_VAR, type Gateway } from "./gateway.js";
 import type { Route } from "./route.js";
 
 export const DEFAULT_AWS_REGION = "eu-west-2";
@@ -17,7 +17,8 @@ const API_KEY_HELPER_TTL_MS = "300000";
 /**
  * The variables each route must *remove* rather than merely not set: the handover is
  * `{ ...process.env, ...buildClaudeEnv(...) }`, so an inherited one would decide who pays.
- * Each route clears the base URLs it does not set itself, because the URL is what routes.
+ * Each route clears the base URLs it does not set itself, because the URL is what routes, and
+ * every route but the gateway clears `API_KEY_HELPER_VAR`, which the gateway alone publishes.
  */
 export const CONFLICTING_ENV: Record<Route, readonly string[]> = {
   "agent-hub": [
@@ -28,7 +29,8 @@ export const CONFLICTING_ENV: Record<Route, readonly string[]> = {
     "ANTHROPIC_CUSTOM_HEADERS",
     "AWS_BEARER_TOKEN_BEDROCK",
     "CLAUDE_CODE_SKIP_BEDROCK_AUTH",
-    "CLAUDE_CODE_USE_BEDROCK"
+    "CLAUDE_CODE_USE_BEDROCK",
+    API_KEY_HELPER_VAR
   ],
   byol: [
     "ANTHROPIC_API_KEY",
@@ -38,7 +40,8 @@ export const CONFLICTING_ENV: Record<Route, readonly string[]> = {
     "ANTHROPIC_CUSTOM_HEADERS",
     "AWS_BEARER_TOKEN_BEDROCK",
     "CLAUDE_CODE_SKIP_BEDROCK_AUTH",
-    "CLAUDE_CODE_USE_BEDROCK"
+    "CLAUDE_CODE_USE_BEDROCK",
+    API_KEY_HELPER_VAR
   ],
   "ai-gateway": ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "AWS_BEARER_TOKEN_BEDROCK", "CLAUDE_CODE_OAUTH_TOKEN"],
   bedrock: [
@@ -48,7 +51,8 @@ export const CONFLICTING_ENV: Record<Route, readonly string[]> = {
     "ANTHROPIC_BEDROCK_BASE_URL",
     "ANTHROPIC_CUSTOM_HEADERS",
     "CLAUDE_CODE_OAUTH_TOKEN",
-    "CLAUDE_CODE_SKIP_BEDROCK_AUTH"
+    "CLAUDE_CODE_SKIP_BEDROCK_AUTH",
+    API_KEY_HELPER_VAR
   ]
 };
 

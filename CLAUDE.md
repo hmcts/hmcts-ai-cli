@@ -603,6 +603,24 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
   session, and from then on every nested `hai` takes the short-circuit in `src/launch.ts`
   and returns before the update check — permanently. Only the container `hai` starts gets
   them, as `--env` in `src/container/run.ts`, where they are true of the whole container.
+- **`HAI_API_KEY_HELPER` is published for the session, and it is the only variable here that
+  is.** Everything else `buildClaudeEnv` returns is something `claude` reads; this one is a
+  fact *about* the session, put there so a tool the session starts can authenticate the way
+  the session does. `claude --settings` keeps only the last one it is given, so anything that
+  spawns its own `claude` has to name the `apiKeyHelper` itself, and the gateway route's base
+  URL and APIM header — which such a tool inherits — are a 401 without a token. The
+  alternative is the consumer rebuilding `<state>/gateway-token.sh` from `XDG_STATE_HOME` or
+  `HOME`, which is the drift that put an agent-hub pod on the sandbox gateway when the hub
+  held its own copy of the gateway host and the audience. Being inherited by every shell is
+  therefore the point rather than the hazard it is for the markers above, but it means the
+  other three routes have to *clear* it: a gateway helper left in a `byol` session's
+  environment would have a consumer mint an Entra token and send it to api.anthropic.com, so
+  it is in `CONFLICTING_ENV` for every route but `ai-gateway`. Its value is a path and not a
+  credential, so it goes on the `docker exec --env` with the rest of the open half — at the
+  *container's* path, which `containerHelperPath` derives from the container's home because
+  `runtime/entrypoint.sh` installs the file under `$HOME` there and the host's state
+  directory is not mounted. One value feeds both the settings and the variable per path, so
+  the two cannot name different files.
 - **Every log line and error goes through `redact()`.** `createLogger` applies it, and
   `main` routes every thrown error through the logger. Do not write to stderr directly.
 - **Only `src/system/runner.ts` imports `node:child_process`; only `src/system/fs.ts`
@@ -706,6 +724,7 @@ table-testable:
 |---|---|
 | `resolveRoute(signals)`, `billingNote`, `badRouteMessage` | `gatherSignals` |
 | `buildClaudeEnv(input)` | `resolveBedrockKey`, `resolveHubClaudeToken`, `prepareGateway` |
+| `apiKeyHelperEnv`, `containerHelperPath` | `prepareGateway`, `gatherContext` in `src/container/run.ts` |
 | `isInContainer(probe)` | `probeContainer` |
 | `skipUpdateCheck(input)` | `maybeSelfUpdate` |
 | `detectPackageManager(input)` | `maybeSelfUpdate` |

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createFakeSeams, exitCodeOf, type FakeSeams, packagedRuntime, type RunResponder } from "../__fixtures__/fake-seams.js";
 import { conflictingEnv } from "../auth/claude-env.js";
+import { API_KEY_HELPER_VAR } from "../auth/gateway.js";
 import { DEFAULT_IMAGE } from "./docker-args.js";
 import { CONCURRENT_REFUSAL } from "./lock.js";
 import { runContainerMode } from "./run.js";
@@ -531,6 +532,31 @@ describe("runContainerMode", () => {
 
       // Assert
       expect(seams.runner.interactiveCalls[0]?.argv).toContain(`{"apiKeyHelper":"/home/hmcts/.local/state/hai/gateway-token.sh",${HOOKS}}`);
+    });
+
+    it("should publish the container's helper path on the session exec, not the host's", async () => {
+      // Arrange — the host's state directory is not mounted, so a host path published inside
+      // would name a file that is not there.
+      const seams = seamsIn();
+
+      // Act
+      await runContainerMode(input(seams, { hasGateway: true, removed: conflictingEnv("ai-gateway") })).catch(() => undefined);
+
+      // Assert
+      expect(seams.runner.interactiveCalls[0]?.argv).toContain(`${API_KEY_HELPER_VAR}=/home/hmcts/.local/state/hai/gateway-token.sh`);
+    });
+
+    it("should publish no helper path on a route that has none, and unset an inherited one", async () => {
+      // Arrange
+      const seams = seamsIn();
+
+      // Act
+      await runContainerMode(input(seams)).catch(() => undefined);
+
+      // Assert
+      const argv = seams.runner.interactiveCalls[0]?.argv ?? [];
+      expect(argv.join(" ")).not.toContain(`${API_KEY_HELPER_VAR}=`);
+      expect(argv.find((arg) => arg.startsWith("HAI_UNSET_ENV="))).toContain(API_KEY_HELPER_VAR);
     });
 
     it("should add the workspace flags when the repo is a cft-workspace", async () => {

@@ -2,7 +2,16 @@ import { describe, expect, it } from "vitest";
 import { createFakeSeams } from "../__fixtures__/fake-seams.js";
 import { GATEWAY_VAULT } from "../az/keyvault.js";
 import { STATE_DIR_MODE } from "../system/state-dir.js";
-import { API_KEY_HELPER_SCRIPT, HELPER_FILE, HELPER_MODE, prepareGateway, writeApiKeyHelper } from "./gateway.js";
+import {
+  API_KEY_HELPER_SCRIPT,
+  API_KEY_HELPER_VAR,
+  apiKeyHelperEnv,
+  containerHelperPath,
+  HELPER_FILE,
+  HELPER_MODE,
+  prepareGateway,
+  writeApiKeyHelper
+} from "./gateway.js";
 
 const HOME = "/home/dev";
 const STATE = `${HOME}/.local/state/hai`;
@@ -56,6 +65,27 @@ describe("writeApiKeyHelper", () => {
 
     // Act / Assert
     expect(await writeApiKeyHelper(seams)).toBe(`/run/user/1000/hai/${HELPER_FILE}`);
+  });
+});
+
+describe("apiKeyHelperEnv", () => {
+  it("should publish the helper's path when there is one", () => {
+    // Assert
+    expect(apiKeyHelperEnv(HELPER_PATH)).toEqual({ [API_KEY_HELPER_VAR]: HELPER_PATH });
+  });
+
+  it("should publish nothing when the route has no helper", () => {
+    // Assert — own-licence and Bedrock sessions have no helper at all, and a variable naming
+    // one would send a downstream tool to a script that is not theirs to use.
+    expect(apiKeyHelperEnv(undefined)).toEqual({});
+  });
+});
+
+describe("containerHelperPath", () => {
+  it("should name the path the container entrypoint installs the helper at", () => {
+    // Assert — runtime/entrypoint.sh installs it under $HOME, so this is derived from the
+    // container's home and not from this process's own state directory.
+    expect(containerHelperPath("/home/hmcts")).toBe(`/home/hmcts/.local/state/hai/${HELPER_FILE}`);
   });
 });
 
