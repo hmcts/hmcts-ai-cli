@@ -4,12 +4,32 @@ import { azFailureHint } from "./token.js";
 
 export const GATEWAY_VAULT = "sps-ai-kv-stg";
 export const DEFAULT_GATEWAY_APIM_SECRET = "apim-subscription-dtsse-ai-gateway-bedrock-swe";
+export const GATEWAY_APIM_KEY_VAR = "HAI_GATEWAY_APIM_KEY";
 
 const AZ_TIMEOUT_MS = 30_000;
 
 export function gatewayApimSecretName(env: Env): string {
   const override = env.HAI_GATEWAY_APIM_SECRET;
   return override !== undefined && override !== "" ? override : DEFAULT_GATEWAY_APIM_SECRET;
+}
+
+/**
+ * The key itself, for a caller that cannot reach the vault at all: `sps-ai-kv-stg` has
+ * `publicNetworkAccess: Disabled` and its only private endpoint is in `sps-ai-vnet-stg`,
+ * so a pod in a CFT AKS cluster can never read it however well it is authenticated, while
+ * a laptop on the F5 VPN can. `HAI_GATEWAY_APIM_SECRET` renames the secret and still ends
+ * at that read; this replaces the read, and is the one way to hand hai a key it does not
+ * have to go and get. Everything else about the gateway — the staging host, the audience,
+ * the vault — stays hai's to decide, so a caller that holds the key duplicates none of it.
+ *
+ * Trimmed, and blank is "not set" rather than a deliberately empty key: the value arrives
+ * through a Helm template or a container env file, where an absent source renders as an
+ * empty string, and an empty subscription key would otherwise reach APIM as a 401 with
+ * nothing saying hai had been handed nothing.
+ */
+export function gatewayApimKeyFromEnv(env: Env): string | null {
+  const supplied = env[GATEWAY_APIM_KEY_VAR]?.trim();
+  return supplied === undefined || supplied === "" ? null : supplied;
 }
 
 /**

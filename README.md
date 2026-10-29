@@ -45,7 +45,7 @@ for it on every launch:
 |---|---|---|---|
 | `agent-hub` | a long-lived Claude token | agent-hub (its `claude` credential) | that Claude licence, not HMCTS |
 | `byol` | your Claude OAuth credential | `CLAUDE_CODE_OAUTH_TOKEN`, or the claude.ai login in `~/.claude` | your own licence, not HMCTS |
-| `ai-gateway` | the APIM subscription key | a private Key Vault, so `az login` and the F5 VPN | HMCTS |
+| `ai-gateway` | the APIM subscription key | a private Key Vault, so `az login` and the F5 VPN — or `HAI_GATEWAY_APIM_KEY` | HMCTS |
 | `bedrock` | `AWS_BEARER_TOKEN_BEDROCK` | your environment, or pasted at a hidden prompt | HMCTS |
 
 Setting `HAI_ROUTE` is a choice and `hai` obeys it: that one credential is fetched from
@@ -76,6 +76,24 @@ other named route.
 `own-licence` and `gateway` were the old names for `byol` and `ai-gateway`. They are not
 accepted as aliases: `hai` fails and names the replacement. `gateway` in particular had to
 go, because cft-workspace's `AGENT_HUB_MODEL_ROUTE=gateway` means *Bedrock*.
+
+### The AI Gateway's APIM key
+
+By default the `ai-gateway` route reads its APIM subscription key from a private Key Vault,
+which is why that route needs `az login` and the F5 VPN. That vault has no public endpoint
+and its private endpoint is in its own vnet, so somewhere like a pod in a CFT cluster cannot
+read it however well it is authenticated. `HAI_GATEWAY_APIM_KEY` is for exactly that case:
+set it to the key and `hai` uses it, skipping both the Key Vault call and the VPN check.
+Everything else about the gateway is still `hai`'s to decide, so nothing that passes the key
+in has to know the host, the audience or the vault.
+
+Leave it unset on a laptop — the Key Vault read is the normal path and keeps working as it
+always has. An empty value counts as unset, so a deployment template whose secret did not
+resolve falls back to the Key Vault rather than sending an empty key. `hai` says which of the
+two it used: `HAI_VERBOSE=1` reports the credential source as `gateway-apim` for the vault and
+`gateway-apim-env` for a key you passed in. The key itself is treated like every other
+credential `hai` handles — never logged, never written to disk, and never put on a
+`docker run` command line.
 
 ## `hair`
 
@@ -154,6 +172,7 @@ a real `sbx`, so treat it as unproven.
 | `HAI_NO_UPDATE=1` | skip the self-update check |
 | `HAI_FORCE_CONTAINER=1` | treat this as a container even if nothing was detected |
 | `HAI_GATEWAY_APIM_SECRET` | override the Key Vault secret name for the APIM key |
+| `HAI_GATEWAY_APIM_KEY` | the APIM subscription key itself, for somewhere the private Key Vault cannot be reached. See [the AI Gateway's APIM key](#the-ai-gateways-apim-key) |
 
 `HAI_IN_CONTAINER`, `HAI_ENV_READY` and `HAI_UPDATED` are set by `hai` itself. The first
 two go only to the container `hai` starts, so a nested `hai` there need not resolve the

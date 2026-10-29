@@ -46,7 +46,8 @@ describe("redact", () => {
     ["AWS_BEARER_TOKEN_BEDROCK=", "AWS_BEARER_TOKEN_BEDROCK=not-a-recognised-shape-but-long"],
     ["api_key: ", "api_key: not-a-recognised-shape-but-long"],
     ["password=", "password=not-a-recognised-shape-but-long"],
-    ["Ocp-Apim-Subscription-Key: ", "Ocp-Apim-Subscription-Key: not-a-recognised-shape-but-long"]
+    ["Ocp-Apim-Subscription-Key: ", "Ocp-Apim-Subscription-Key: not-a-recognised-shape-but-long"],
+    ["HAI_GATEWAY_APIM_KEY=", "HAI_GATEWAY_APIM_KEY=not-a-recognised-shape-but-long"]
   ])("should keep the key but mask the value of %s", (prefix, line) => {
     // Act
     const result = redact(line);
@@ -101,6 +102,8 @@ describe("isSecretEnvKey", () => {
     ["ANTHROPIC_CUSTOM_HEADERS", true],
     ["ANTHROPIC_API_KEY", true],
     ["AGENT_HUB_LAUNCH_TOKEN", true],
+    ["HAI_GATEWAY_APIM_KEY", true],
+    ["HAI_GATEWAY_APIM_SECRET", false],
     ["AWS_REGION", false],
     ["CLAUDE_CODE_USE_BEDROCK", false],
     ["ANTHROPIC_BEDROCK_BASE_URL", false]

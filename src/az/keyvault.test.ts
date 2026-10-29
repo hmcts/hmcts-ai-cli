@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createFakeRunner } from "../__fixtures__/fake-seams.js";
-import { DEFAULT_GATEWAY_APIM_SECRET, GATEWAY_VAULT, gatewayApimSecretName, readGatewayApimKey } from "./keyvault.js";
+import { DEFAULT_GATEWAY_APIM_SECRET, GATEWAY_VAULT, gatewayApimKeyFromEnv, gatewayApimSecretName, readGatewayApimKey } from "./keyvault.js";
 
 const APIM_KEY = "fake-apim-subscription-key";
 
@@ -19,7 +19,45 @@ describe("gatewayApimSecretName", () => {
   });
 });
 
+describe("gatewayApimKeyFromEnv", () => {
+  it("should report no key when HAI_GATEWAY_APIM_KEY is unset", () => {
+    // Act / Assert
+    expect(gatewayApimKeyFromEnv({})).toBeNull();
+  });
+
+  it.each([
+    ["an empty string, as an unresolved Helm value renders", ""],
+    ["whitespace alone", "  \n"]
+  ])("should report no key when HAI_GATEWAY_APIM_KEY is %s", (_name, value) => {
+    // Act / Assert — blank is "nobody set this", not a deliberately empty subscription key,
+    // which would reach APIM as a 401 with nothing saying hai had been handed nothing.
+    expect(gatewayApimKeyFromEnv({ HAI_GATEWAY_APIM_KEY: value })).toBeNull();
+  });
+
+  it("should hand back the key when HAI_GATEWAY_APIM_KEY holds one", () => {
+    // Act / Assert
+    expect(gatewayApimKeyFromEnv({ HAI_GATEWAY_APIM_KEY: APIM_KEY })).toBe(APIM_KEY);
+  });
+
+  it("should trim the key when HAI_GATEWAY_APIM_KEY arrives with surrounding whitespace", () => {
+    // Act / Assert — a secret read out of a file into a Helm value keeps its trailing newline.
+    expect(gatewayApimKeyFromEnv({ HAI_GATEWAY_APIM_KEY: `\n ${APIM_KEY} \n` })).toBe(APIM_KEY);
+  });
+});
+
 describe("readGatewayApimKey", () => {
+  it("should still read the vault when HAI_GATEWAY_APIM_KEY is set, the override being prepareGateway's", async () => {
+    // Arrange
+    const runner = createFakeRunner(() => ({ stdout: `${APIM_KEY}\n` }));
+
+    // Act — this function is named for the vault read, so it does not quietly become
+    // something else; `prepareGateway` is where the environment is consulted instead.
+    await readGatewayApimKey({ runner, env: { HAI_GATEWAY_APIM_KEY: "handed-in-key" } }, true);
+
+    // Assert
+    expect(runner.calls[0]?.argv.slice(0, 2)).toEqual(["az", "keyvault"]);
+  });
+
   it("should read the secret from the sandbox vault and trim it", async () => {
     // Arrange
     const runner = createFakeRunner(() => ({ stdout: `${APIM_KEY}\n` }));

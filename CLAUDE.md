@@ -412,7 +412,8 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
   a host that has never accepted sees that screen once, which is the point.
 - **A route is one credential from one source.** `agent-hub` is the Claude token the hub
   holds (its `claude` kind), `byol` is a Claude OAuth credential on this machine,
-  `ai-gateway` is the APIM key in the private Key Vault, `bedrock` is
+  `ai-gateway` is the APIM key, from the private Key Vault or from
+  `HAI_GATEWAY_APIM_KEY` where that vault cannot be reached, `bedrock` is
   `AWS_BEARER_TOKEN_BEDROCK` from the environment or a paste. That is what makes "an
   explicit route is obeyed" expressible at all: `bedrock` used to mean an environment key
   *or* a hub-stored key *or* a prompt, three sources behind one name, so there was no
@@ -529,6 +530,27 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
   paste into. Every step of that says out loud which fallback happened and why; silence is
   what let the incident run. `HAI_ROUTE=ai-gateway` fails outright instead of downgrading:
   a named route is one source, and a downgrade would move who pays without being asked.
+- **`HAI_GATEWAY_APIM_KEY` is the gateway's key for somewhere the vault is unreachable, and
+  it reports as its own source.** `sps-ai-kv-stg` has `publicNetworkAccess: Disabled` and its
+  only private endpoint is in `sps-ai-vnet-stg`, so a laptop on the F5 VPN can read it and a
+  pod in a CFT AKS cluster can never read it however it is authenticated —
+  `HAI_GATEWAY_APIM_SECRET` renames the secret and still ends at that read, so there was no
+  way to hand hai a key it already held. `prepareGateway` consults
+  `gatewayApimKeyFromEnv` first and skips the read *and* the VPN probe, the probe existing
+  only to explain a vault failure there is no longer one of. The override lives there and not
+  in `readGatewayApimKey`, which is named for the vault call and keeps making it.
+  `credentialSource` is **`gateway-apim-env`**, not `gateway-apim`: the launch line is what
+  an engineer reads to work out whether `az` and the VPN were involved at all, and the whole
+  premise of the variable is that they were not. `hasGatewayApimEnvKey` is therefore a signal
+  like any other, and it decides no route — it cannot put anyone on the gateway who was not
+  going there anyway, so membership and an explicit `HAI_ROUTE` are still the only two things
+  that choose it. The name is in `isSecretEnvKey` and in `redact`'s keyed pattern for the
+  same reason `ANTHROPIC_AUTH_TOKEN` is, and deliberately **not** in `PASSTHROUGH`, where it
+  would reach `docker run --env`; a container session gets the key the way it always did,
+  inside `ANTHROPIC_CUSTOM_HEADERS` on the exec stdin. Blank is "not set" rather than an
+  empty key, because the value arrives through a Helm template or a container env file where
+  an absent source renders as `""`, and an empty subscription key is a 401 from APIM with
+  nothing saying hai had been handed nothing.
 - **The `agent-hub` route is plumbing the hub does not serve yet.** Its credential is the
   hub's `claude` kind — `claude setup-token` output, which cft-workspace's virtual-agent
   entrypoint exports as `CLAUDE_CODE_OAUTH_TOKEN`, and the one variable `buildClaudeEnv`

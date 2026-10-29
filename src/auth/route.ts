@@ -30,6 +30,13 @@ export const BILLED_TO: Record<Route, string> = {
   bedrock: "HMCTS, through Amazon Bedrock"
 };
 
+/**
+ * Said whenever the gateway's key did not come out of the vault, because the vault read is
+ * the thing an engineer would otherwise be debugging: with this reason on the line, "it
+ * never called az" is the expected outcome rather than a missing step.
+ */
+export const GATEWAY_APIM_ENV_KEY_REASON = "HAI_GATEWAY_APIM_KEY is set, so the APIM key is not read from the private Key Vault";
+
 export const REMEDIES = [
   "ask in the DTSSE channel for an Amazon Bedrock API key, then run hai again and paste it when prompted",
   "run hai with HAI_ROUTE=ai-gateway to go through the HMCTS AI Gateway instead (needs az login and the F5 VPN)",
@@ -78,7 +85,11 @@ function decided(signals: Signals): Omit<RouteResolution, "byName"> {
     return explicit(signals, signals.requestedRoute);
   }
   if (signals.isBedrockGroupMember === true) {
-    return { route: "ai-gateway", credentialSource: "gateway-apim", reasons: ["you are in the Bedrock developer group, so HMCTS pays for this session"] };
+    return {
+      route: "ai-gateway",
+      credentialSource: gatewaySource(signals),
+      reasons: gatewayReasons(signals, ["you are in the Bedrock developer group, so HMCTS pays for this session"])
+    };
   }
   if (signals.hasBedrockEnvKey) {
     return { route: "bedrock", credentialSource: "env", reasons: ["AWS_BEARER_TOKEN_BEDROCK is set"] };
@@ -137,12 +148,27 @@ function explicit(signals: Signals, route: Route): Omit<RouteResolution, "byName
     return { route, credentialSource: "host-oauth", reasons: [...reasons, "the claude.ai login on this machine"] };
   }
   if (route === "ai-gateway") {
-    return { route, credentialSource: "gateway-apim", reasons };
+    return { route, credentialSource: gatewaySource(signals), reasons: gatewayReasons(signals, reasons) };
   }
   if (signals.hasBedrockEnvKey) {
     return { route, credentialSource: "env", reasons: [...reasons, "AWS_BEARER_TOKEN_BEDROCK is set"] };
   }
   return { route, credentialSource: "prompt", reasons: [...reasons, "no AWS_BEARER_TOKEN_BEDROCK in the environment, so hai asks for one"] };
+}
+
+/**
+ * Both gateway branches ask this, because where the APIM key comes from is not a fact
+ * about the route: the vault is the default and a caller that cannot reach it may hand the
+ * key in instead. Reporting `gateway-apim` for that would say the private vault was read
+ * when nothing went near it, which is the one thing the launch line must not get wrong —
+ * it is what an engineer reads to work out whether `az` and the VPN were involved at all.
+ */
+function gatewaySource(signals: Signals): CredentialSource {
+  return signals.hasGatewayApimEnvKey ? "gateway-apim-env" : "gateway-apim";
+}
+
+function gatewayReasons(signals: Signals, reasons: string[]): string[] {
+  return signals.hasGatewayApimEnvKey ? [...reasons, GATEWAY_APIM_ENV_KEY_REASON] : reasons;
 }
 
 export type Route = (typeof ROUTES)[number];
@@ -151,8 +177,13 @@ export type Route = (typeof ROUTES)[number];
  * "unavailable" is the no-signal case: the caller fails and prints every remedy.
  * "refused" names a route hai will not take at all; the caller fails with the reasons,
  * which already say what to do instead. Only the unset path can produce either.
+ *
+ * "gateway-apim" is the APIM key out of the private Key Vault and "gateway-apim-env" the
+ * same key handed in through `HAI_GATEWAY_APIM_KEY`. They are two labels rather than one
+ * because the whole point of the second is that the vault was unreachable, so a line
+ * saying `gateway-apim` would name the thing that did not happen.
  */
-export type CredentialSource = "env" | "agent-hub" | "host-oauth" | "prompt" | "gateway-apim" | "unavailable" | "refused";
+export type CredentialSource = "env" | "agent-hub" | "host-oauth" | "prompt" | "gateway-apim" | "gateway-apim-env" | "unavailable" | "refused";
 
 export interface Signals {
   requestedRoute: Route | null;
@@ -161,6 +192,11 @@ export interface Signals {
   hasStoredBedrockKey: boolean;
   hasHostClaudeCredential: boolean;
   isBedrockGroupMember: boolean | null;
+  /**
+   * HAI_GATEWAY_APIM_KEY holds a usable value. It decides no route — it cannot put anyone
+   * on the gateway who was not going there anyway — only where that route's key comes from.
+   */
+  hasGatewayApimEnvKey: boolean;
   /** HAI_OFFLINE=1. It decides no route, only how an unconfirmable membership is explained. */
   offline: boolean;
 }
