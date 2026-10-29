@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { HELPER_FILE } from "../auth/gateway.js";
+import { apiKeyHelperEnv, containerHelperPath } from "../auth/gateway.js";
 import { buildClaudeArgs } from "../claude/args.js";
 import { sessionRegistryHooks } from "../claude/hooks.js";
 import { buildSettings, materialiseSettings } from "../claude/settings.js";
@@ -99,9 +99,9 @@ export async function runContainerMode(input: {
 }
 
 /** The context plus what only the launch needs: the credentials, which no argv may carry, and HOME. */
-type LaunchContext = ContainerContext & { home: string; secretEnv: Record<string, string> };
+type LaunchContext = ContainerContext & { home: string; secretEnv: Record<string, string>; apiKeyHelperPath?: string };
 
-async function gatherContext(input: { seams: Seams; added: Record<string, string>; removed: readonly string[] }): Promise<LaunchContext> {
+async function gatherContext(input: { seams: Seams; added: Record<string, string>; removed: readonly string[]; hasGateway: boolean }): Promise<LaunchContext> {
   const { seams } = input;
   const home = seams.env.HOME;
   if (home === undefined || home === "") {
@@ -127,6 +127,8 @@ async function gatherContext(input: { seams: Seams; added: Record<string, string
   const mounts = resolveMounts({ spec, extra: seams.env.HAI_MOUNTS });
   const { open, secret } = splitEnv(input.added);
   const runtimeDir = isEnabled(seams.env, "HAI_DRY_RUN") ? stagedRuntimeDir(seams.env) : await stageRuntime(seams);
+  // One answer for both the settings and the published variable, so the two cannot disagree.
+  const apiKeyHelperPath = input.hasGateway ? containerHelperPath(containerHome) : undefined;
   const image = seams.env.HAI_IMAGE === undefined || seams.env.HAI_IMAGE === "" ? DEFAULT_IMAGE : seams.env.HAI_IMAGE;
 
   return {
@@ -157,12 +159,15 @@ async function gatherContext(input: { seams: Seams; added: Record<string, string
     },
     sessionEnv: {
       ...open,
+      // A path rather than a credential, so it goes on the exec like the rest of the open half.
+      ...apiKeyHelperEnv(apiKeyHelperPath),
       // Names only, so this is open. The image is built for Bedrock and may set
       // CLAUDE_CODE_USE_BEDROCK itself, which would outrank a personal route's credential.
       HAI_UNSET_ENV: input.removed.join(",")
     },
     secretEnv: secret,
-    home
+    home,
+    apiKeyHelperPath
   };
 }
 
@@ -171,14 +176,14 @@ async function gatherContext(input: { seams: Seams; added: Record<string, string
  * container path and the settings go inline rather than as a file written inside.
  */
 async function containerClaudeArgs(
-  input: { seams: Seams; forwarded: string[]; hasGateway: boolean; workspaceRoot: string | null; pluginDirs: string[] },
-  ctx: ContainerContext
+  input: { seams: Seams; forwarded: string[]; workspaceRoot: string | null; pluginDirs: string[] },
+  ctx: ContainerContext & { apiKeyHelperPath?: string }
 ): Promise<string[]> {
   const { seams } = input;
   const user = extractUserSettings(input.forwarded);
   const ours = buildSettings({
     inWorkspace: input.workspaceRoot !== null,
-    apiKeyHelperPath: input.hasGateway ? join(ctx.containerHome, ".local", "state", "hai", HELPER_FILE) : undefined,
+    apiKeyHelperPath: ctx.apiKeyHelperPath,
     // `hair` on PATH inside the image: hai's own install is a host path this container cannot see.
     hooks: sessionRegistryHooks(seams, { forwarded: input.forwarded, forContainer: true })
   });

@@ -2,7 +2,7 @@ import { type AgentHub, createAgentHub } from "./auth/agent-hub.js";
 import { resolveBedrockKey } from "./auth/bedrock-key.js";
 import { buildClaudeEnv, conflictingEnv } from "./auth/claude-env.js";
 import { resolveHubClaudeToken } from "./auth/claude-token.js";
-import type { Gateway } from "./auth/gateway.js";
+import { apiKeyHelperEnv, type Gateway } from "./auth/gateway.js";
 import { type AuthResolution, resolveAuth } from "./auth/resolve-auth.js";
 import { billingNote } from "./auth/route.js";
 import { buildClaudeArgs, forwardArgv } from "./claude/args.js";
@@ -78,9 +78,11 @@ export async function launch(deps: { seams: Seams; processArgv: string[] }): Pro
   }
 
   const user = extractUserSettings(forwarded);
+  // One answer for both the settings and the published variable, so the two cannot disagree.
+  const apiKeyHelperPath = credentials.gateway?.helperPath;
   const ours = buildSettings({
     inWorkspace: root !== null,
-    apiKeyHelperPath: credentials.gateway?.helperPath,
+    apiKeyHelperPath,
     hooks: sessionRegistryHooks(seams, { forwarded, forContainer: false })
   });
   const merged = mergeSettings(ours, user.value === undefined ? {} : await readUserSettings(seams, user.value));
@@ -94,15 +96,18 @@ export async function launch(deps: { seams: Seams; processArgv: string[] }): Pro
   });
 
   // No markers here: this exec replaces the process in place, so HAI_ENV_READY would be inherited
-  // by every shell in the session and short-circuit each nested hai past the update check.
-  const env = { ...asProcessEnv(seams.env), ...added };
+  // by every shell in the session and short-circuit each nested hai past the update check. The
+  // helper's path is the one variable that is meant to be inherited: it is published for the
+  // session's own tools, and the routes with no helper clear it through `removed`.
+  const published = apiKeyHelperEnv(apiKeyHelperPath);
+  const env = { ...asProcessEnv(seams.env), ...added, ...published };
   for (const name of removed) {
     delete env[name];
   }
 
   if (isEnabled(seams.env, "HAI_DRY_RUN")) {
     seams.stdout(`${argv.join(" ")}\n`);
-    for (const line of describeEnv(added)) {
+    for (const line of describeEnv({ ...added, ...published })) {
       seams.stdout(`  ${line}\n`);
     }
     if (dropped.length > 0) {

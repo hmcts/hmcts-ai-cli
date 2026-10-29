@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createFakeHiddenInput, createFakeSeams, exitCodeOf, type FakeSeams, packagedRuntime } from "./__fixtures__/fake-seams.js";
+import { API_KEY_HELPER_VAR } from "./auth/gateway.js";
 import { DEFAULT_BEDROCK_GROUP_ID } from "./az/group-membership.js";
 import { binPath, HAIR_BIN } from "./claude/hooks.js";
 import { launch } from "./launch.js";
@@ -396,6 +397,33 @@ describe("launch", () => {
       expect(execArgv(seams)).toEqual(["claude", "--settings", settingsPath]);
       expect(seams.fs.store.get(settingsPath)).toContain(`${HOME}/.local/state/hai/gateway-token.sh`);
       expect(execEnv(seams).ANTHROPIC_CUSTOM_HEADERS).toBe(`Ocp-Apim-Subscription-Key: ${APIM_KEY}`);
+    });
+
+    it("should publish the helper's path on the gateway route, so a tool the session starts can use it", async () => {
+      // Arrange — a session's own tools get the route's base url and APIM header by inheritance
+      // and have to name the helper in their own --settings, claude keeping only the last one.
+      const seams = seamsIn({ HAI_ROUTE: "ai-gateway", AWS_BEARER_TOKEN_BEDROCK: "" });
+
+      // Act
+      await launch({ seams, processArgv: ["node", "hai"] });
+
+      // Assert
+      expect(execEnv(seams)[API_KEY_HELPER_VAR]).toBe(`${HOME}/.local/state/hai/gateway-token.sh`);
+    });
+
+    it.each<[string, Record<string, string>]>([
+      ["byol", { HAI_ROUTE: "byol", AWS_BEARER_TOKEN_BEDROCK: "" }],
+      ["bedrock", { HAI_ROUTE: "bedrock" }]
+    ])("should clear an inherited helper path on %s, a route with no helper of its own", async (_route, env) => {
+      // Arrange — a nested hai inside a gateway session inherits the variable, and a tool
+      // running the gateway's helper on a personal route would send an Entra token to it.
+      const seams = seamsIn({ ...env, [API_KEY_HELPER_VAR]: "/home/dev/.local/state/hai/gateway-token.sh" });
+
+      // Act
+      await launch({ seams, processArgv: ["node", "hai"] });
+
+      // Assert
+      expect(execEnv(seams)[API_KEY_HELPER_VAR]).toBeUndefined();
     });
 
     it("should add no Bedrock variables on the byol route", async () => {
