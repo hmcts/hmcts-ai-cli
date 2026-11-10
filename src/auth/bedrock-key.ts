@@ -2,8 +2,7 @@ import { isSet } from "../system/env.js";
 import type { Seams } from "../system/seams.js";
 
 const PROMPT = "Paste your Amazon Bedrock API key (input hidden): ";
-const NO_ENV_KEY_HELP =
-  "No Amazon Bedrock API key in AWS_BEARER_TOKEN_BEDROCK, and HAI_ROUTE=bedrock reads no other source. Ask in the DTSSE channel for one, then run hai again and paste it when prompted.";
+const NO_ENV_KEY_HELP = "No Amazon Bedrock API key in AWS_BEARER_TOKEN_BEDROCK";
 
 /** A virtual agent's tmux pane is a terminal nobody watches, so only a person is ever prompted. */
 export function canPrompt(seams: Seams): boolean {

@@ -501,7 +501,7 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
   answer is yes.** The probe order has to follow the precedence table or it decides the
   route by itself: asking the hub first and returning on a stored key, which is what this
   used to do, put a member on Bedrock and never looked at the group at all. Returning early
-  on a confirmed member is the other half — nothing below can change the answer.
+  on anything but a confirmed non-member is the other half — nothing below can change the answer.
 - **An unreachable AI Gateway never ends at a personal subscription.** Whether the
   gateway works is I/O, not a decision — the APIM key is in a private Key Vault behind the
   F5 VPN — so `resolveRoute` returns `ai-gateway` and `resolveAuth` settles it, failing

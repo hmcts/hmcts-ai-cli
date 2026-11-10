@@ -188,7 +188,7 @@ describe("resolveRoute", () => {
     it.each<Row>([
       ["a confirmed non-member with an exported Bedrock key", { ...NON_MEMBER, hasBedrockEnvKey: true }, "bedrock", "env"],
       ["a confirmed non-member with a claude.ai login", { ...NON_MEMBER, hasHostClaudeCredential: true }, "byol", "host-oauth"],
-      ["membership that could not be checked", UNKNOWN, "bedrock", "unavailable"],
+      ["membership that could not be checked", UNKNOWN, "byol", "refused"],
       ["a named HAI_ROUTE=bedrock", { requestedRoute: "bedrock", hasBedrockEnvKey: true }, "bedrock", "env"]
     ])("should decide no route of its own for %s", (_name, overrides, route, credentialSource) => {
       // Act
@@ -232,7 +232,7 @@ describe("resolveRoute", () => {
       ["a live host claude.ai login", { ...UNKNOWN, hasHostClaudeCredential: true }, "byol", "refused"],
       ["an exported CLAUDE_CODE_OAUTH_TOKEN", { ...UNKNOWN, hasOauthEnvToken: true }, "byol", "refused"],
       ["both personal credentials at once", { ...UNKNOWN, hasOauthEnvToken: true, hasHostClaudeCredential: true }, "byol", "refused"],
-      ["nothing personal to fall back to", UNKNOWN, "bedrock", "unavailable"]
+      ["nothing personal to fall back to", UNKNOWN, "byol", "refused"]
     ])("should resolve %s", (_name, overrides, route, credentialSource) => {
       // Act
       const result = resolveRoute(signals(overrides));

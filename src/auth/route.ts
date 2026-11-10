@@ -107,13 +107,10 @@ export function resolveRoute(signals: Signals): RouteResolution {
 
 /** Never an implicit personal fallback: an unchecked membership is not evidence of a non-member. */
 function unknownMembership(signals: Signals): RouteResolution {
-  if (signals.hasOauthEnvToken || signals.hasHostClaudeCredential) {
-    // The refusal stands offline, but telling someone who asked for no lookups to go and
-    // run az login is advice against their own flag.
-    const refusal = signals.offline ? OFFLINE_MEMBERSHIP_REFUSAL : UNKNOWN_MEMBERSHIP_REFUSAL;
-    return { route: "byol", credentialSource: "refused", reasons: [refusal] };
-  }
-  return { route: "bedrock", credentialSource: "unavailable", reasons: ["Bedrock group membership could not be checked"] };
+  // The refusal stands offline, but telling someone who asked for no lookups to go and
+  // run az login is advice against their own flag.
+  const refusal = signals.offline ? OFFLINE_MEMBERSHIP_REFUSAL : UNKNOWN_MEMBERSHIP_REFUSAL;
+  return { route: "byol", credentialSource: "refused", reasons: [refusal] };
 }
 
 /**

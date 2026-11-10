@@ -84,7 +84,7 @@ export async function gatherSignals(deps: { seams: Seams; offline: boolean; cach
     base.isBedrockGroupMember = await checkBedrockGroupMembership(seams);
     askedGraph = true;
   }
-  if (base.isBedrockGroupMember === true) {
+  if (base.isBedrockGroupMember !== false) {
     return { signals: base, askedGraph };
   }
 

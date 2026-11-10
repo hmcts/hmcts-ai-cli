@@ -49,7 +49,7 @@ describe("resolveBedrockKey", () => {
       expect(key).toBe(TYPED);
     });
 
-    it("should say to ask in the DTSSE channel, without inventing a documentation url", async () => {
+    it("should say why it is asking", async () => {
       // Arrange
       const seams = createFakeSeams({ hiddenInput: createFakeHiddenInput([TYPED]) });
 
@@ -59,8 +59,6 @@ describe("resolveBedrockKey", () => {
       // Assert
       const said = seams.lines.join("");
       expect(said).toContain("No Amazon Bedrock API key in AWS_BEARER_TOKEN_BEDROCK");
-      expect(said).toContain("DTSSE channel");
-      expect(said).not.toMatch(/https?:\/\//);
     });
 
     it("should fail fast rather than block on a pipe nobody is typing into", async () => {

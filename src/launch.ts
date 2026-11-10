@@ -124,7 +124,6 @@ function hostReason(probe: { forcedHost: boolean }): string {
 /** The gateway's key is settled by `resolveAuth`, because whether it can be read at all is part of the route decision. */
 async function collectCredentials(deps: { seams: Seams }, auth: AuthResolution): Promise<Credentials> {
   const { seams } = deps;
-  const offline = isEnabled(seams.env, "HAI_OFFLINE");
   if (auth.resolution.route === "ai-gateway") {
     return { gateway: auth.gateway };
   }
@@ -132,7 +131,7 @@ async function collectCredentials(deps: { seams: Seams }, auth: AuthResolution):
     return { bedrockKey: await resolveBedrockKey({ seams }) };
   }
   if (auth.resolution.route === "agent-hub") {
-    return { claudeToken: await resolveHubClaudeToken({ seams, agentHub: createAgentHub(seams), offline }) };
+    return { claudeToken: await resolveHubClaudeToken({ seams, agentHub: createAgentHub(seams), offline: isEnabled(seams.env, "HAI_OFFLINE") }) };
   }
   // byol: the credential is already where claude looks for it, so there is nothing to fetch.
   return {};

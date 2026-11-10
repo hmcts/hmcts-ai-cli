@@ -134,17 +134,6 @@ describe("gatherSignals", () => {
     expect(signals).toMatchObject({ isBedrockGroupMember: true, hasHostClaudeCredential: false });
   });
 
-  it("should still look for a host claude.ai login when Graph could not answer", async () => {
-    // Arrange — the refusal that follows needs to know there is something to refuse.
-    const seams = createFakeSeams({ env: { HOME }, files: { [CREDENTIALS]: LIVE_LOGIN }, respond: graphRefused });
-
-    // Act
-    const { signals } = await gatherSignals({ seams, offline: false, cachedGroupMembership: null });
-
-    // Assert
-    expect(signals).toMatchObject({ isBedrockGroupMember: null, hasHostClaudeCredential: true });
-  });
-
   it("should not check the group when a cached answer is already in hand", async () => {
     // Arrange
     const seams = createFakeSeams({ env: { HOME } });
