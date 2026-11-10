@@ -430,23 +430,6 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
   knowing: a named route resolves no membership at all, so `src/auth/signals.ts` makes no
   `az account show` and no `az rest checkMemberGroups`, and `src/auth/auth-cache.ts` is
   the default path's alone.
-- **How far the credential fetch may look is `resolution.byName`, not `credentialSource`.**
-  `resolveBedrockKey` reads agent-hub only when the route was *not* asked for by name: a
-  named `HAI_ROUTE=bedrock` is the environment or a paste, full stop, and reading the hub
-  anyway both broke "no fallbacks" and made the launch line say `prompt` for a key that had
-  come off the hub. The unset path keeps the whole chain, env → agent-hub → prompt, from
-  **every** branch that lands on bedrock. `credentialSource` cannot stand in for this and
-  keying on it was a bug: `prompt` is also what the AI-Gateway downgrade reports, and there
-  a hub read is exactly right — `gatherSignals`' probe may have thrown (a 5xx, or its 15s
-  timeout) while the Key Vault failed separately for a VPN that is down, and the two are
-  independent. Asking someone to paste a key the hub already holds wastes it and
-  `promptAndSave` then PUTs the pasted value over it.
-- **The hub read and the hub write stand or fall together.** A key pasted on the unset path
-  is saved back, which is what lets the next run find it; a named route neither reads nor
-  writes it. An engineer pasting a wrong or expired key under `HAI_ROUTE=bedrock` would
-  otherwise overwrite the working key the hub holds and break every later unset-path
-  session — the same overwrite hazard that makes the downgrade read the hub first, so the
-  two rules have to agree.
 - **Not setting a variable is not the same as removing it.** The handover is
   `{ ...process.env, ...buildClaudeEnv(...) }`, so a `CLAUDE_CODE_USE_BEDROCK=1` in a shell
   profile survived into a `byol` session: hai printed "paid for by your own Claude licence"
@@ -494,19 +477,17 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
   be tested first, and since every Claude Code user has a live claude.ai login that made the
   membership branch unreachable, so a missing Bedrock key quietly became "use their own
   subscription". **Do not move that ordering**, and note that **nothing on the unset path is
-  ahead of it any more**: the group check is the first branch, ahead of the two Bedrock keys
-  as well. Membership that could not be confirmed refuses the personal branch too, naming
+  ahead of it any more**: the group check is the first branch, ahead of a Bedrock key in the
+  environment as well. Membership that could not be confirmed refuses the personal branch too, naming
   `HAI_ROUTE=byol` as the way to say that is genuinely what you want — because an unanswered
   question is not an answer of "not a member".
 - **The gateway is ahead of Bedrock, so a key lying around decides nothing for a member.**
   Both routes bill HMCTS, so this is not about who pays; it is about which of the two HMCTS
   manages. The gateway is where the token quota, the model allow-list, content safety and
   per-service cost attribution live, and a direct Bedrock call with a personal API key is
-  outside all four. An `AWS_BEARER_TOKEN_BEDROCK` left in a shell profile, or a key the hub
-  still holds from before, used to win silently and take a member off the managed path with
-  nothing said. A member who wants Bedrock directly says `HAI_ROUTE=bedrock`, which is
-  obeyed like any other named route. Nothing is lost when the gateway is unreachable:
-  `resolveAuth` downgrades and walks the same env → agent-hub → prompt key chain as before.
+  outside all four. An `AWS_BEARER_TOKEN_BEDROCK` left in a shell profile used to win silently
+  and take a member off the managed path with nothing said. A member who wants Bedrock
+  directly says `HAI_ROUTE=bedrock`, which is obeyed like any other named route.
 - **`needsMembership` is what keeps that signal resolved, and it no longer coincides with
   `needsProbes`.** The block is only as good as `isBedrockGroupMember`, so
   `src/auth/signals.ts` resolves it for the whole unset path and no longer lets an exported
@@ -520,16 +501,11 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
   answer is yes.** The probe order has to follow the precedence table or it decides the
   route by itself: asking the hub first and returning on a stored key, which is what this
   used to do, put a member on Bedrock and never looked at the group at all. Returning early
-  on a confirmed member is the other half — nothing below can change the answer — and it is
-  worth having rather than merely harmless, because it drops an `az account get-access-token`
-  and an agent-hub round trip from every member's launch.
-- **The AI Gateway's fallback chain never ends at a personal subscription.** Whether the
+  on anything but a confirmed non-member is the other half — nothing below can change the answer.
+- **An unreachable AI Gateway never ends at a personal subscription.** Whether the
   gateway works is I/O, not a decision — the APIM key is in a private Key Vault behind the
-  F5 VPN — so `resolveRoute` returns `ai-gateway` and `resolveAuth` settles it, downgrading
-  to a pasted Bedrock key when the key cannot be read and failing when there is no TTY to
-  paste into. Every step of that says out loud which fallback happened and why; silence is
-  what let the incident run. `HAI_ROUTE=ai-gateway` fails outright instead of downgrading:
-  a named route is one source, and a downgrade would move who pays without being asked.
+  F5 VPN — so `resolveRoute` returns `ai-gateway` and `resolveAuth` settles it, failing
+  when the key cannot be read, whether or not the route was asked for by name.
 - **`HAI_GATEWAY_APIM_KEY` is the gateway's key for somewhere the vault is unreachable, and
   it reports as its own source.** `sps-ai-kv-stg` has `publicNetworkAccess: Disabled` and its
   only private endpoint is in `sps-ai-vnet-stg`, so a laptop on the F5 VPN can read it and a
@@ -554,9 +530,9 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
 - **The `agent-hub` route is plumbing the hub does not serve yet.** Its credential is the
   hub's `claude` kind — `claude setup-token` output, which cft-workspace's virtual-agent
   entrypoint exports as `CLAUDE_CODE_OAUTH_TOKEN`, and the one variable `buildClaudeEnv`
-  sets for this route. The hub's `OWNER_READABLE` is
-  `["bedrock", "claude_md", "git_identity"]`, so today an owner asking for `claude` gets a
-  403 and `resolveHubClaudeToken` fails naming the hub. Failing is deliberate: injecting
+  sets for this route. The hub's `OWNER_READABLE` is only
+  `["claude_md", "git_identity"]`, so today a person's GET on `claude` gets a 405 and
+  `resolveHubClaudeToken` fails naming the hub. Failing is deliberate: injecting
   nothing would have `claude` fall back to whatever login is in `~/.claude`, which is a
   different licence and a different bill. Widening the hub is a change to the hub.
 - **Only a group answer that was freshly fetched is stamped in the cache.** `gatherSignals`
@@ -572,9 +548,8 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
   the decision — no VPN probe, no `az keyvault secret show` against the private
   `sps-ai-kv-stg`, no `gateway-token.sh` and nothing through `logger.say`. The note is one
   `logger.verbose` line, so settling the gateway for it put real I/O behind a line most runs
-  never print, and when the Key Vault read failed (off the VPN, the common case for
-  `sbx-hai`) it announced a Bedrock fallback that is untrue there: `sbx-hai` forwards no
-  credential and no route environment, sbx injecting its own. The unset path's refusals
+  never print. `sbx-hai` forwards no credential and no route environment, sbx injecting
+  its own. The unset path's refusals
   still apply, so a note hai arrived at by itself can never name a route that would bill a
   member's own subscription. Container mode and the in-place path keep the full behaviour.
 - **`HAI_OFFLINE=1` skips what goes over the network, not what is on the machine.** Graph

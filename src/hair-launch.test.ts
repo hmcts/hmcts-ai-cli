@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import { createFakeSeams, type FakeSeams, FIXED_NOW } from "./__fixtures__/fake-seams.js";
-import { DEFAULT_BEDROCK_GROUP_ID } from "./az/group-membership.js";
 import { haiScriptPath } from "./claude/hooks.js";
 import { claimPath, recordLine, registryPath, type SessionRecord } from "./hair/registry.js";
 import { transcriptPath } from "./hair/title.js";
@@ -43,7 +42,7 @@ function respond(argv: string[]) {
     return { stdout: JSON.stringify({ tenantId: "tenant", user: { name: "dev@hmcts.net" } }) };
   }
   if (argv[1] === "rest") {
-    return { stdout: JSON.stringify({ value: [DEFAULT_BEDROCK_GROUP_ID] }) };
+    return { stdout: JSON.stringify({ value: [] }) };
   }
   return { code: 0 };
 }

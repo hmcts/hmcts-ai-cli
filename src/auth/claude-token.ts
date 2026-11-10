@@ -5,8 +5,8 @@ import type { AgentHub } from "./agent-hub.js";
 /**
  * The `agent-hub` route's one credential: the hub's `claude` kind, the long-lived token
  * `claude setup-token` mints. One source and no fallbacks, so every way of not having it
- * fails naming the hub — including the 403 an owner gets today, the hub's `OWNER_READABLE`
- * being `["bedrock", "claude_md", "git_identity"]`.
+ * fails naming the hub — including the 405 a person gets today on a GET of `claude`, the
+ * hub's `OWNER_READABLE` being only `["claude_md", "git_identity"]`.
  */
 export async function resolveHubClaudeToken(deps: { seams: Seams; agentHub: AgentHub; offline: boolean }): Promise<string> {
   const { seams, agentHub } = deps;

@@ -1,4 +1,4 @@
-import { type AgentHub, createAgentHub } from "./auth/agent-hub.js";
+import { createAgentHub } from "./auth/agent-hub.js";
 import { resolveBedrockKey } from "./auth/bedrock-key.js";
 import { buildClaudeEnv, conflictingEnv } from "./auth/claude-env.js";
 import { resolveHubClaudeToken } from "./auth/claude-token.js";
@@ -36,16 +36,14 @@ export async function launch(deps: { seams: Seams; processArgv: string[] }): Pro
     seams.logger.verbose("HAI_IN_CONTAINER=1 and HAI_ENV_READY=1, so the route is already resolved");
   }
 
-  // One client, so the az token behind it is fetched once however many times it is used.
-  const agentHub = createAgentHub(seams);
-  const auth = envReady ? null : await resolveAuth({ seams, agentHub });
+  const auth = envReady ? null : await resolveAuth({ seams });
   if (auth !== null) {
     const { route, credentialSource, reasons } = auth.resolution;
     // Unconditional, and before the credential is fetched, so it also answers "why am I being asked to paste a key".
     seams.logger.say(billingNote(route));
     seams.logger.verbose(`${route} via ${credentialSource}: ${reasons.join("; ")}`);
   }
-  const credentials = auth === null ? {} : await collectCredentials({ seams, agentHub }, auth);
+  const credentials = auth === null ? {} : await collectCredentials({ seams }, auth);
   const added = auth === null ? {} : buildClaudeEnv({ env: seams.env, route: auth.resolution.route, ...credentials });
   // Not setting a variable is not the same as removing one: the handover below is the process
   // environment with `added` over it, so another payer's credential or switch would survive.
@@ -124,19 +122,16 @@ function hostReason(probe: { forcedHost: boolean }): string {
 }
 
 /** The gateway's key is settled by `resolveAuth`, because whether it can be read at all is part of the route decision. */
-async function collectCredentials(deps: { seams: Seams; agentHub: AgentHub }, auth: AuthResolution): Promise<Credentials> {
+async function collectCredentials(deps: { seams: Seams }, auth: AuthResolution): Promise<Credentials> {
   const { seams } = deps;
-  const offline = isEnabled(seams.env, "HAI_OFFLINE");
   if (auth.resolution.route === "ai-gateway") {
     return { gateway: auth.gateway };
   }
   if (auth.resolution.route === "bedrock") {
-    // byName decides how far it may look: a named HAI_ROUTE=bedrock reads the environment
-    // or prompts, the unset path keeps env → agent-hub → prompt.
-    return { bedrockKey: await resolveBedrockKey({ seams, agentHub: deps.agentHub, offline, byName: auth.resolution.byName }) };
+    return { bedrockKey: await resolveBedrockKey({ seams }) };
   }
   if (auth.resolution.route === "agent-hub") {
-    return { claudeToken: await resolveHubClaudeToken({ seams, agentHub: deps.agentHub, offline }) };
+    return { claudeToken: await resolveHubClaudeToken({ seams, agentHub: createAgentHub(seams), offline: isEnabled(seams.env, "HAI_OFFLINE") }) };
   }
   // byol: the credential is already where claude looks for it, so there is nothing to fetch.
   return {};

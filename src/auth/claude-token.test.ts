@@ -12,8 +12,7 @@ function fakeHub(getCredential: AgentHub["getCredential"] = async () => null): A
     getCredential: async (kind: Parameters<AgentHub["getCredential"]>[0]) => {
       hub.kinds.push(kind);
       return getCredential(kind);
-    },
-    putCredential: async () => undefined
+    }
   };
   return hub;
 }

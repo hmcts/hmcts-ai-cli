@@ -38,7 +38,6 @@ export const BILLED_TO: Record<Route, string> = {
 export const GATEWAY_APIM_ENV_KEY_REASON = "HAI_GATEWAY_APIM_KEY is set, so the APIM key is not read from the private Key Vault";
 
 export const REMEDIES = [
-  "ask in the DTSSE channel for an Amazon Bedrock API key, then run hai again and paste it when prompted",
   "run hai with HAI_ROUTE=ai-gateway to go through the HMCTS AI Gateway instead (needs az login and the F5 VPN)",
   "run `claude setup-token` on your own Claude licence and export the result as CLAUDE_CODE_OAUTH_TOKEN, or run HAI_ROUTE=byol"
 ];
@@ -73,14 +72,6 @@ export function billingNote(route: Route): string {
  * First match wins, in the order of the table in the README.
  */
 export function resolveRoute(signals: Signals): RouteResolution {
-  // `byName` is stamped once here rather than woven through every branch. It is not the
-  // same question as `credentialSource`, which says what the signals concluded: a named
-  // route may only read its one source, while the unset path may walk env → agent-hub →
-  // prompt for a Bedrock key however it got here, the AI-Gateway downgrade included.
-  return { ...decided(signals), byName: signals.requestedRoute !== null };
-}
-
-function decided(signals: Signals): Omit<RouteResolution, "byName"> {
   if (signals.requestedRoute !== null) {
     return explicit(signals, signals.requestedRoute);
   }
@@ -93,9 +84,6 @@ function decided(signals: Signals): Omit<RouteResolution, "byName"> {
   }
   if (signals.hasBedrockEnvKey) {
     return { route: "bedrock", credentialSource: "env", reasons: ["AWS_BEARER_TOKEN_BEDROCK is set"] };
-  }
-  if (signals.hasStoredBedrockKey) {
-    return { route: "bedrock", credentialSource: "agent-hub", reasons: ["agent-hub holds a Bedrock API key for you"] };
   }
   if (signals.isBedrockGroupMember === null) {
     return unknownMembership(signals);
@@ -113,21 +101,16 @@ function decided(signals: Signals): Omit<RouteResolution, "byName"> {
   return {
     route: "bedrock",
     credentialSource: "unavailable",
-    reasons: ["no Bedrock key in the environment or on agent-hub, no claude.ai login, and you are not in the Bedrock developer group"]
+    reasons: ["no claude.ai login, and you are not in the Bedrock developer group"]
   };
 }
 
 /** Never an implicit personal fallback: an unchecked membership is not evidence of a non-member. */
-function unknownMembership(signals: Signals): Omit<RouteResolution, "byName"> {
-  if (signals.hasOauthEnvToken || signals.hasHostClaudeCredential) {
-    // The refusal stands offline, but telling someone who asked for no lookups to go and
-    // run az login is advice against their own flag.
-    const refusal = signals.offline ? OFFLINE_MEMBERSHIP_REFUSAL : UNKNOWN_MEMBERSHIP_REFUSAL;
-    return { route: "byol", credentialSource: "refused", reasons: [refusal] };
-  }
-  // Nothing personal to fall back to, so the only thing left is a key pasted by hand,
-  // and offering that spends nobody's own subscription.
-  return { route: "bedrock", credentialSource: "prompt", reasons: ["no stored Bedrock key, and Bedrock group membership could not be checked"] };
+function unknownMembership(signals: Signals): RouteResolution {
+  // The refusal stands offline, but telling someone who asked for no lookups to go and
+  // run az login is advice against their own flag.
+  const refusal = signals.offline ? OFFLINE_MEMBERSHIP_REFUSAL : UNKNOWN_MEMBERSHIP_REFUSAL;
+  return { route: "byol", credentialSource: "refused", reasons: [refusal] };
 }
 
 /**
@@ -136,7 +119,7 @@ function unknownMembership(signals: Signals): Omit<RouteResolution, "byName"> {
  * falls through to a second source — the group check above guards the *accident*, which is
  * the unset path, and refusing a deliberate act only taught people to go round it.
  */
-function explicit(signals: Signals, route: Route): Omit<RouteResolution, "byName"> {
+function explicit(signals: Signals, route: Route): RouteResolution {
   const reasons = [`HAI_ROUTE=${route}`];
   if (route === "agent-hub") {
     return { route, credentialSource: "agent-hub", reasons: [...reasons, "the Claude token agent-hub holds for you"] };
@@ -189,7 +172,6 @@ export interface Signals {
   requestedRoute: Route | null;
   hasBedrockEnvKey: boolean;
   hasOauthEnvToken: boolean;
-  hasStoredBedrockKey: boolean;
   hasHostClaudeCredential: boolean;
   isBedrockGroupMember: boolean | null;
   /**
@@ -205,10 +187,4 @@ export interface RouteResolution {
   route: Route;
   credentialSource: CredentialSource;
   reasons: string[];
-  /**
-   * True when `HAI_ROUTE` asked for this route by name, which is what decides how far the
-   * credential fetch may look: a named route reads its one source, the unset path reads the
-   * chain. Distinct from `credentialSource`, which only reports what the signals concluded.
-   */
-  byName: boolean;
 }

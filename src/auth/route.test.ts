@@ -21,7 +21,6 @@ const NOTHING: Signals = {
   requestedRoute: null,
   hasBedrockEnvKey: false,
   hasOauthEnvToken: false,
-  hasStoredBedrockKey: false,
   hasHostClaudeCredential: false,
   isBedrockGroupMember: false,
   hasGatewayApimEnvKey: false,
@@ -36,7 +35,6 @@ const UNKNOWN: Partial<Signals> = { isBedrockGroupMember: null };
 const EVERYTHING: Partial<Signals> = {
   hasBedrockEnvKey: true,
   hasOauthEnvToken: true,
-  hasStoredBedrockKey: true,
   hasHostClaudeCredential: true
 };
 
@@ -140,7 +138,7 @@ describe("resolveRoute", () => {
       ["ai-gateway", "gateway-apim"],
       ["bedrock", "env"]
     ])("should obey %s whatever every other signal says", (route, credentialSource) => {
-      // Act — a key in the environment, a key on the hub, an exported token and a host
+      // Act — a key in the environment, an exported token and a host
       // login, all at once, against each named route.
       const result = resolveRoute(signals({ ...EVERYTHING, requestedRoute: route }));
 
@@ -161,25 +159,6 @@ describe("resolveRoute", () => {
       expect(results.map((result) => result.route)).toEqual([...ROUTES]);
       expect(results.filter((result) => result.credentialSource === "refused" || result.credentialSource === "unavailable")).toEqual([]);
     });
-
-    it.each(ROUTES)("should stamp byName on %s, which is what decides how far the credential fetch looks", (route) => {
-      // Act
-      const named = resolveRoute(signals({ requestedRoute: route }));
-      const unset = resolveRoute(signals({ ...UNKNOWN }));
-
-      // Assert — distinct from credentialSource: both of these report `prompt` for bedrock,
-      // and only the unset one may walk env → agent-hub → prompt.
-      expect(named.byName).toBe(true);
-      expect(unset.byName).toBe(false);
-    });
-
-    it("should ignore a Bedrock key on agent-hub, which is no longer one of bedrock's sources", () => {
-      // Act
-      const result = resolveRoute(signals({ requestedRoute: "bedrock", hasStoredBedrockKey: true }));
-
-      // Assert — one route, one source: the env or a paste, and the hub serves the default path.
-      expect(result).toMatchObject({ route: "bedrock", credentialSource: "prompt" });
-    });
   });
 
   describe("a confirmed group member, with no HAI_ROUTE", () => {
@@ -189,12 +168,9 @@ describe("resolveRoute", () => {
       ["an exported CLAUDE_CODE_OAUTH_TOKEN", { ...MEMBER, hasOauthEnvToken: true }, "ai-gateway", "gateway-apim"],
       ["both personal credentials at once", { ...MEMBER, hasOauthEnvToken: true, hasHostClaudeCredential: true }, "ai-gateway", "gateway-apim"],
       ["a Bedrock key in the environment", { ...MEMBER, hasBedrockEnvKey: true }, "ai-gateway", "gateway-apim"],
-      ["a Bedrock key on agent-hub", { ...MEMBER, hasStoredBedrockKey: true }, "ai-gateway", "gateway-apim"],
-      ["both Bedrock keys", { ...MEMBER, hasBedrockEnvKey: true, hasStoredBedrockKey: true }, "ai-gateway", "gateway-apim"],
-      ["a stored key and a host login", { ...MEMBER, hasStoredBedrockKey: true, hasHostClaudeCredential: true }, "ai-gateway", "gateway-apim"],
       [
         "every other credential at once",
-        { ...MEMBER, hasBedrockEnvKey: true, hasStoredBedrockKey: true, hasOauthEnvToken: true, hasHostClaudeCredential: true },
+        { ...MEMBER, hasBedrockEnvKey: true, hasOauthEnvToken: true, hasHostClaudeCredential: true },
         "ai-gateway",
         "gateway-apim"
       ],
@@ -212,7 +188,7 @@ describe("resolveRoute", () => {
     it.each<Row>([
       ["a confirmed non-member with an exported Bedrock key", { ...NON_MEMBER, hasBedrockEnvKey: true }, "bedrock", "env"],
       ["a confirmed non-member with a claude.ai login", { ...NON_MEMBER, hasHostClaudeCredential: true }, "byol", "host-oauth"],
-      ["membership that could not be checked", UNKNOWN, "bedrock", "prompt"],
+      ["membership that could not be checked", UNKNOWN, "byol", "refused"],
       ["a named HAI_ROUTE=bedrock", { requestedRoute: "bedrock", hasBedrockEnvKey: true }, "bedrock", "env"]
     ])("should decide no route of its own for %s", (_name, overrides, route, credentialSource) => {
       // Act
@@ -236,8 +212,6 @@ describe("resolveRoute", () => {
   describe("a confirmed non-member, with no HAI_ROUTE", () => {
     it.each<Row>([
       ["a Bedrock key in the environment", { ...NON_MEMBER, hasBedrockEnvKey: true }, "bedrock", "env"],
-      ["a Bedrock key on agent-hub", { ...NON_MEMBER, hasStoredBedrockKey: true }, "bedrock", "agent-hub"],
-      ["a stored key ahead of a host login", { ...NON_MEMBER, hasStoredBedrockKey: true, hasHostClaudeCredential: true }, "bedrock", "agent-hub"],
       ["an exported CLAUDE_CODE_OAUTH_TOKEN", { ...NON_MEMBER, hasOauthEnvToken: true }, "byol", "env"],
       ["a live host claude.ai login", { ...NON_MEMBER, hasHostClaudeCredential: true }, "byol", "host-oauth"],
       ["an exported token ahead of a host login", { ...NON_MEMBER, hasOauthEnvToken: true, hasHostClaudeCredential: true }, "byol", "env"],
@@ -255,12 +229,10 @@ describe("resolveRoute", () => {
   describe("membership that could not be checked, with no HAI_ROUTE", () => {
     it.each<Row>([
       ["a Bedrock key in the environment", { ...UNKNOWN, hasBedrockEnvKey: true }, "bedrock", "env"],
-      ["a Bedrock key on agent-hub", { ...UNKNOWN, hasStoredBedrockKey: true }, "bedrock", "agent-hub"],
-      ["a stored key ahead of a host login", { ...UNKNOWN, hasStoredBedrockKey: true, hasHostClaudeCredential: true }, "bedrock", "agent-hub"],
       ["a live host claude.ai login", { ...UNKNOWN, hasHostClaudeCredential: true }, "byol", "refused"],
       ["an exported CLAUDE_CODE_OAUTH_TOKEN", { ...UNKNOWN, hasOauthEnvToken: true }, "byol", "refused"],
       ["both personal credentials at once", { ...UNKNOWN, hasOauthEnvToken: true, hasHostClaudeCredential: true }, "byol", "refused"],
-      ["nothing personal to fall back to", UNKNOWN, "bedrock", "prompt"]
+      ["nothing personal to fall back to", UNKNOWN, "byol", "refused"]
     ])("should resolve %s", (_name, overrides, route, credentialSource) => {
       // Act
       const result = resolveRoute(signals(overrides));
@@ -293,9 +265,9 @@ describe("resolveRoute", () => {
   });
 
   describe("the hard block on the unset path", () => {
-    const BOOLEANS: (keyof Signals)[] = ["hasBedrockEnvKey", "hasOauthEnvToken", "hasStoredBedrockKey", "hasHostClaudeCredential"];
+    const BOOLEANS: (keyof Signals)[] = ["hasBedrockEnvKey", "hasOauthEnvToken", "hasHostClaudeCredential"];
 
-    // Arrange — every combination of the four credential signals, with no HAI_ROUTE.
+    // Arrange — every combination of the three credential signals, with no HAI_ROUTE.
     const combinations = Array.from({ length: 1 << BOOLEANS.length }, (_unused, mask) =>
       Object.fromEntries(BOOLEANS.map((name, bit) => [name, (mask & (1 << bit)) !== 0]))
     );
@@ -335,18 +307,12 @@ describe("resolveRoute", () => {
       expect(result.reasons.join(" ")).toContain("not in the Bedrock developer group");
     });
 
-    it("should offer three remedies, each naming a route that still exists", () => {
+    it("should offer two remedies, each naming a route that still exists", () => {
       // Assert
-      expect(REMEDIES).toHaveLength(3);
+      expect(REMEDIES).toHaveLength(2);
       expect(REMEDIES.join(" ")).toContain("HAI_ROUTE=ai-gateway");
       expect(REMEDIES.join(" ")).toContain("HAI_ROUTE=byol");
       expect(REMEDIES.join(" ")).not.toMatch(/HAI_ROUTE=(gateway|own-licence)\b/);
-    });
-
-    it("should not cite a documentation url for how a Bedrock key is issued", () => {
-      // Assert
-      expect(REMEDIES.join(" ")).not.toMatch(/https?:\/\//);
-      expect(REMEDIES[0]).toContain("DTSSE channel");
     });
   });
 

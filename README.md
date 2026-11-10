@@ -57,17 +57,15 @@ With `HAI_ROUTE` unset, `hai` works it out, in this order:
 
 1. You are in the Bedrock developer group — `ai-gateway`, because HMCTS funds your
    capacity and the gateway is the route it manages: quotas, model allow-lists, content
-   safety and per-service cost attribution. This is first, ahead of the Bedrock keys as
-   well as every personal credential, so a key left in your environment or held on
-   agent-hub no longer decides anything. If the gateway turns out to be unreachable the
-   fallback is a Bedrock key — from your environment, agent-hub, or pasted — never your
-   own subscription.
+   safety and per-service cost attribution. This is first, ahead of a Bedrock key as
+   well as every personal credential, so a key left in your environment no longer
+   decides anything. If the gateway turns out to be unreachable the launch fails rather
+   than use your own subscription.
 2. `AWS_BEARER_TOKEN_BEDROCK` is exported — `bedrock`.
-3. agent-hub holds a Bedrock key for you — `bedrock`.
-4. Your group membership could not be checked — a Bedrock key you paste, or a refusal
-   naming `HAI_ROUTE=byol` if that is genuinely what you want. An unanswered question is
-   not an answer of "not a member".
-5. You are confirmed *not* in that group — `byol`, from `CLAUDE_CODE_OAUTH_TOKEN` or your
+3. Your group membership could not be checked — a refusal naming `HAI_ROUTE=byol` if
+   that is genuinely what you want. An unanswered question is not an answer of "not a
+   member".
+4. You are confirmed *not* in that group — `byol`, from `CLAUDE_CODE_OAUTH_TOKEN` or your
    claude.ai login.
 
 `HAI_ROUTE=bedrock` is how a member goes to Bedrock directly, and it is obeyed like any
