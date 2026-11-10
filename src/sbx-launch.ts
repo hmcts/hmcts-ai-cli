@@ -1,4 +1,3 @@
-import { createAgentHub } from "./auth/agent-hub.js";
 import { resolveAuth } from "./auth/resolve-auth.js";
 import { forwardArgv } from "./claude/args.js";
 import { updatedAndReExeced } from "./launch.js";
@@ -37,7 +36,7 @@ export async function launchSbx(deps: { seams: Seams; processArgv: string[] }): 
  */
 async function routeNote(deps: { seams: Seams }): Promise<string> {
   try {
-    const { resolution } = await resolveAuth({ seams: deps.seams, agentHub: createAgentHub(deps.seams), decideOnly: true });
+    const { resolution } = await resolveAuth({ seams: deps.seams, decideOnly: true });
     return `route ${resolution.route} via ${resolution.credentialSource} would apply on this host`;
   } catch (err) {
     return `no route resolves on this host, which does not stop the sandbox: ${messageOf(err)}`;

@@ -9,8 +9,8 @@ export const DEFAULT_AGENT_HUB_SCOPE = "api://dtsse-agent-hub/.default";
 
 const REQUEST_TIMEOUT_MS = 15_000;
 
-/** The hub credential kinds hai asks for: the `bedrock` route's API key and the `agent-hub` route's `claude setup-token` output. */
-export const CREDENTIAL_KINDS = ["bedrock", "claude"] as const;
+/** The hub credential kind hai asks for: the `agent-hub` route's `claude setup-token` output. */
+export const CREDENTIAL_KINDS = ["claude"] as const;
 
 const credentialPath = (kind: CredentialKind) => `/api/agent/credentials/${kind}`;
 
@@ -25,24 +25,15 @@ export function createAgentHub(deps: { runner: Runner; net: Net; env: Env; clock
     return tokenPromise;
   };
 
-  const request = async (kind: CredentialKind, method: string, body?: unknown): Promise<Response> => {
-    const headers: Record<string, string> = { Authorization: `Bearer ${await token()}` };
-    if (body !== undefined) {
-      headers["Content-Type"] = "application/json";
-    }
-    return deps.net.fetch(`${baseUrl}${credentialPath(kind)}`, {
-      method,
-      headers,
-      body: body === undefined ? undefined : JSON.stringify(body),
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
-    });
-  };
-
   return {
     baseUrl,
 
     async getCredential(kind) {
-      const res = await request(kind, "GET");
+      const res = await deps.net.fetch(`${baseUrl}${credentialPath(kind)}`, {
+        method: "GET",
+        headers: { Authorization: `Bearer ${await token()}` },
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
+      });
       if (res.status === 404) {
         return null;
       }
@@ -51,13 +42,6 @@ export function createAgentHub(deps: { runner: Runner; net: Net; env: Env; clock
       }
       const parsed = (await res.json()) as { value?: unknown };
       return typeof parsed.value === "string" && parsed.value !== "" ? parsed.value : null;
-    },
-
-    async putCredential(kind, value) {
-      const res = await request(kind, "PUT", { value });
-      if (!res.ok) {
-        throw new Error(`PUT ${credentialPath(kind)} failed: ${res.status}`);
-      }
     }
   };
 }
@@ -67,5 +51,4 @@ export type CredentialKind = (typeof CREDENTIAL_KINDS)[number];
 export interface AgentHub {
   baseUrl: string;
   getCredential(kind: CredentialKind): Promise<string | null>;
-  putCredential(kind: CredentialKind, value: string): Promise<void>;
 }

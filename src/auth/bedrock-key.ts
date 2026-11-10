@@ -1,11 +1,7 @@
-import { messageOf } from "../log/error-message.js";
 import { isSet } from "../system/env.js";
 import type { Seams } from "../system/seams.js";
-import type { AgentHub } from "./agent-hub.js";
 
 const PROMPT = "Paste your Amazon Bedrock API key (input hidden): ";
-const NO_KEY_HELP = "No Amazon Bedrock API key is stored for you. Ask in the DTSSE channel for one, then run hai again and paste it when prompted.";
-/** Only for a named HAI_ROUTE=bedrock, whose sources are the environment and a paste: "none stored for you" would be a claim nobody checked. */
 const NO_ENV_KEY_HELP =
   "No Amazon Bedrock API key in AWS_BEARER_TOKEN_BEDROCK, and HAI_ROUTE=bedrock reads no other source. Ask in the DTSSE channel for one, then run hai again and paste it when prompted.";
 
@@ -14,59 +10,17 @@ export function canPrompt(seams: Seams): boolean {
   return seams.hiddenInput.isTty && !isSet(seams.env, "AGENT_HUB_LAUNCH_TOKEN");
 }
 
-/**
- * How far this may look is the route's own `byName`: a named `HAI_ROUTE=bedrock` is the
- * environment or a paste, while the unset path keeps the whole env → agent-hub → prompt
- * chain. The read and the write go together, so a key pasted under a named route never
- * overwrites the one the hub holds.
- */
-export async function resolveBedrockKey(deps: { seams: Seams; agentHub: AgentHub; offline: boolean; byName: boolean }): Promise<string> {
-  const { seams, agentHub } = deps;
+/** The environment, or a key pasted at the prompt for a named `HAI_ROUTE=bedrock`. Nothing is saved. */
+export async function resolveBedrockKey(deps: { seams: Seams }): Promise<string> {
+  const { seams } = deps;
   const fromEnv = seams.env.AWS_BEARER_TOKEN_BEDROCK;
   if (fromEnv !== undefined && fromEnv !== "") {
     return fromEnv;
   }
 
-  if (deps.offline) {
-    requirePrompt(seams, "HAI_OFFLINE=1 and no AWS_BEARER_TOKEN_BEDROCK in the environment");
-    seams.logger.say("HAI_OFFLINE=1, so the key cannot be read from agent-hub; it will not be saved this time");
-    return promptForKey(seams);
-  }
-
-  if (deps.byName) {
-    requirePrompt(seams, NO_ENV_KEY_HELP);
-    seams.logger.say(
-      `${NO_ENV_KEY_HELP} It is not saved to agent-hub: HAI_ROUTE=bedrock does not read it either, so a key pasted here must not overwrite the one it holds.`
-    );
-    return promptForKey(seams);
-  }
-
-  let stored: string | null = null;
-  try {
-    stored = await agentHub.getCredential("bedrock");
-  } catch (err) {
-    requirePrompt(seams, `could not read your Amazon Bedrock API key from agent-hub (${messageOf(err)})`);
-    seams.logger.say(`could not read your Amazon Bedrock API key from agent-hub (${messageOf(err)}); it will not be saved this time`);
-    return promptForKey(seams);
-  }
-  if (stored !== null) {
-    return stored;
-  }
-
-  return await promptAndSave(seams, agentHub, NO_KEY_HELP);
-}
-
-async function promptAndSave(seams: Seams, agentHub: AgentHub, help: string): Promise<string> {
-  requirePrompt(seams, help);
-  seams.logger.say(`${help} It is saved to agent-hub for your next session.`);
-  const key = await promptForKey(seams);
-  try {
-    await agentHub.putCredential("bedrock", key);
-    seams.logger.say("saved to agent-hub");
-  } catch (err) {
-    seams.logger.say(`could not save the key to agent-hub (${messageOf(err)}); using it for this session only`);
-  }
-  return key;
+  requirePrompt(seams, NO_ENV_KEY_HELP);
+  seams.logger.say(NO_ENV_KEY_HELP);
+  return promptForKey(seams);
 }
 
 /** Fail fast rather than block on a pipe nobody is typing into. */

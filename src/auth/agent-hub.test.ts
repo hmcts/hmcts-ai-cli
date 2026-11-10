@@ -3,8 +3,8 @@ import { createFakeSeams } from "../__fixtures__/fake-seams.js";
 import { CREDENTIAL_KINDS, createAgentHub, DEFAULT_AGENT_HUB_SCOPE, DEFAULT_AGENT_HUB_URL } from "./agent-hub.js";
 
 const TOKEN = "eyJhbGciOiJSUzI1NiJ9.eyJvaWQiOiJmYWtlIn0.c2ln";
-const BEDROCK_KEY = "ABSKQmVkcm9jay1mYWtlLWtleS0wMDAwMDAwMDAw";
-const CREDENTIAL_PATH = "/api/agent/credentials/bedrock";
+const CLAUDE_TOKEN = "sk-ant-oat01-fake-setup-token";
+const CREDENTIAL_PATH = "/api/agent/credentials/claude";
 
 interface FetchCall {
   url: string;
@@ -30,10 +30,10 @@ function hub(
 describe("createAgentHub", () => {
   it("should default to the AAT hub and its api scope", async () => {
     // Arrange
-    const { api, fetches, seams } = hub({ respondWith: () => new Response(JSON.stringify({ value: BEDROCK_KEY })) });
+    const { api, fetches, seams } = hub({ respondWith: () => new Response(JSON.stringify({ value: CLAUDE_TOKEN })) });
 
     // Act
-    await api.getCredential("bedrock");
+    await api.getCredential("claude");
 
     // Assert
     expect(api.baseUrl).toBe(DEFAULT_AGENT_HUB_URL);
@@ -43,7 +43,7 @@ describe("createAgentHub", () => {
 
   it.each(CREDENTIAL_KINDS)("should address the %s kind by its own path", async (kind) => {
     // Arrange
-    const { api, fetches } = hub({ respondWith: () => new Response(JSON.stringify({ value: BEDROCK_KEY })) });
+    const { api, fetches } = hub({ respondWith: () => new Response(JSON.stringify({ value: CLAUDE_TOKEN })) });
 
     // Act
     await api.getCredential(kind);
@@ -60,7 +60,7 @@ describe("createAgentHub", () => {
     const { api } = hub({ env, respondWith: () => new Response("", { status: 404 }) });
 
     // Act
-    await api.getCredential("bedrock");
+    await api.getCredential("claude");
 
     // Assert
     expect(api.baseUrl).toBe(expected);
@@ -71,7 +71,7 @@ describe("createAgentHub", () => {
     const { api, seams } = hub({ env: { AGENT_HUB_SCOPE: "api://other/.default" }, respondWith: () => new Response("", { status: 404 }) });
 
     // Act
-    await api.getCredential("bedrock");
+    await api.getCredential("claude");
 
     // Assert
     expect(seams.runner.calls[0]?.argv).toContain("api://other/.default");
@@ -87,12 +87,12 @@ describe("createAgentHub", () => {
       },
       fetch: async () => {
         order.push("fetch");
-        return new Response(JSON.stringify({ value: BEDROCK_KEY }));
+        return new Response(JSON.stringify({ value: CLAUDE_TOKEN }));
       }
     });
 
     // Act
-    await createAgentHub(seams).getCredential("bedrock");
+    await createAgentHub(seams).getCredential("claude");
 
     // Assert
     expect(order).toEqual(["az", "fetch"]);
@@ -100,23 +100,23 @@ describe("createAgentHub", () => {
 
   it("should ask az for a token only once across several calls", async () => {
     // Arrange
-    const { api, seams } = hub({ respondWith: () => new Response(JSON.stringify({ value: BEDROCK_KEY })) });
+    const { api, seams } = hub({ respondWith: () => new Response(JSON.stringify({ value: CLAUDE_TOKEN })) });
 
     // Act
-    await api.getCredential("bedrock");
-    await api.putCredential("bedrock", BEDROCK_KEY);
+    await api.getCredential("claude");
+    await api.getCredential("claude");
 
     // Assert
     expect(seams.runner.calls.filter((call) => call.argv[0] === "az")).toHaveLength(1);
   });
 
   describe("getCredential", () => {
-    it("should return the stored key", async () => {
+    it("should return the stored credential", async () => {
       // Arrange
-      const { api } = hub({ respondWith: () => new Response(JSON.stringify({ value: BEDROCK_KEY })) });
+      const { api } = hub({ respondWith: () => new Response(JSON.stringify({ value: CLAUDE_TOKEN })) });
 
       // Act / Assert
-      expect(await api.getCredential("bedrock")).toBe(BEDROCK_KEY);
+      expect(await api.getCredential("claude")).toBe(CLAUDE_TOKEN);
     });
 
     it("should read a 404 as no credential rather than a failure", async () => {
@@ -124,7 +124,7 @@ describe("createAgentHub", () => {
       const { api } = hub({ respondWith: () => new Response("", { status: 404 }) });
 
       // Act / Assert
-      expect(await api.getCredential("bedrock")).toBeNull();
+      expect(await api.getCredential("claude")).toBeNull();
     });
 
     it.each([
@@ -136,7 +136,7 @@ describe("createAgentHub", () => {
       const { api } = hub({ respondWith: () => new Response(body) });
 
       // Act / Assert
-      expect(await api.getCredential("bedrock")).toBeNull();
+      expect(await api.getCredential("claude")).toBeNull();
     });
 
     it("should throw on any other error status", async () => {
@@ -144,7 +144,7 @@ describe("createAgentHub", () => {
       const { api } = hub({ respondWith: () => new Response("", { status: 500 }) });
 
       // Act / Assert
-      await expect(api.getCredential("bedrock")).rejects.toThrow("failed: 500");
+      await expect(api.getCredential("claude")).rejects.toThrow("failed: 500");
     });
 
     it("should surface an az failure rather than guess there is no key", async () => {
@@ -152,15 +152,15 @@ describe("createAgentHub", () => {
       const { api } = hub({ azCode: 1, respondWith: () => new Response("") });
 
       // Act / Assert
-      await expect(api.getCredential("bedrock")).rejects.toThrow("az account get-access-token failed");
+      await expect(api.getCredential("claude")).rejects.toThrow("az account get-access-token failed");
     });
 
     it("should send a bearer token and no content type", async () => {
       // Arrange
-      const { api, fetches } = hub({ respondWith: () => new Response(JSON.stringify({ value: BEDROCK_KEY })) });
+      const { api, fetches } = hub({ respondWith: () => new Response(JSON.stringify({ value: CLAUDE_TOKEN })) });
 
       // Act
-      await api.getCredential("bedrock");
+      await api.getCredential("claude");
 
       // Assert
       expect(fetches[0]?.init?.headers).toEqual({ Authorization: `Bearer ${TOKEN}` });
@@ -169,36 +169,13 @@ describe("createAgentHub", () => {
 
     it("should abort rather than hang", async () => {
       // Arrange
-      const { api, fetches } = hub({ respondWith: () => new Response(JSON.stringify({ value: BEDROCK_KEY })) });
+      const { api, fetches } = hub({ respondWith: () => new Response(JSON.stringify({ value: CLAUDE_TOKEN })) });
 
       // Act
-      await api.getCredential("bedrock");
+      await api.getCredential("claude");
 
       // Assert
       expect(fetches[0]?.init?.signal).toBeInstanceOf(AbortSignal);
-    });
-  });
-
-  describe("putCredential", () => {
-    it("should PUT the key as json", async () => {
-      // Arrange
-      const { api, fetches } = hub({ respondWith: () => new Response("{}") });
-
-      // Act
-      await api.putCredential("bedrock", BEDROCK_KEY);
-
-      // Assert
-      expect(fetches[0]?.init?.method).toBe("PUT");
-      expect(fetches[0]?.init?.body).toBe(JSON.stringify({ value: BEDROCK_KEY }));
-      expect(fetches[0]?.init?.headers).toMatchObject({ "Content-Type": "application/json" });
-    });
-
-    it("should throw when the hub refuses the write", async () => {
-      // Arrange
-      const { api } = hub({ respondWith: () => new Response("", { status: 403 }) });
-
-      // Act / Assert
-      await expect(api.putCredential("bedrock", BEDROCK_KEY)).rejects.toThrow("failed: 403");
     });
   });
 });

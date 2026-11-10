@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { createFakeHiddenInput, createFakeSeams, FIXED_NOW } from "../__fixtures__/fake-seams.js";
+import { createFakeSeams, FIXED_NOW } from "../__fixtures__/fake-seams.js";
 import { DEFAULT_BEDROCK_GROUP_ID } from "../az/group-membership.js";
-import type { AgentHub } from "./agent-hub.js";
 import { CACHE_FILE, CACHE_TTL_MS } from "./auth-cache.js";
 import { HELPER_FILE } from "./gateway.js";
 import { resolveAuth } from "./resolve-auth.js";
@@ -14,12 +13,6 @@ const ACCOUNT = JSON.stringify({ tenantId: "tenant", user: { name: "dev@hmcts.ne
 const IDENTITY = "tenant:dev@hmcts.net";
 const CREDENTIALS = `${HOME}/.claude/.credentials.json`;
 const LIVE_LOGIN = JSON.stringify({ claudeAiOauth: { accessToken: "sk-ant-oat01-x", expiresAt: Number.MAX_SAFE_INTEGER } });
-
-const hub = (getCredential: AgentHub["getCredential"] = async () => null): AgentHub => ({
-  baseUrl: "https://hub.test",
-  getCredential,
-  putCredential: async () => undefined
-});
 
 function respondAz(argv: string[]) {
   if (argv[1] === "account" && argv[2] === "show") {
@@ -51,7 +44,7 @@ describe("resolveAuth", () => {
     const seams = createFakeSeams({ env: { HOME }, respond: respondWithGateway });
 
     // Act
-    await resolveAuth({ seams, agentHub: hub() });
+    await resolveAuth({ seams });
 
     // Assert
     expect(JSON.parse(seams.fs.store.get(CACHE_PATH) ?? "{}")).toEqual({ [IDENTITY]: { group: { at: FIXED_NOW, isMember: true } } });
@@ -64,7 +57,7 @@ describe("resolveAuth", () => {
     const seams = createFakeSeams({ env: { HOME }, files: { [CACHE_PATH]: JSON.stringify(cache) }, respond: respondWithGateway });
 
     // Act
-    const { resolution } = await resolveAuth({ seams, agentHub: hub() });
+    const { resolution } = await resolveAuth({ seams });
 
     // Assert
     expect(resolution).toMatchObject({ route: "ai-gateway", credentialSource: "gateway-apim" });
@@ -76,11 +69,11 @@ describe("resolveAuth", () => {
     // Arrange — one run to stamp the answer, then past the TTL with the same state dir.
     let now = FIXED_NOW;
     const seams = createFakeSeams({ env: { HOME }, respond: respondWithGateway, clock: { now: () => now, sleep: async () => undefined } });
-    await resolveAuth({ seams, agentHub: hub() });
+    await resolveAuth({ seams });
     now += CACHE_TTL_MS + 1;
 
     // Act
-    const { resolution } = await resolveAuth({ seams, agentHub: hub() });
+    const { resolution } = await resolveAuth({ seams });
 
     // Assert
     expect(resolution).toMatchObject({ route: "ai-gateway", credentialSource: "gateway-apim" });
@@ -93,7 +86,7 @@ describe("resolveAuth", () => {
     const seams = createFakeSeams({ env: { HOME }, respond: (argv) => (argv[1] === "account" ? { code: 1, stderr: "no" } : respondAz(argv)) });
 
     // Act
-    await resolveAuth({ seams, agentHub: hub(async () => KEY) });
+    await resolveAuth({ seams }).catch(() => undefined);
 
     // Assert
     expect(seams.fs.store.has(CACHE_PATH)).toBe(false);
@@ -105,10 +98,9 @@ describe("resolveAuth", () => {
     const seams = createFakeSeams({ env: { HOME, HAI_OFFLINE: "1" }, respond: respondAz });
 
     // Act
-    const { resolution } = await resolveAuth({ seams, agentHub: hub() });
+    await resolveAuth({ seams }).catch(() => undefined);
 
-    // Assert — unknown membership with nothing personal to reach for still offers the prompt.
-    expect(resolution).toMatchObject({ route: "bedrock", credentialSource: "prompt" });
+    // Assert
     expect(seams.runner.calls.map((call) => call.argv)).toEqual([["az", "account", "show", "-o", "json"]]);
     expect(seams.fs.store.has(CACHE_PATH)).toBe(false);
   });
@@ -118,22 +110,22 @@ describe("resolveAuth", () => {
     const seams = createFakeSeams({ env: { HOME, AWS_BEARER_TOKEN_BEDROCK: KEY }, respond: notAMember });
 
     // Act
-    const { resolution } = await resolveAuth({ seams, agentHub: hub() });
+    const { resolution } = await resolveAuth({ seams });
 
     // Assert
     expect(resolution).toMatchObject({ route: "bedrock", credentialSource: "env" });
     expect(askedGraph(seams.runner.calls)).toBe(true);
   });
 
-  it("should fail with all three remedies when no signal fires at all", async () => {
+  it("should fail with both remedies when no signal fires at all", async () => {
     // Arrange
     const seams = createFakeSeams({ env: { HOME }, respond: notAMember });
 
     // Act
-    const act = resolveAuth({ seams, agentHub: hub() });
+    const act = resolveAuth({ seams });
 
     // Assert
-    await expect(act).rejects.toThrow(/DTSSE channel[\s\S]*HAI_ROUTE=ai-gateway[\s\S]*claude setup-token/);
+    await expect(act).rejects.toThrow(/HAI_ROUTE=ai-gateway[\s\S]*claude setup-token/);
   });
 
   it("should not cache a failure", async () => {
@@ -141,7 +133,7 @@ describe("resolveAuth", () => {
     const seams = createFakeSeams({ env: { HOME }, respond: notAMember });
 
     // Act
-    await resolveAuth({ seams, agentHub: hub() }).catch(() => undefined);
+    await resolveAuth({ seams }).catch(() => undefined);
 
     // Assert
     expect(seams.fs.store.has(CACHE_PATH)).toBe(false);
@@ -152,15 +144,14 @@ describe("resolveAuth", () => {
     const seams = createFakeSeams({ env: { HAI_VERBOSE: "1" }, respond: respondWithGateway });
 
     // Act
-    const { resolution } = await resolveAuth({ seams, agentHub: hub() });
+    const { resolution } = await resolveAuth({ seams, decideOnly: true });
 
-    // Assert — no HOME means no state dir, which must not stop a launch; it also leaves
-    // nowhere to write the gateway's apiKeyHelper, so this lands on the Bedrock fallback.
-    expect(resolution).toMatchObject({ route: "bedrock", credentialSource: "prompt" });
+    // Assert — no HOME means no state dir, which must not stop a launch.
+    expect(resolution).toMatchObject({ route: "ai-gateway", credentialSource: "gateway-apim" });
     expect(seams.lines.join("")).toContain("could not write the group-membership cache");
   });
 
-  it("should ask az who we are, then the group, and never trouble agent-hub for a member", async () => {
+  it("should ask az who we are, then the group, for a member", async () => {
     // Arrange
     const order: string[] = [];
     const seams = createFakeSeams({
@@ -170,13 +161,9 @@ describe("resolveAuth", () => {
         return respondWithGateway(argv);
       }
     });
-    const agentHub = hub(async () => {
-      order.push("hub get");
-      return KEY;
-    });
 
     // Act
-    await resolveAuth({ seams, agentHub });
+    await resolveAuth({ seams });
 
     // Assert
     expect(order).toEqual(["az account", "az rest", "az hosts", "az keyvault"]);
@@ -188,53 +175,22 @@ describe("resolveAuth", () => {
       const seams = createFakeSeams({ env: { HOME }, respond: respondWithGateway });
 
       // Act
-      const auth = await resolveAuth({ seams, agentHub: hub() });
+      const auth = await resolveAuth({ seams });
 
       // Assert
       expect(auth.resolution.route).toBe("ai-gateway");
       expect(auth.gateway?.apimKey).toBe(APIM_KEY);
     });
 
-    it("should fall back to pasting a Bedrock key when the Key Vault cannot be read", async () => {
+    it("should fail rather than reach for a personal subscription when the Key Vault cannot be read", async () => {
       // Arrange — the incident exactly: a member, a live personal login, and no Bedrock key.
       const seams = createFakeSeams({ env: { HOME }, files: { [CREDENTIALS]: LIVE_LOGIN }, respond: respondAz });
 
       // Act
-      const auth = await resolveAuth({ seams, agentHub: hub() });
+      const act = resolveAuth({ seams });
 
       // Assert
-      expect(auth.resolution).toMatchObject({ route: "bedrock", credentialSource: "prompt" });
-      expect(auth.gateway).toBeUndefined();
-    });
-
-    it("should say which fallback it took and why, because silence here is what caused the incident", async () => {
-      // Arrange
-      const seams = createFakeSeams({ env: { HOME }, respond: respondAz });
-
-      // Act
-      const { resolution } = await resolveAuth({ seams, agentHub: hub() });
-
-      // Assert
-      const said = seams.lines.join("");
-      expect(said).toContain("the AI Gateway was chosen but its APIM key could not be read");
-      expect(said).toContain("hai will not use your personal claude.ai subscription");
-      expect(resolution.reasons.join(" ")).toContain("APIM key could not be read");
-    });
-
-    it("should fail rather than reach for a personal subscription when there is no terminal to paste into", async () => {
-      // Arrange
-      const seams = createFakeSeams({
-        env: { HOME },
-        files: { [CREDENTIALS]: LIVE_LOGIN },
-        respond: respondAz,
-        hiddenInput: createFakeHiddenInput([], false)
-      });
-
-      // Act
-      const act = resolveAuth({ seams, agentHub: hub() });
-
-      // Assert
-      await expect(act).rejects.toThrow("hai will not use a personal claude.ai subscription instead");
+      await expect(act).rejects.toThrow("could not read the AI Gateway APIM key");
     });
 
     it("should fail outright rather than downgrade a gateway asked for by name", async () => {
@@ -242,7 +198,7 @@ describe("resolveAuth", () => {
       const seams = createFakeSeams({ env: { HOME, HAI_ROUTE: "ai-gateway" }, respond: respondAz });
 
       // Act
-      const act = resolveAuth({ seams, agentHub: hub() });
+      const act = resolveAuth({ seams });
 
       // Assert
       await expect(act).rejects.toThrow("could not read the AI Gateway APIM key");
@@ -254,7 +210,7 @@ describe("resolveAuth", () => {
       const seams = createFakeSeams({ env: { HOME, HAI_ROUTE: "ai-gateway", HAI_GATEWAY_APIM_KEY: APIM_KEY } });
 
       // Act
-      const auth = await resolveAuth({ seams, agentHub: hub() });
+      const auth = await resolveAuth({ seams });
 
       // Assert — reported as the environment, not as the vault it never touched.
       expect(auth.resolution).toMatchObject({ route: "ai-gateway", credentialSource: "gateway-apim-env" });
@@ -269,7 +225,7 @@ describe("resolveAuth", () => {
       const seams = createFakeSeams({ env: { HOME }, respond: respondAz });
 
       // Act
-      const auth = await resolveAuth({ seams, agentHub: hub(), decideOnly: true });
+      const auth = await resolveAuth({ seams, decideOnly: true });
 
       // Assert
       expect(auth.resolution).toMatchObject({ route: "ai-gateway", credentialSource: "gateway-apim" });
@@ -284,7 +240,7 @@ describe("resolveAuth", () => {
       const seams = createFakeSeams({ env: { HOME, HAI_ROUTE: "byol" }, files: { [CREDENTIALS]: LIVE_LOGIN }, respond: respondAz });
 
       // Act
-      const auth = await resolveAuth({ seams, agentHub: hub(), decideOnly: true });
+      const auth = await resolveAuth({ seams, decideOnly: true });
 
       // Assert
       expect(auth.resolution).toMatchObject({ route: "byol", credentialSource: "host-oauth" });
@@ -303,7 +259,7 @@ describe("resolveAuth", () => {
       const seams = createFakeSeams({ env: { HOME, HAI_ROUTE: requested }, files: { [CREDENTIALS]: LIVE_LOGIN }, respond: respondAz });
 
       // Act
-      const { resolution } = await resolveAuth({ seams, agentHub: hub() });
+      const { resolution } = await resolveAuth({ seams });
 
       // Assert
       expect(resolution).toMatchObject({ route, credentialSource });
@@ -315,7 +271,7 @@ describe("resolveAuth", () => {
       const seams = createFakeSeams({ env: { HOME, HAI_ROUTE: "byol" }, files: { [CACHE_PATH]: JSON.stringify(cache) }, respond: respondAz });
 
       // Act
-      const { resolution } = await resolveAuth({ seams, agentHub: hub() });
+      const { resolution } = await resolveAuth({ seams });
 
       // Assert
       expect(resolution.route).toBe("byol");
@@ -331,7 +287,7 @@ describe("resolveAuth", () => {
       const seams = createFakeSeams({ env: { HOME, HAI_ROUTE: old }, respond: respondAz });
 
       // Act
-      const act = resolveAuth({ seams, agentHub: hub() });
+      const act = resolveAuth({ seams });
 
       // Assert
       await expect(act).rejects.toThrow(`HAI_ROUTE=${replacement}`);
@@ -345,7 +301,7 @@ describe("resolveAuth", () => {
       const seams = createFakeSeams({ env: { HOME }, files: { [CREDENTIALS]: LIVE_LOGIN }, respond: graphRefused });
 
       // Act
-      const act = resolveAuth({ seams, agentHub: hub() });
+      const act = resolveAuth({ seams });
 
       // Assert
       await expect(act).rejects.toThrow("HAI_ROUTE=byol");
@@ -358,7 +314,7 @@ describe("resolveAuth", () => {
       const seams = createFakeSeams({ env: { HOME, HAI_OFFLINE: "1", CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-x" }, respond: respondAz });
 
       // Act
-      const err = await resolveAuth({ seams, agentHub: hub() }).catch((e: Error) => e);
+      const err = await resolveAuth({ seams }).catch((e: Error) => e);
 
       // Assert
       expect((err as Error).message).toContain("HAI_ROUTE=byol");
@@ -371,7 +327,7 @@ describe("resolveAuth", () => {
       const seams = createFakeSeams({ env: { HOME }, files: { [CREDENTIALS]: LIVE_LOGIN }, respond: notAMember });
 
       // Act
-      const { resolution } = await resolveAuth({ seams, agentHub: hub() });
+      const { resolution } = await resolveAuth({ seams });
 
       // Assert
       expect(resolution).toMatchObject({ route: "byol", credentialSource: "host-oauth" });
@@ -389,7 +345,7 @@ describe("resolveAuth", () => {
       const seams = createFakeSeams({ env, files: { [CACHE_PATH]: cached }, respond: respondWithGateway });
 
       // Act
-      const { resolution } = await resolveAuth({ seams, agentHub: hub() });
+      const { resolution } = await resolveAuth({ seams });
 
       // Assert — the member goes where HMCTS pays, and a hit has nothing to write.
       expect(resolution).toMatchObject({ route: "ai-gateway", credentialSource: "gateway-apim" });
@@ -398,19 +354,18 @@ describe("resolveAuth", () => {
     });
 
     it("should refuse rather than spend an exported token when a cached member has no gateway to reach", async () => {
-      // Arrange — respondAz answers no Key Vault, and nothing to paste a Bedrock key into.
+      // Arrange — respondAz answers no Key Vault.
       const seams = createFakeSeams({
         env: { HOME, HAI_OFFLINE: "1", CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-x" },
         files: { [CACHE_PATH]: cacheFor(true) },
-        respond: respondAz,
-        hiddenInput: createFakeHiddenInput([], false)
+        respond: respondAz
       });
 
       // Act
-      const act = resolveAuth({ seams, agentHub: hub() });
+      const act = resolveAuth({ seams });
 
       // Assert
-      await expect(act).rejects.toThrow("hai will not use a personal claude.ai subscription instead");
+      await expect(act).rejects.toThrow("could not read the AI Gateway APIM key");
     });
 
     it("should obey HAI_ROUTE=byol for a cached member without reading the cache at all", async () => {
@@ -423,7 +378,7 @@ describe("resolveAuth", () => {
       });
 
       // Act
-      const { resolution } = await resolveAuth({ seams, agentHub: hub() });
+      const { resolution } = await resolveAuth({ seams });
 
       // Assert
       expect(resolution).toMatchObject({ route: "byol", credentialSource: "host-oauth" });
@@ -440,7 +395,7 @@ describe("resolveAuth", () => {
       });
 
       // Act
-      const { resolution } = await resolveAuth({ seams, agentHub: hub() });
+      const { resolution } = await resolveAuth({ seams });
 
       // Assert
       expect(resolution).toMatchObject({ route: "byol", credentialSource: "host-oauth" });
@@ -452,12 +407,12 @@ describe("resolveAuth", () => {
       // online run writes it and the offline run that follows has to find it.
       const env: Record<string, string> = { HOME };
       const seams = createFakeSeams({ env, respond: respondWithGateway });
-      await resolveAuth({ seams, agentHub: hub() });
+      await resolveAuth({ seams });
       const written = seams.fs.store.get(CACHE_PATH) ?? "{}";
       env.HAI_OFFLINE = "1";
 
       // Act
-      const { resolution } = await resolveAuth({ seams, agentHub: hub() });
+      const { resolution } = await resolveAuth({ seams });
 
       // Assert — one Graph call for two runs is only possible if both keys are the same.
       expect(Object.keys(JSON.parse(written) as Record<string, unknown>)).toEqual([IDENTITY]);

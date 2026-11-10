@@ -550,55 +550,21 @@ describe("launch", () => {
       expect(execEnv(seams).AWS_BEARER_TOKEN_BEDROCK).toBe(KEY);
     });
 
-    it("should use the key agent-hub holds when the AI Gateway downgrades, rather than ask for one it already has", async () => {
-      // Arrange
-      let gets = 0;
-      const seams = createFakeSeams({
-        env: { HOME, HAI_NO_UPDATE: "1" },
-        files: IN_CONTAINER,
-        respond: (argv) => {
-          if (argv[2] === "get-access-token") {
-            return { stdout: JSON.stringify({ accessToken: "eyJhbGciOiJSUzI1NiJ9.e30.c2ln", expires_on: 1800000000 }) };
-          }
-          if (argv[1] === "keyvault") {
-            return { code: 1, stderr: "could not resolve the vault" };
-          }
-          return respond(argv);
-        },
-        fetch: async () => {
-          gets += 1;
-          return new Response(JSON.stringify({ value: KEY }));
-        },
-        hiddenInput: createFakeHiddenInput([])
-      });
-
-      // Act
-      await launch({ seams, processArgv: ["node", "hai"] });
-
-      // Assert — the downgrade is the unset path, so it reads the hub; pasting would both
-      // waste the key the hub holds and overwrite it on the way back out.
-      expect(execEnv(seams).AWS_BEARER_TOKEN_BEDROCK).toBe(KEY);
-      expect(gets).toBe(1);
-    });
-
-    it("should prompt a group member for a Bedrock key rather than bill their own subscription when the gateway is unreachable", async () => {
+    it("should fail rather than bill a group member's own subscription when the gateway is unreachable", async () => {
       // Arrange — the incident: a member with a live personal login and no Bedrock key,
       // on a host where the private Key Vault cannot be reached.
-      const typed = "ABSKVHlwZWQtYnktaGFuZC0wMDAwMDAwMDAwMDA";
       const seams = createFakeSeams({
         env: { HOME, HAI_NO_UPDATE: "1" },
         files: { ...IN_CONTAINER, [`${HOME}/.claude/.credentials.json`]: LIVE_LOGIN },
-        respond: (argv) => (argv[1] === "keyvault" ? { code: 1, stderr: "could not resolve the vault" } : respond(argv)),
-        hiddenInput: createFakeHiddenInput([typed])
+        respond: (argv) => (argv[1] === "keyvault" ? { code: 1, stderr: "could not resolve the vault" } : respond(argv))
       });
 
       // Act
-      await launch({ seams, processArgv: ["node", "hai"] });
+      const act = launch({ seams, processArgv: ["node", "hai"] });
 
       // Assert
-      expect(execEnv(seams).AWS_BEARER_TOKEN_BEDROCK).toBe(typed);
-      expect(execEnv(seams).CLAUDE_CODE_USE_BEDROCK).toBe("1");
-      expect(seams.lines.join("")).toContain("hai will not use your personal claude.ai subscription");
+      await expect(act).rejects.toThrow("could not read the AI Gateway APIM key");
+      expect(seams.runner.execCalls).toEqual([]);
     });
   });
 
