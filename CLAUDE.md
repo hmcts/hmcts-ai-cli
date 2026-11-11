@@ -41,10 +41,10 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
 - **Never infer a bin's identity or a sibling's path from `process.argv[1]`.** `argv[1]` is
   the path as invoked, and for the documented global install that is the bin **symlink** —
   `<prefix>/bin/hair`, with no `.js` and no directory in common with `dist/bin`. Node does
-  not realpath it (measured on node 24). Two things were quietly dead because of it: the
-  `.js` suffix test in `hairCommand`, so even the in-place hook fell back to `hair` on
-  `PATH`; and `haiScriptPath`, so the self-update re-entered `hair`. `binPath()` resolves a
-  sibling bin from `import.meta.url`, which *is* realpath'd, the same way `packageRoot()`
+  not realpath it (measured on node 24). Read from `argv[1]`, the `.js` suffix test in
+  `hairCommand` would send even the in-place hook to `hair` on `PATH`, and `haiScriptPath`
+  would have the self-update re-enter `hair`. `binPath()` resolves a sibling bin from
+  `import.meta.url`, which *is* realpath'd, the same way `packageRoot()`
   does — and "am I hair?" is a fact the `hair` entrypoint states rather than one anything
   sniffs out of a filename.
 - **The session registry lives in `~/.claude/sessions.jsonl`, not in hai's state dir.**
@@ -97,18 +97,14 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
   double before another can qualify, so the work between compactions stays proportional to
   the file whatever the open set does.
 - **Deregistration is on `SessionEnd`, and only for the reasons that mean the conversation
-  is over.** The asymmetry is still the whole mechanism — an entry the person closed goes,
+  is over.** The asymmetry is the whole mechanism — an entry the person closed goes,
   an entry a kill ended stays, so "still marked open" *is* the crash signal — but it only
   holds for *those* reasons, because **`SessionEnd` fires on a kill too**. Measured:
   `kill -TERM` on a running `claude` fires it with `reason: "other"`, the same reason a
   finished `-p` run gives (the table under "Session restore" has the whole enum). So
-  deregistering on every reason closed the entry of every session that was killed — which
-  is precisely the set the registry exists to hold. Closing VS Code stops the devcontainer,
-  which SIGTERMs every session in it, so after a restart the registry held 125 records and
-  `HAI_VERBOSE=1 hair --list` reported "the session was closed cleanly" about every one of
-  them: there was nothing to resume, ever, for anybody. This rule used to claim that "a
-  clean exit removes its own entry; a reboot cannot". That was never tested and it was
-  false.
+  deregistering on every reason would close the entry of every session that was killed —
+  precisely the set the registry exists to hold. Closing VS Code stops the devcontainer,
+  which SIGTERMs every session in it.
   `CONVERSATION_OVER_REASONS` is therefore an **allow-list**, and a short one:
   `prompt_input_exit` (`/exit`) and `clear` (`/clear` ends that id and starts a new one, so
   the old id is not a conversation to hand anyone). It is an allow-list and not a deny-list
@@ -117,13 +113,12 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
   deregistered costs the conversation with no trace it ever existed — so a reason a later
   Claude Code adds stays recoverable until somebody measures it.
   **The test is "done with this id", not "deliberate".** That distinction is the whole
-  list, and getting it wrong is how `logout` was briefly on it. `/logout` *is* deliberate,
-  but it is deliberate about **credentials**: it ends the session and leaves the
-  conversation completely resumable, so an engineer who logs out and straight back in would
-  have found it tombstoned with nothing saying it had ever existed — the exact asymmetric
-  loss the allow-list exists to prevent. `resume` is out for the same reason: an
-  interactive `/resume` switch is deliberate but does not *end* the conversation it leaves,
-  and that conversation is still worth handing back. Do not add either back on the grounds
+  list. `/logout` *is* deliberate, but it is deliberate about **credentials**: it ends the
+  session and leaves the conversation completely resumable, so an engineer who logs out and
+  straight back in would find it tombstoned with nothing saying it had ever existed — the
+  exact asymmetric loss the allow-list exists to prevent. `resume` is out for the same
+  reason: an interactive `/resume` switch is deliberate but does not *end* the conversation it leaves,
+  and that conversation is still worth handing back. Do not add either on the grounds
   that the engineer meant to do it; they did, and it is not the question.
 - **hai writes no terminal title, and must not start. `--name` *is* the title mechanism.**
   Measured on Claude Code 2.1.304 with the TUI actually mounting (the reproduction is in the
@@ -133,18 +128,14 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
   Claude Code sets the tab title itself, from the name on the argv, which `hair` already
   passes. Two consequences, and either one on its own kills the idea of writing it from
   here: anything hai wrote would be overwritten within about a second as the TUI mounts, and
-  there was never anything to add, because `-n` was already doing it. The binary carries
+  there is nothing to add, because `-n` already does it. The binary carries
   `terminalTitle: sessionTitle ?? aiSessionTitle ?? agentTitle ?? haikuTitle ?? "Claude Code"`
-  and a `terminalTitleFromRename` setting — that selector is what an outside write was trying
-  to pre-empt, and it is not ours to pre-empt.
-  **The earlier claim in this file was that Claude Code writes no title at startup, and it
-  was wrong.** It came from captures of `claude -r <id>` in which the TUI never mounted, so
-  the only `OSC 0` in the stream was the clear-on-exit at the very end; the same harness is
-  what produced "`-n` persists/sets nothing". A capture that does not mount the TUI measures
-  nothing about what the TUI does. Do not re-derive either claim without `TERM` and
-  `TERM_PROGRAM` set and the startup bytes in hand.
-  The only thing that was ever missing was a **name to put on the argv**, which is what the
-  two rules below are about.
+  and a `terminalTitleFromRename` setting — that selector is not ours to pre-empt.
+  A capture in which the TUI never mounts shows only the clear-on-exit `OSC 0` at the very
+  end, and measures nothing about what the TUI does. Do not conclude anything about titles or
+  `-n` without `TERM` and `TERM_PROGRAM` set and the startup bytes in hand.
+  What `hair` has to supply is a **name to put on the argv**, which is what the two rules
+  below are about.
 - **A conversation's name comes from its own transcript, and it is read at restore, by
   `resolveName`.** Claude Code appends every name it has for a conversation to the transcript
   as a record of its own, and those records are the source:
@@ -158,33 +149,29 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
   a `custom-title` record, 220 at least one — and 62 have a `custom-title.json` file, every one
   of them beside the matching `custom-title` record. **Every count in this file excludes the
   `-tmp-*` project directories**, which are probe artefacts and nothing else; including them
-  gives 1173 / 278 / 68 / 306 / 63, and those were the figures this file used to carry. One of
-  the planted conversations was load-bearing — see the "only source" rule below — so measure
-  with them out.
+  gives 1173 / 278 / 68 / 306 / 63. One of the planted conversations is load-bearing — see
+  the "only source" rule below — so measure with them out.
   The `ai-title` half is what makes this general rather than a nicety for the renamed few: it
   is Claude Code's own name for every conversation nobody ran `/rename` on, which is most of
   them. It is read at all because `-n` is the only other source and almost nobody passes it:
-  the registry's argv-derived name was empty for all 333 of one engineer's records and
-  `hair --list` said "(unnamed)" about every one of them, so every restored session came back
-  with no `--name` and therefore no tab title. hai only ever **reads** the transcripts:
-  writing into Claude Code's own store on its behalf would make a format change hai's bug to
-  own. Every way of not having a name is a silent no-name, because a hook never breaks a
-  session.
+  the registry's argv-derived name was empty for all 333 of one engineer's records, so without
+  it every restored session would come back with no `--name` and therefore no tab title. hai
+  only ever **reads** the transcripts: writing into Claude Code's own store on its behalf
+  would make a format change hai's bug to own. Every way of not having a name is a silent
+  no-name, because a hook never breaks a session.
 - **The hook reads no title, and the test that says so is load-bearing.** A record's `name`
-  is the argv `-n/--name` and nothing else. The hook *did* read the title on every
-  `UserPromptSubmit`, to keep the registry's copy fresh and to catch a `/rename` the
-  fifteen-minute throttle would otherwise hide — and once the title moved to the transcript
-  that became a full scan per prompt, measured at **402 ms** on a 198 MB conversation. The
-  throttle is no defence, because the read fed `hookDecision`'s input and so happened before
+  is the argv `-n/--name` and nothing else. Reading the title on every `UserPromptSubmit` is a
+  full transcript scan per prompt, measured at **402 ms** on a 198 MB conversation. The
+  throttle is no defence, because the read feeds `hookDecision`'s input and so happens before
   the decision to ignore the prompt — the registration path runs on the throttled ignore too,
-  which is most prompts. What killed it is that it bought nothing:
+  which is most prompts. And it buys nothing:
   `resolveName` re-reads the transcript at restore time and that value is what both the
   resumed `--name` and `hair --list` use, so a name in the registry is overwritten at the only
   moment it is read. That leaves `record.name` one job — naming a conversation whose
   transcript is **not there** to be read, which is one deleted since the registration or one
-  `findProjectDir` cannot find. **Do not reintroduce the read in any form,
-  including a version skipped on the throttled path, and do not bring rename-detection back:
-  there is nothing to detect, because the registry's name is never what a restored tab is
+  `findProjectDir` cannot find. **Do not add the read in any form, including a version
+  skipped on the throttled path, and do not add `/rename` detection to the hook: there is
+  nothing to detect, because the registry's name is never what a restored tab is
   titled from.** `hook.test.ts` asserts that a `UserPromptSubmit` reads `sessions.jsonl` and
   nothing else, through `FakeFs`'s `reads` — an assertion on reads rather than on timing,
   because the cost of this mistake is invisible to every other kind of test.
@@ -199,10 +186,10 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
 - **An empty `custom-title` is "no custom title", not a record to skip.** Claude Code takes
   the **last** `custom-title` line and reads `""` as the conversation having no chosen name —
   it deletes `custom-title.json` when it sees one — so a title cleared after a rename has to
-  let the `ai-title` through, which is what Claude Code itself would then show. The bug this
-  replaced was `parseTitleRecord` dropping an empty record, which left the scan holding the
-  last *non-empty* `custom-title`: a cleared conversation came back under its pre-clear name
-  and shadowed the generated name Claude Code was displaying. So the empty record is kept
+  let the `ai-title` through, which is what Claude Code itself would then show. Dropping an
+  empty record in `parseTitleRecord` would leave the scan holding the last *non-empty*
+  `custom-title`, bringing a cleared conversation back under its pre-clear name over the
+  generated name Claude Code displays. So the empty record is kept
   (`titleRecord` guards the *field*, not the value) and `pickTitle` is where the difference is
   read. Reachable in principle rather than observed: there is no `"customTitle":""` in any of
   the 946 transcripts here, measured. The asymmetry is what decides it — a cleared title read
@@ -214,8 +201,8 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
   conversation was renamed — so the comparison that matters is the **last** of each type, the
   same way `pickTitle` reads them. The 2.1.304 binary's own selector is
   `terminalTitle: sessionTitle ?? aiSessionTitle ?? agentTitle ?? haikuTitle`, which puts the
-  agent name ahead of both of ours. So it looked like a divergence worth closing. It is not,
-  measured over the 946 real transcripts here:
+  agent name ahead of both of ours. That is not a divergence worth closing, measured over the
+  946 real transcripts here:
 
   | over the 946 | transcripts |
   |---|---|
@@ -235,36 +222,31 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
   carries, which is Claude Code's own statement of where it filed the conversation. With no
   slug recorded, or a recorded one that holds no such file, `findProjectDir` scans the
   directories under `projects` for `<session-id>.jsonl`. Session ids are unique, so that is
-  exact; a slug derived from `cwd` was a guess, and the measurement is why there is no longer
-  one. Against the five open records in one live registry, the cwd-derived slug named the
-  directory the transcript is actually in for **two**: `058d3464…` had registered under
+  exact; a slug derived from `cwd` is a guess. Against the five open records in one live
+  registry, the cwd-derived slug named the directory the transcript is actually in for
+  **two**: `058d3464…` had registered under
   `…/apps/dtsse/.worktrees/dtsse-agent-hub-chatwidth`, `80d1d2d8…` under
   `…/pcs-api/.claude/worktrees/enf-film` and `9b511157…` under this repo's own worktree, while
   all three transcripts are filed under `-home-linus-Work-solirius-hmcts` — the directory each
-  session was started from. None of the five carries a `slug` either, because no record
-  written before it was recorded does, so the scan is the path the existing registry actually
-  takes. The scan costs 64 `stat` calls on that machine and only runs when the fast path
-  missed.
+  session was started from. None of the five carries a `slug` either, so the scan is the path
+  an existing registry actually takes. The scan costs 64 `stat` calls on that machine and
+  only runs when the fast path missed.
   The **slug** is recorded and not the whole path, because `~/.claude` is bind-mounted into a
   container session at a *different* absolute path (`$HOME/.claude` on the host,
   `/home/hmcts/.claude` inside, per `DEFAULT_HOME_BINDS`), so a path written by a hook running
   inside does not resolve for the `hair` reading it on the host. The slug carries no namespace
   and the `~/.claude` root is recomposed by whoever reads it, the same way `registryPath` and
   `claimPath` do. This is the path form of "a pid is never read across a PID namespace".
-- **The transcript is the only source. There is no `custom-title.json` fallback, and the
-  measurement that argued for one was an artefact of the probe that took it.** Claude Code
+- **The transcript is the only source. There is no `custom-title.json` fallback.** Claude Code
   does write that file — 62 of the 946 real conversations here have one — but never without
   the matching `custom-title` record in the transcript beside it, so as a source it is
-  strictly redundant. What kept it in the code was the claim that "exactly one conversation of
-  the 1171 has the file and no `custom-title` record". That one conversation was
-  `608ade44-dff5-41e8-85ca-0fa845037a8b` in `~/.claude/projects/-tmp-titleprobe/`: a
-  throwaway session an agent created while measuring this, whose first prompt is
-  `say only: hi` and whose title `ZZRESUMETITLE` the same probe planted. A measurement
-  contaminating its own subject. Excluding every `-tmp-*` directory, the count is **zero**.
-  So `readSessionTitle` reads the transcript and nothing else, and `customTitlePath` /
-  `parseCustomTitle` are gone. **Re-adding a second source needs a real conversation the
-  transcript cannot name** — one an engineer actually worked in, not one a probe made — and
-  the synthetic case above is not evidence for it.
+  strictly redundant. Excluding every `-tmp-*` directory, the count with the file and no
+  record is **zero**; the one such conversation inside them,
+  `608ade44-dff5-41e8-85ca-0fa845037a8b` in `~/.claude/projects/-tmp-titleprobe/`, is a
+  throwaway probe session whose title `ZZRESUMETITLE` the probe planted. So
+  `readSessionTitle` reads the transcript and nothing else. **Adding a second source needs a
+  real conversation the transcript cannot name** — one an engineer actually worked in, not
+  one a probe made.
   Worth knowing while weighing that: `claude -n X` writes the `custom-title` *record* and no
   `custom-title.json` at all (measured, `-p` run), so the file is not even where a named
   session's title lands.
@@ -280,26 +262,23 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
   substring test before `JSON.parse` for the same reason; a title record is a handful of lines
   in tens of thousands.
 - **The registry's `name` is never the answer while a better one exists, and its only real
-  case is a transcript that is gone.** The hook writes only the argv name, and every line
-  written before this feature existed has none at all, so the registry cannot be where a tab
-  title comes from: `resolveName` reads the transcript and the record's value is the fallback.
-  **The fallback is not the `-n/--name` case** — this file used to say it was "the whole of"
-  it, and that was false. Measured: `claude -n X` appends
+  case is a transcript that is gone.** The hook writes only the argv name, which most sessions
+  do not have, so the registry cannot be where a tab title comes from: `resolveName` reads the
+  transcript and the record's value is the fallback.
+  **The fallback is not the `-n/--name` case.** Measured: `claude -n X` appends
   `{"type":"custom-title","customTitle":"X"}` as **line 1** of the transcript, before the
   first prompt, so `readSessionTitle` answers for a `-n` session like any other. What is left
   for `record.name` is a transcript that is not there to be read — deleted since the
-  registration, or filed where `findProjectDir` cannot find it. That is still worth having,
-  and it is still what makes a stale registry name harmless and the hook's title read
-  deletable; it is just a narrower case than the old wording claimed.
+  registration, or filed where `findProjectDir` cannot find it. That is worth having, and it
+  is what makes a stale registry name harmless.
 - **`hair` resolves the *claimed* record's name, and `hair --list` resolves every
-  candidate's.** Resolving the whole list before the claim was the mistake: each candidate
-  costs a full streamed transcript pass — 402 ms on the 198 MB conversation here, and the
-  three largest are 199 MB, 138 MB and 68 MB — and the bare form uses exactly one name, the
-  claimed record's. After a reboot that made every restoring terminal pay a scan per waiting
-  conversation, all of it before the claim was even taken, to throw all but one answer away.
-  Moving it after the claim is safe because **the candidate order does not depend on a name**:
-  it is `rank(cwd)`, then `at`, then `sessionId`. Do not put a name into that ordering, or
-  this becomes a scan of every candidate again by necessity.
+  candidate's.** Each candidate costs a full streamed transcript pass — 402 ms on the 198 MB
+  conversation here, and the three largest are 199 MB, 138 MB and 68 MB — and the bare form
+  uses exactly one name, the claimed record's. Resolving the whole list before the claim would
+  make every restoring terminal after a reboot pay a scan per waiting conversation to throw
+  all but one answer away. Resolving after the claim is safe because **the candidate order
+  does not depend on a name**: it is `rank(cwd)`, then `at`, then `sessionId`. Do not put a
+  name into that ordering, or this becomes a scan of every candidate by necessity.
   The two paths therefore read the same transcript the same way rather than sharing one array.
   That is what keeps them in step, and they have to be: a conversation that lists under its
   old name and comes back under the new one is a disagreement nobody would think to check, so
@@ -405,47 +384,46 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
   to be reverted.
 - **`hai` never adds `--dangerously-skip-permissions`.** Whether to skip permission prompts
   is the engineer's call, made by typing the flag, which the argv forwarding passes straight
-  through. `seedClaudeJson` therefore no longer writes `bypassPermissionsModeAccepted`: the
+  through. `seedClaudeJson` therefore does not write `bypassPermissionsModeAccepted`: the
   sbx kit seeds it because `~/.claude` there is an empty volume, but hai bind-mounts the
-  host's real `~/.claude.json`, so seeding it recorded an acceptance of risk in the
-  engineer's own config for a prompt hai can no longer raise. Someone who types the flag on
+  host's real `~/.claude.json`, so seeding it would record an acceptance of risk in the
+  engineer's own config for a prompt hai never raises. Someone who types the flag on
   a host that has never accepted sees that screen once, which is the point.
 - **A route is one credential from one source.** `agent-hub` is the Claude token the hub
   holds (its `claude` kind), `byol` is a Claude OAuth credential on this machine,
   `ai-gateway` is the APIM key, from the private Key Vault or from
   `HAI_GATEWAY_APIM_KEY` where that vault cannot be reached, `bedrock` is
   `AWS_BEARER_TOKEN_BEDROCK` from the environment or a paste. That is what makes "an
-  explicit route is obeyed" expressible at all: `bedrock` used to mean an environment key
-  *or* a hub-stored key *or* a prompt, three sources behind one name, so there was no
-  single thing to go and get and no way to say "no fallbacks".
+  explicit route is obeyed" expressible at all: with several sources behind one name there
+  is no single thing to go and get, and no way to say "no fallbacks".
 - **An explicit `HAI_ROUTE` is obeyed: no refusals, no fallbacks, no second source.**
   `explicit()` is a straight mapping, and every way of not having that one credential is a
-  failure naming it. Refusing a typed route taught people to go round the refusal; the
-  group check below guards the *accident*, which is the unset path. The refusal was also
+  failure naming it. Refusing a typed route teaches people to go round the refusal; the
+  group check below guards the *accident*, which is the unset path. A refusal would also be
   wrong on its own terms: agent-hub assigns a virtual agent's route from whether its owner
-  holds the `AIGateway.User` **app role**, while the refusal tested membership of an Entra
-  **group**, and those two populations need not be the same — so an owner in the group whose
-  pod is assigned the personal route had that pod's explicit request refused before anything
-  looked at the `CLAUDE_CODE_OAUTH_TOKEN` the pod had already exported. A consequence worth
+  holds the `AIGateway.User` **app role**, not membership of the Entra **group**, and those
+  two populations need not be the same — so an owner in the group whose pod is assigned the
+  personal route would have that pod's explicit request refused before anything looked at
+  the `CLAUDE_CODE_OAUTH_TOKEN` the pod had already exported. A consequence worth
   knowing: a named route resolves no membership at all, so `src/auth/signals.ts` makes no
   `az account show` and no `az rest checkMemberGroups`, and `src/auth/auth-cache.ts` is
   the default path's alone.
 - **Not setting a variable is not the same as removing it.** The handover is
   `{ ...process.env, ...buildClaudeEnv(...) }`, so a `CLAUDE_CODE_USE_BEDROCK=1` in a shell
-  profile survived into a `byol` session: hai printed "paid for by your own Claude licence"
-  and ran on Bedrock. `conflictingEnv(route)` is the pure per-route set of the *other*
+  profile would survive into a `byol` session: hai would print "paid for by your own Claude
+  licence" and run on Bedrock. `conflictingEnv(route)` is the pure per-route set of the *other*
   payers' credential and transport variables, dropped from the in-place handover and passed
   to the container as `HAI_UNSET_ENV` for the entrypoint to `unset` — before it exports the
   delivered credentials, so one of ours is never unset. It must stay disjoint from what
   `buildClaudeEnv` sets for the same route, which is asserted per route and per name — an
   `arrayContaining` over the whole list only fails when *every* name is present, so it
-  passed with `AWS_REGION` smuggled into one route. cft-workspace's virtual-agent entrypoint
+  would pass with `AWS_REGION` smuggled into one route. cft-workspace's virtual-agent entrypoint
   does the same thing with two `unset` lines, and is the precedent.
 - **A base URL is a routing fact, not a tuning knob.** Clearing `ANTHROPIC_CUSTOM_HEADERS`
-  and not `ANTHROPIC_BEDROCK_BASE_URL` turned a misroute into an unexplained 401: the header
+  and not `ANTHROPIC_BEDROCK_BASE_URL` turns a misroute into an unexplained 401: the header
   carries the APIM key but the URL is what routes, so a shell holding cft-workspace's old
-  gateway quadruple, running an explicit `bedrock`, lost the key and the skip-auth flag and
-  kept a URL pointing at the gateway — every request reached APIM unauthenticated. Each
+  gateway quadruple, running an explicit `bedrock`, would lose the key and the skip-auth flag
+  and keep a URL pointing at the gateway — every request reaching APIM unauthenticated. Each
   route therefore clears the base URLs it does not set itself, and `ANTHROPIC_BASE_URL` on
   all four, where an inherited value would send a personal OAuth token to a third-party
   endpoint. `ai-gateway` keeps an engineer's `ANTHROPIC_BEDROCK_BASE_URL` because it *sets*
@@ -465,43 +443,40 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
   `logger.say`, not `logger.verbose`, and is printed before any credential is fetched so it
   is also the answer to "why am I being asked to paste a key". Two routes bill a personal
   Claude licence (`agent-hub`, `byol`) and two bill HMCTS (`ai-gateway`, `bedrock`), and the
-  name does not say which. Now that a typed route is obeyed, this is the only thing left
-  that catches an `HAI_ROUTE` set deliberately on day one and forgotten in a shell profile
+  name does not say which. Since a typed route is obeyed, this is the only thing that
+  catches an `HAI_ROUTE` set deliberately on day one and forgotten in a shell profile
   by day ten.
 - **A member of the Bedrock developer group never reaches a personal licence by accident.**
   HMCTS funds their capacity, so billing a personal claude.ai subscription is always the
   wrong outcome, and it is invisible while it happens — one session put roughly 3.3M tokens
   across 20 subagents on an engineer's own account while everybody believed it was on
   Bedrock. The group check therefore sits in `resolveRoute`'s unset path **ahead of** every
-  personal-credential branch and is unconditional there: `hasHostClaudeCredential` used to
-  be tested first, and since every Claude Code user has a live claude.ai login that made the
-  membership branch unreachable, so a missing Bedrock key quietly became "use their own
-  subscription". **Do not move that ordering**, and note that **nothing on the unset path is
-  ahead of it any more**: the group check is the first branch, ahead of a Bedrock key in the
-  environment as well. Membership that could not be confirmed refuses the personal branch too, naming
-  `HAI_ROUTE=byol` as the way to say that is genuinely what you want — because an unanswered
-  question is not an answer of "not a member".
+  personal-credential branch and is unconditional there: every Claude Code user has a live
+  claude.ai login, so testing `hasHostClaudeCredential` first would make the membership
+  branch unreachable. **Do not move that ordering**: the group check is the first branch on
+  the unset path, ahead of a Bedrock key in the environment as well. Membership that could
+  not be confirmed refuses the personal branch too, naming `HAI_ROUTE=byol` as the way to say
+  that is genuinely what you want — because an unanswered question is not an answer of "not
+  a member".
 - **The gateway is ahead of Bedrock, so a key lying around decides nothing for a member.**
   Both routes bill HMCTS, so this is not about who pays; it is about which of the two HMCTS
   manages. The gateway is where the token quota, the model allow-list, content safety and
   per-service cost attribution live, and a direct Bedrock call with a personal API key is
-  outside all four. An `AWS_BEARER_TOKEN_BEDROCK` left in a shell profile used to win silently
-  and take a member off the managed path with nothing said. A member who wants Bedrock
+  outside all four. Otherwise an `AWS_BEARER_TOKEN_BEDROCK` left in a shell profile would win
+  silently and take a member off the managed path with nothing said. A member who wants Bedrock
   directly says `HAI_ROUTE=bedrock`, which is obeyed like any other named route.
-- **`needsMembership` is what keeps that signal resolved, and it no longer coincides with
+- **`needsMembership` is what keeps that signal resolved, and it is wider than
   `needsProbes`.** The block is only as good as `isBedrockGroupMember`, so
-  `src/auth/signals.ts` resolves it for the whole unset path and no longer lets an exported
+  `src/auth/signals.ts` resolves it for the whole unset path and does not let an exported
   `CLAUDE_CODE_OAUTH_TOKEN`, a host claude.ai login *or a Bedrock key in the environment*
-  short-circuit past it — the last of those is what changed when the gateway moved ahead of
-  Bedrock, and it is why the two predicates came apart. `needsProbes` still returns false
+  short-circuit past it. `needsProbes` returns false
   for an env key, because what *it* gates cannot change the answer once a key is in hand.
   The only things that skip the membership check are an explicit `HAI_ROUTE` and a cached
   answer.
 - **`gatherSignals` asks the group before it asks anything else, and returns the moment the
   answer is yes.** The probe order has to follow the precedence table or it decides the
-  route by itself: asking the hub first and returning on a stored key, which is what this
-  used to do, put a member on Bedrock and never looked at the group at all. Returning early
-  on anything but a confirmed non-member is the other half — nothing below can change the answer.
+  route by itself. Returning early on anything but a confirmed non-member is the other half
+  — nothing below can change the answer.
 - **An unreachable AI Gateway never ends at a personal subscription.** Whether the
   gateway works is I/O, not a decision — the APIM key is in a private Key Vault behind the
   F5 VPN — so `resolveRoute` returns `ai-gateway` and `resolveAuth` settles it, failing
@@ -510,10 +485,10 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
   it reports as its own source.** `sps-ai-kv-stg` has `publicNetworkAccess: Disabled` and its
   only private endpoint is in `sps-ai-vnet-stg`, so a laptop on the F5 VPN can read it and a
   pod in a CFT AKS cluster can never read it however it is authenticated —
-  `HAI_GATEWAY_APIM_SECRET` renames the secret and still ends at that read, so there was no
-  way to hand hai a key it already held. `prepareGateway` consults
-  `gatewayApimKeyFromEnv` first and skips the read *and* the VPN probe, the probe existing
-  only to explain a vault failure there is no longer one of. The override lives there and not
+  `HAI_GATEWAY_APIM_SECRET` renames the secret and still ends at that read. `prepareGateway`
+  consults `gatewayApimKeyFromEnv` first and skips the read *and* the VPN probe: the probe
+  only explains a vault failure, and with the key in the environment there is no vault read
+  to fail. The override lives there and not
   in `readGatewayApimKey`, which is named for the vault call and keeps making it.
   `credentialSource` is **`gateway-apim-env`**, not `gateway-apim`: the launch line is what
   an engineer reads to work out whether `az` and the VPN were involved at all, and the whole
@@ -522,8 +497,8 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
   going there anyway, so membership and an explicit `HAI_ROUTE` are still the only two things
   that choose it. The name is in `isSecretEnvKey` and in `redact`'s keyed pattern for the
   same reason `ANTHROPIC_AUTH_TOKEN` is, and deliberately **not** in `PASSTHROUGH`, where it
-  would reach `docker run --env`; a container session gets the key the way it always did,
-  inside `ANTHROPIC_CUSTOM_HEADERS` on the exec stdin. Blank is "not set" rather than an
+  would reach `docker run --env`; a container session gets the key inside
+  `ANTHROPIC_CUSTOM_HEADERS` on the exec stdin. Blank is "not set" rather than an
   empty key, because the value arrives through a Helm template or a container env file where
   an absent source renders as `""`, and an empty subscription key is a 401 from APIM with
   nothing saying hai had been handed nothing.
@@ -537,18 +512,18 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
   different licence and a different bill. Widening the hub is a change to the hub.
 - **Only a group answer that was freshly fetched is stamped in the cache.** `gatherSignals`
   reports `askedGraph` so `resolveAuth` can tell a Graph answer from a cache hit, and a hit
-  writes nothing at all. Persisting whenever `isBedrockGroupMember` was non-null re-stamped
-  `at` with the clock on every run, and since `isFresh` is `now - at < 12h` the TTL slid
-  forward each launch: anyone running hai at least daily was checked against Graph once,
-  ever. A cached `{isMember: false}` then went on routing them to a personal licence after they
-  were added to the group — the exact invisible personal spend the group check exists to
-  stop. Do not "fix" that by preserving the old `at` on a write: a hit has nothing to write.
-  The 12h TTL is deliberate now that it expires, and is discussed next to `CACHE_TTL_MS`.
+  writes nothing at all. Persisting whenever `isBedrockGroupMember` is non-null would
+  re-stamp `at` with the clock on every run, and since `isFresh` is `now - at < 12h` the TTL
+  would slide forward each launch: anyone running hai at least daily would be checked against
+  Graph once, ever, and a cached `{isMember: false}` would go on routing them to a personal
+  licence after they were added to the group — the exact invisible personal spend the group
+  check exists to stop. Do not "fix" that by preserving the old `at` on a write: a hit has
+  nothing to write. The 12h TTL is deliberate, and is discussed next to `CACHE_TTL_MS`.
 - **`sbx-hai`'s route note is decide-only.** `resolveAuth({ decideOnly: true })` stops at
   the decision — no VPN probe, no `az keyvault secret show` against the private
   `sps-ai-kv-stg`, no `gateway-token.sh` and nothing through `logger.say`. The note is one
-  `logger.verbose` line, so settling the gateway for it put real I/O behind a line most runs
-  never print. `sbx-hai` forwards no credential and no route environment, sbx injecting
+  `logger.verbose` line, so settling the gateway for it would put real I/O behind a line most
+  runs never print. `sbx-hai` forwards no credential and no route environment, sbx injecting
   its own. The unset path's refusals
   still apply, so a note hai arrived at by itself can never name a route that would bill a
   member's own subscription. Container mode and the in-place path keep the full behaviour.
@@ -565,14 +540,13 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
   that combination fails rather than falling back to the login on this machine.
 - **The offline cache lookup goes through `readAzAccount`, and that is the whole point.**
   The key has to be byte-identical online and offline or an answer written online is never
-  found offline, which is the bug class that made the old route cache dead. Parsing
-  `azureProfile.json` here instead would be a second way of deriving it and a second thing
-  to keep in step; one function, one key.
+  found offline. Parsing `azureProfile.json` here instead would be a second way of deriving
+  it and a second thing to keep in step; one function, one key.
 - **No credential is ever written to disk.** The caches in `src/auth/auth-cache.ts` and
   `src/container/acr.ts` hold decisions, not secrets.
 - **The update check is never cached.** It is one GET behind a 1.5s timeout that already
-  fails silently, so a cache saved about 100ms and bought an `update.json` whose TTL kept a
-  published release invisible for hours. A leftover `update.json` is simply never read.
+  fails silently, so a cache would save about 100ms and buy a TTL that keeps a published
+  release invisible for hours. A leftover `update.json` is never read.
 - **The in-place handover sets no `HAI_IN_CONTAINER` / `HAI_ENV_READY`.** It exec's
   `claude` in place, so a marker set there is inherited by every shell and tool in the
   session, and from then on every nested `hai` takes the short-circuit in `src/launch.ts`
@@ -585,17 +559,17 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
   spawns its own `claude` has to name the `apiKeyHelper` itself, and the gateway route's base
   URL and APIM header — which such a tool inherits — are a 401 without a token. The
   alternative is the consumer rebuilding `<state>/gateway-token.sh` from `XDG_STATE_HOME` or
-  `HOME`, which is the drift that put an agent-hub pod on the sandbox gateway when the hub
-  held its own copy of the gateway host and the audience. Being inherited by every shell is
-  therefore the point rather than the hazard it is for the markers above, but it means the
-  other three routes have to *clear* it: a gateway helper left in a `byol` session's
-  environment would have a consumer mint an Entra token and send it to api.anthropic.com, so
-  it is in `CONFLICTING_ENV` for every route but `ai-gateway`. Its value is a path and not a
-  credential, so it goes on the `docker exec --env` with the rest of the open half — at the
-  *container's* path, which `containerHelperPath` derives from the container's home because
-  `runtime/entrypoint.sh` installs the file under `$HOME` there and the host's state
-  directory is not mounted. One value feeds both the settings and the variable per path, so
-  the two cannot name different files.
+  `HOME` and holding its own copy of the gateway host and the audience, which drifts from
+  hai's and can send the consumer to another environment's gateway. Being
+  inherited by every shell is therefore the point rather than the hazard it is for the
+  markers above, but it means the other three routes have to *clear* it: a gateway helper
+  left in a `byol` session's environment would have a consumer mint an Entra token and send
+  it to api.anthropic.com, so it is in `CONFLICTING_ENV` for every route but `ai-gateway`.
+  Its value is a path and not a credential, so it goes on the `docker exec --env` with the
+  rest of the open half — at the *container's* path, which `containerHelperPath` derives from
+  the container's home because `runtime/entrypoint.sh` installs the file under `$HOME` there
+  and the host's state directory is not mounted. One value feeds both the settings and the
+  variable per path, so the two cannot name different files.
 - **Every log line and error goes through `redact()`.** `createLogger` applies it, and
   `main` routes every thrown error through the logger. Do not write to stderr directly.
 - **Only `src/system/runner.ts` imports `node:child_process`; only `src/system/fs.ts`
@@ -624,10 +598,10 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
   the container the first one started — `sessionName` is a hash of the repo path, so two
   terminals in one repo share it. A payer fact passed at create time is therefore the
   *first* session's for every session after it: `HAI_ROUTE=bedrock` reattaching to a `byol`
-  container got its bearer token, which does arrive per session on the exec stdin, with no
-  `CLAUDE_CODE_USE_BEDROCK` to switch it on and the first session's `HAI_UNSET_ENV` still in
-  force, so `claude` fell back to the bind-mounted `~/.claude` login — a personal session hai
-  had just announced as HMCTS's. The mirror case kept the first session's
+  container would get its bearer token, which does arrive per session on the exec stdin, with
+  no `CLAUDE_CODE_USE_BEDROCK` to switch it on and the first session's `HAI_UNSET_ENV` still
+  in force, so `claude` would fall back to the bind-mounted `~/.claude` login — a personal
+  session hai had just announced as HMCTS's. The mirror case would keep the first session's
   `CLAUDE_CODE_USE_BEDROCK=1`. So `ctx.env` holds only facts about the whole container (the
   markers, the secrets dir, the nested DNS, the passthrough) and `ctx.sessionEnv` holds this
   session's route. `docker exec` inherits the container's environment and these go over it.
@@ -638,7 +612,7 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
   `passthroughEnv` carries no credential-bearing name by design, so whatever
   `buildClaudeEnv` leaves out simply is not there inside. That is why `byol` returns an
   exported `CLAUDE_CODE_OAUTH_TOKEN` rather than `{}`: with `{}` a container session on
-  `byol` fell back to the bind-mounted `~/.claude` login, which is a different licence and a
+  `byol` would fall back to the bind-mounted `~/.claude` login, which is a different licence and a
   different bill — the same class of mistake as discarding the `agent-hub` token. Both names
   are in `isSecretEnvKey`, so both travel on the `docker exec` stdin and neither appears in
   `docker run` argv. In place the value is the one the process already had, so repeating it
@@ -648,8 +622,8 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
   `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` are cleared on every route, so someone
   whose only credential was one of them would otherwise meet claude's own "invalid API key"
   with nothing anywhere saying hai had taken it away. `isSecretEnvKey` is the discriminator —
-  which is why `ANTHROPIC_AUTH_TOKEN` is now in it; no route sets it, but it is a credential
-  by definition and `redact` should have been masking it too. A switch stays at
+  which is why `ANTHROPIC_AUTH_TOKEN` is in it; no route sets it, but it is a credential by
+  definition and `redact` masks it too. A switch stays at
   `logger.verbose`: it is worth recording, but nothing of theirs went missing.
 - **The container never gets host networking.** A second `dockerd` sharing the host's
   network namespace reconfigures the host's `docker0` and flushes the host daemon's
@@ -737,7 +711,7 @@ table-driven test, the probing goes next to it.
 
 `hai` on a bare host is container mode: it runs `claude` inside the CFT workspace image
 with a nested Docker engine. `isInContainer` decides which way it goes — already inside a
-container or a sandbox keeps the old behaviour, which is to resolve the route, set the
+container or a sandbox takes the in-place path, which is to resolve the route, set the
 environment and hand over to `claude` in place.
 
 The shape of a launch, all in `src/container/run.ts`:
@@ -789,8 +763,8 @@ Other things that are the way they are for a reason:
   *and* the image is not on the machine — offline, with the VPN down or with an expired `az`
   session the launch carries on with the cached copy. Keep that degradation.
 - **Ports are published dynamically, as the session turns out to listen on them.** A
-  hand-maintained list of 20 CFT ports was wrong for every repo that is not CCD or PCS and
-  clashed with whatever else the engineer was running, so `docker run` publishes nothing at
+  hand-maintained list of CFT ports is wrong for every repo that is not CCD or PCS and
+  clashes with whatever else the engineer is running, so `docker run` publishes nothing at
   all. Instead `src/container/port-watch.ts` polls
   `docker exec <session> cat /proc/net/tcp /proc/net/tcp6` every two seconds and publishes
   each new listener it finds. That is also what catches the case that matters: when cftlib
@@ -803,19 +777,19 @@ Other things that are the way they are for a reason:
   mapping to a running container — `docker update` has no `--publish` and mappings are
   create-time only — so each port gets its own `alpine/socat` container on the same
   user-defined network, created with a real `-p` and forwarding to the session by name. A
-  host process forwarding to the session's own address was the alternative: it works on
-  Linux and is dead on Docker Desktop, where the bridge lives inside the VM and 172.17.x.x
+  host process forwarding to the session's own address works on Linux and is dead on Docker
+  Desktop, where the bridge lives inside the VM and 172.17.x.x
   is unreachable from the Mac. Every sidecar carries `hai.session=<name>`, and that label is
   swept with `docker rm -f` both before a container is created and after its session ends,
   because a sidecar outliving its session holds a host port whose server is already gone.
-  **The pre-create sweep stays** now that nothing is probed before the container starts: a
+  **The pre-create sweep stays** although nothing is probed before the container starts: a
   SIGKILLed session's sidecar still holds its host port with nothing behind it, and the
   watcher would read its own corpse as a clash and skip the port for the session. A session
   that is still up owns its sidecars, so a reattach sweeps nothing.
 - **Published ports bind `127.0.0.1`, not `0.0.0.0`.** Docker's iptables chain bypasses the
   host firewall, so a published port answers anyone on the network whatever ufw says — and
   `describePortEntry` reports `http://localhost:<port>`, which says loopback. Publishing is
-  automatic now, so the binding matches the URL; `HAI_PORTS_PUBLIC=1` restores `0.0.0.0` for a
+  automatic, so the binding matches the URL; `HAI_PORTS_PUBLIC=1` restores `0.0.0.0` for a
   session that has to be reached from another device. cftlib publishes 3000, 6432, 5062 and
   9200 on `0.0.0.0` itself, so for those this changes nothing; what it covers is the ports
   nobody chose.
@@ -885,15 +859,15 @@ The shape, all in `src/hair-launch.ts`:
    fresh and leaving one stranded.
    **Newest-first, not FIFO**, because the pile holds more than the terminals do. Only a
    `CONVERSATION_OVER_REASONS` reason closes a record, so a week's signal-killed sessions
-   and `/resume` departures are all in there. FIFO handed each terminal the stalest thing
-   in it: an engineer with ten tabs got ten conversations from days ago while the ten they
-   actually had open sat unclaimed behind them, which is the opposite of giving back what
+   and `/resume` departures are all in there. FIFO would hand each terminal the stalest thing
+   in it: an engineer with ten tabs would get ten conversations from days ago while the ten
+   they actually had open sat unclaimed behind them, which is the opposite of giving back what
    was open. Newest-first hands back what was live most recently, overwhelmingly what was
    on screen, and lets the stale ones sink to the bottom where `RESTORE_WINDOW_MS`
    eventually retires them. It reads *last activity* only because `at` is refreshed as a
    conversation is driven — see the `ACTIVITY_REFRESH_MS` rule above; without that this is
    newest-*registration*-first, which ranks a one-question session over a day's work. The
-   session-id tiebreak stays, so two terminals still walk the candidates in the same order.
+   session-id tiebreak means two terminals walk the candidates in the same order.
    `hair --list` prints the same array `claimFirst` walks, and it has to: the top line is
    the conversation the bare form is about to take, which is what makes the list worth
    eyeballing.
@@ -927,8 +901,8 @@ The shape, all in `src/hair-launch.ts`:
    hook discovery resolve as they did originally. Measured over one engineer's nine open
    records, seven were recorded against a directory the conversation was not opened in and all
    seven had opened in the trusted workspace root. It also puts container mode's transcript
-   lock back on the right key: `lockPath` is `projectSlug(workdir)`, so locking from the
-   worktree guarded a slug the conversation does not write under, while locking from the
+   lock on the right key: `lockPath` is `projectSlug(workdir)`, so locking from the
+   worktree would guard a slug the conversation does not write under, while locking from the
    opening directory guards the transcripts a host session and a container session would
    actually both write.
 
@@ -938,12 +912,12 @@ The shape, all in `src/hair-launch.ts`:
    because a `chdir` onto a file throws ENOTDIR — and lands on the already-verified
    `record.cwd` otherwise. That `stat` is still only a point-in-time answer, so `moveTo`
    *attempts* the chosen directory and on a throw says so and takes `record.cwd`. A throw from
-   `record.cwd` itself propagates: that is the race `probeDirs` has always had, swallowing it
+   `record.cwd` itself propagates: that is the race `probeDirs` already has, swallowing it
    would resume the conversation in whatever directory the terminal is in, and that rebinding
    is the thing this exists to stop.
 
    `record.cwd` keeps its meaning of **last seen**: `probeDirs`, `livenessPlan` and `rank` all
-   read it that way, and `rank` deliberately still ranks on it, because ranking happens before
+   read it that way, and `rank` deliberately ranks on it, because ranking happens before
    any transcript is read and ranking on the opening directory would put a streamed pass back
    behind every candidate. That makes the cwd preference weak in practice — most records' last
    seen cwd matches no terminal — so the ordering falls through to recency, which is fine.
@@ -954,15 +928,15 @@ The shape, all in `src/hair-launch.ts`:
 
 The other half is the hook. `sessionRegistryHooks` puts `UserPromptSubmit` and
 `SessionEnd` entries into the settings hai already passes as its single `--settings`, so
-nobody hand-wires `.claude/settings.json`. Two things that had to be dealt with for that:
+nobody hand-wires `.claude/settings.json`. Two things follow from that:
 
-- `buildSettings` returned `Record<string, string>` and now returns `Settings`, the hooks
-  being a nested object.
-- `mergeSettings` was a shallow spread, so a user-supplied `--settings` carrying any
-  `hooks` key of its own would have silently discarded the registration hooks — and the
-  only symptom would have been `hair` finding nothing to restore weeks later. `hooks` now
-  merges per event with ours first, and a shape that cannot be merged warns the way
-  `API_KEY_HELPER_OVERRIDE_WARNING` does.
+- `buildSettings` returns `Settings`, not `Record<string, string>`, the hooks being a nested
+  object.
+- `mergeSettings` merges `hooks` per event with ours first, and a shape that cannot be
+  merged warns the way `API_KEY_HELPER_OVERRIDE_WARNING` does. A shallow spread would let a
+  user-supplied `--settings` carrying any `hooks` key of its own silently discard the
+  registration hooks, and the only symptom would be `hair` finding nothing to restore weeks
+  later.
 
 `hair` is resolved differently per path, and this is where the feature stops short.
 In-place, the command is this interpreter and `binPath("hair")` — absolute, realpath'd, no
@@ -1001,8 +975,8 @@ records in the rules above.
 #### The terminal tab title: `claude` writes it, hai does not
 
 **The harness matters more than the command.** A capture in which the TUI never mounts shows
-no title at startup, and two claims were wrong because of exactly that. `TERM` and
-`TERM_PROGRAM` have to be set and the session has to be under a pty:
+no title at startup. `TERM` and `TERM_PROGRAM` have to be set and the session has to be
+under a pty:
 
 ```bash
 TERM=xterm-256color TERM_PROGRAM=vscode script -qc 'claude -n ZZNAMEPROBE' /dev/null > cap.bin
@@ -1022,10 +996,7 @@ it reasserts it as the status changes. The selector in the binary is
 `terminalTitle: sessionTitle ?? aiSessionTitle ?? agentTitle ?? haikuTitle ?? "Claude Code"`,
 with a `terminalTitleFromRename` setting beside it.
 
-Two earlier entries in this file asserted the opposite — that Claude Code writes no title at
-startup, and that `-n` persists and sets nothing — and both were artefacts of a capture
-taken without those variables, where the only `OSC 0` was the clear-on-exit at the end of
-the stream. An `OSC 0` written from outside before the handover is overwritten within about
+An `OSC 0` written from outside before the handover is overwritten within about
 a second. Nothing in hai writes a terminal title; passing `--name` is the whole mechanism.
 
 `reason` is a closed enum of five, and this is the table the whole deregistration rule
@@ -1033,9 +1004,7 @@ turns on. The enum is both what the hooks reference documents
 (<https://code.claude.com/docs/en/hooks>) and what the installed 2.1.304 binary validates
 against — `grep -a -o '\["clear"[^]]*\]'` over
 `.../@anthropic-ai/claude-code/bin/claude.exe` returns
-`["clear","resume","logout","prompt_input_exit","other"]`, and a sixth,
-`bypass_permissions_disabled`, was removed in 2.1.234 and is no longer in the binary at
-all.
+`["clear","resume","logout","prompt_input_exit","other"]`.
 
 | `reason` | fired by | hai's verdict | why |
 |---|---|---|---|
@@ -1045,14 +1014,14 @@ all.
 | `resume` | an interactive `/resume` switch | keep the entry | leaves a conversation rather than ending it |
 | `other` | **`kill -TERM`**, a finished `-p` run, `claude stop` on a `--bg` one | keep the entry | a kill is the case the registry is *for*; the other two never register |
 
-The row that matters is `other`, and it is the one measured late. Run
+The row that matters is `other`. Run
 `claude --settings <a settings with a SessionEnd hook> -p 'write 400 words about rivers' &`
 and then `kill -TERM <pid>`: the hook fires, with `"reason":"other"`. A kill is therefore
 indistinguishable from a clean `-p` finish, so nothing in a `SessionEnd` payload says "this
 session was terminated" — only the absence of a *done-with-this-id* reason does. Do not
-restore "every reason deregisters" from first principles; that is the bug, and what it cost
-was every ending that goes through a signal, which is every ordinary one: a SIGKILL or a
-power cut left an entry open, and nothing else did.
+make every reason deregister from first principles: a `SIGTERM` fires `SessionEnd` with
+`other` too, so that closes the entry of every ordinary ending, and only a SIGKILL or a
+power cut, which fire no `SessionEnd` at all, would leave one open.
 
 Subagents do not register anything of their own: a subagent's work shows up as a
 `UserPromptSubmit` on the **parent** session's id, with the prompt opening
@@ -1089,8 +1058,7 @@ behaviour:
   index. Every path that cannot tell reports not stale.
 - **The claude argv is not built here.** The kit's own launch script execs `hai` with the
   arguments after the `--`, so the route is resolved inside the sandbox and `sbx-hai`
-  forwards those arguments and nothing else. (`.claude/run.sh` is being deleted from
-  cft-workspace; the kit launcher no longer branches on which credential sbx bound.)
+  forwards those arguments and nothing else.
 - **No credential and no route environment is forwarded.** sbx injects the Anthropic
   credential from its own secret store (`scripts/sbx-setup` puts it there), and the kit owns
   the Bedrock environment, so forwarding hai's would fight it. The route is still resolved
