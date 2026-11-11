@@ -43,8 +43,8 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
   `<prefix>/bin/hair`, with no `.js` and no directory in common with `dist/bin`. Node does
   not realpath it (measured on node 24). Read from `argv[1]`, the `.js` suffix test in
   `hairCommand` would send even the in-place hook to `hair` on `PATH`, and `haiScriptPath`
-  would have the self-update re-enter `hair`. `binPath()` resolves a
-  sibling bin from `import.meta.url`, which *is* realpath'd, the same way `packageRoot()`
+  would have the self-update re-enter `hair`. `binPath()` resolves a sibling bin from
+  `import.meta.url`, which *is* realpath'd, the same way `packageRoot()`
   does — and "am I hair?" is a fact the `hair` entrypoint states rather than one anything
   sniffs out of a filename.
 - **The session registry lives in `~/.claude/sessions.jsonl`, not in hai's state dir.**
@@ -116,8 +116,8 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
   list. `/logout` *is* deliberate, but it is deliberate about **credentials**: it ends the
   session and leaves the conversation completely resumable, so an engineer who logs out and
   straight back in would find it tombstoned with nothing saying it had ever existed — the
-  exact asymmetric loss the allow-list exists to prevent. `resume` is out for the same reason: an
-  interactive `/resume` switch is deliberate but does not *end* the conversation it leaves,
+  exact asymmetric loss the allow-list exists to prevent. `resume` is out for the same
+  reason: an interactive `/resume` switch is deliberate but does not *end* the conversation it leaves,
   and that conversation is still worth handing back. Do not add either on the grounds
   that the engineer meant to do it; they did, and it is not the question.
 - **hai writes no terminal title, and must not start. `--name` *is* the title mechanism.**
@@ -394,7 +394,8 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
   `ai-gateway` is the APIM key, from the private Key Vault or from
   `HAI_GATEWAY_APIM_KEY` where that vault cannot be reached, `bedrock` is
   `AWS_BEARER_TOKEN_BEDROCK` from the environment or a paste. That is what makes "an
-  explicit route is obeyed" expressible at all.
+  explicit route is obeyed" expressible at all: with several sources behind one name there
+  is no single thing to go and get, and no way to say "no fallbacks".
 - **An explicit `HAI_ROUTE` is obeyed: no refusals, no fallbacks, no second source.**
   `explicit()` is a straight mapping, and every way of not having that one credential is a
   failure naming it. Refusing a typed route teaches people to go round the refusal; the
@@ -416,7 +417,7 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
   delivered credentials, so one of ours is never unset. It must stay disjoint from what
   `buildClaudeEnv` sets for the same route, which is asserted per route and per name — an
   `arrayContaining` over the whole list only fails when *every* name is present, so it
-  passes with `AWS_REGION` smuggled into one route. cft-workspace's virtual-agent entrypoint
+  would pass with `AWS_REGION` smuggled into one route. cft-workspace's virtual-agent entrypoint
   does the same thing with two `unset` lines, and is the precedent.
 - **A base URL is a routing fact, not a tuning knob.** Clearing `ANTHROPIC_CUSTOM_HEADERS`
   and not `ANTHROPIC_BEDROCK_BASE_URL` turns a misroute into an unexplained 401: the header
@@ -485,8 +486,9 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
   only private endpoint is in `sps-ai-vnet-stg`, so a laptop on the F5 VPN can read it and a
   pod in a CFT AKS cluster can never read it however it is authenticated —
   `HAI_GATEWAY_APIM_SECRET` renames the secret and still ends at that read. `prepareGateway`
-  consults `gatewayApimKeyFromEnv` first and skips the read *and* the VPN probe, the probe
-  existing only to explain a vault failure. The override lives there and not
+  consults `gatewayApimKeyFromEnv` first and skips the read *and* the VPN probe: the probe
+  only explains a vault failure, and with the key in the environment there is no vault read
+  to fail. The override lives there and not
   in `readGatewayApimKey`, which is named for the vault call and keeps making it.
   `credentialSource` is **`gateway-apim-env`**, not `gateway-apim`: the launch line is what
   an engineer reads to work out whether `az` and the VPN were involved at all, and the whole
@@ -557,7 +559,8 @@ yarn build           # tsc -p tsconfig.build.json -> dist/
   spawns its own `claude` has to name the `apiKeyHelper` itself, and the gateway route's base
   URL and APIM header — which such a tool inherits — are a 401 without a token. The
   alternative is the consumer rebuilding `<state>/gateway-token.sh` from `XDG_STATE_HOME` or
-  `HOME` and holding its own copy of the gateway host and the audience, which drifts. Being
+  `HOME` and holding its own copy of the gateway host and the audience, which drifts from
+  hai's and can send the consumer to another environment's gateway. Being
   inherited by every shell is therefore the point rather than the hazard it is for the
   markers above, but it means the other three routes have to *clear* it: a gateway helper
   left in a `byol` session's environment would have a consumer mint an Entra token and send
@@ -1001,8 +1004,7 @@ turns on. The enum is both what the hooks reference documents
 (<https://code.claude.com/docs/en/hooks>) and what the installed 2.1.304 binary validates
 against — `grep -a -o '\["clear"[^]]*\]'` over
 `.../@anthropic-ai/claude-code/bin/claude.exe` returns
-`["clear","resume","logout","prompt_input_exit","other"]`, and a sixth,
-`bypass_permissions_disabled`, was removed in 2.1.234.
+`["clear","resume","logout","prompt_input_exit","other"]`.
 
 | `reason` | fired by | hai's verdict | why |
 |---|---|---|---|
@@ -1017,9 +1019,9 @@ The row that matters is `other`. Run
 and then `kill -TERM <pid>`: the hook fires, with `"reason":"other"`. A kill is therefore
 indistinguishable from a clean `-p` finish, so nothing in a `SessionEnd` payload says "this
 session was terminated" — only the absence of a *done-with-this-id* reason does. Do not
-make every reason deregister from first principles: that closes the entry of every ending
-that goes through a signal, which is every ordinary one, so only a SIGKILL or a power cut
-would leave an entry open.
+make every reason deregister from first principles: a `SIGTERM` fires `SessionEnd` with
+`other` too, so that closes the entry of every ordinary ending, and only a SIGKILL or a
+power cut, which fire no `SessionEnd` at all, would leave one open.
 
 Subagents do not register anything of their own: a subagent's work shows up as a
 `UserPromptSubmit` on the **parent** session's id, with the prompt opening
