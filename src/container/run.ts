@@ -10,6 +10,7 @@ import { isEnabled } from "../system/env.js";
 import type { RunResult } from "../system/runner.js";
 import type { Seams } from "../system/seams.js";
 import { acrPullToken, dockerConfigJson, pullImage } from "./acr.js";
+import { leaveSession, registerSession } from "./attached.js";
 import { seedClaudeJson } from "./claude-json.js";
 import { passthroughEnv, splitEnv } from "./container-env.js";
 import { discoverDns } from "./dns.js";
@@ -71,29 +72,30 @@ export async function runContainerMode(input: {
     allowConcurrent: isEnabled(seams.env, "HAI_ALLOW_CONCURRENT")
   });
 
-  let started = false;
+  let registered = false;
   let watch: PortWatch | null = null;
   let code: number;
   try {
+    await registerSession(seams, { sessionName: ctx.sessionName, pid: seams.pid });
+    registered = true;
     await pullImage(seams, { image: ctx.image, policy: seams.env.HAI_PULL });
     await ensureNetwork(seams, ctx.network);
-    started = await ensureContainer(seams, ctx, dockerArgv);
+    await ensureContainer(seams, ctx, dockerArgv);
     await deliverSecrets(seams, ctx, secretEnv);
     await deliverDockerConfig(seams, ctx);
-    // Only the session that started the container watches it: two watchers would race for the same ports.
-    if (started) {
-      watch = await startPortWatch(seams, ctx);
-    }
+    watch = await startPortWatch(seams, ctx);
     code = await seams.runner.interactive(sessionArgv);
   } finally {
     await watch?.stop();
-    if (started) {
-      // The image cache the nested engine was using lives in the named volume, not in the container.
-      await seams.runner.run([DOCKER_BIN, "rm", "-f", ctx.sessionName], { timeoutMs: START_TIMEOUT_MS });
-      seams.logger.verbose(`removed ${ctx.sessionName}`);
-      await sweepSidecars(seams, ctx.sessionName);
+    // Unregistered means nothing is known about other sessions, so the container is left alone.
+    const othersAttached = registered ? await leaveSession(seams, { sessionName: ctx.sessionName, pid: seams.pid }) : true;
+    if (!othersAttached) {
+      await removeContainer(seams, ctx.sessionName);
     }
-    await releaseLock(seams, lock);
+    // While another session is attached the lock stays: the repo's transcripts are still being written.
+    if (!othersAttached || !registered) {
+      await releaseLock(seams, lock);
+    }
   }
   seams.exit(code);
 }
@@ -232,12 +234,21 @@ async function sessionRunning(seams: Seams, sessionName: string): Promise<boolea
   return existing.code === 0 && existing.stdout.trim() === "true";
 }
 
-/** True when this run started the container, which is the only case that may remove it. */
-async function ensureContainer(seams: Seams, ctx: ContainerContext, dockerArgv: string[]): Promise<boolean> {
+/** The image cache the nested engine was using lives in the named volume, not in the container. */
+async function removeContainer(seams: Seams, sessionName: string): Promise<void> {
+  const removed = await seams.runner.run([DOCKER_BIN, "rm", "-f", sessionName], { timeoutMs: START_TIMEOUT_MS });
+  if (removed.code === 0) {
+    seams.logger.verbose(`removed ${sessionName}`);
+  }
+  await sweepSidecars(seams, sessionName);
+}
+
+/** Starts the container unless a session already has it up; a stopped one is useless and is replaced. */
+async function ensureContainer(seams: Seams, ctx: ContainerContext, dockerArgv: string[]): Promise<void> {
   const existing = await inspectRunning(seams, ctx.sessionName);
   if (existing.code === 0 && existing.stdout.trim() === "true") {
     seams.logger.verbose(`${ctx.sessionName} is already up, so this session reattaches to it`);
-    return false;
+    return;
   }
   if (existing.code === 0) {
     await seams.runner.run([DOCKER_BIN, "rm", "-f", ctx.sessionName], { timeoutMs: START_TIMEOUT_MS });
@@ -247,7 +258,6 @@ async function ensureContainer(seams: Seams, ctx: ContainerContext, dockerArgv: 
     throw new Error(`could not start the hai container: ${created.stderr.trim()}`);
   }
   await waitForNestedDocker(seams, ctx);
-  return true;
 }
 
 async function waitForNestedDocker(seams: Seams, ctx: ContainerContext): Promise<void> {

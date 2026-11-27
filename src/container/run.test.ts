@@ -61,6 +61,28 @@ const input = (seams: FakeSeams, over: Partial<Parameters<typeof runContainerMod
   ...over
 });
 
+const MARKERS = `${HOME}/.local/state/hai/sessions/${SESSION}`;
+const OTHER_PID = 9999;
+
+/** The container is already up, and `ps -p` answers for each pid in `alive`. */
+const reattachedWith =
+  (alive: number[], over: RunResponder = () => undefined): RunResponder =>
+  (argv) => {
+    const scripted = over(argv);
+    if (scripted !== undefined) {
+      return scripted;
+    }
+    if (argv[0] === "docker" && argv[1] === "inspect" && argv.includes(SESSION)) {
+      return { code: 0, stdout: "true\n" };
+    }
+    if (argv[0] === "ps" && argv[1] === "-p") {
+      return alive.includes(Number(argv[2])) ? { code: 0, stdout: `${argv[2]}\n` } : { code: 1 };
+    }
+    return respond(argv);
+  };
+
+const otherSession = { [`${MARKERS}/${OTHER_PID}`]: "{}" };
+
 const argvOf = (seams: FakeSeams, head: string[]) => seams.runner.calls.find((call) => head.every((part, index) => call.argv[index] === part))?.argv ?? [];
 
 describe("runContainerMode", () => {
@@ -191,15 +213,9 @@ describe("runContainerMode", () => {
     expect(seams.lines.join("")).toContain(`removed ${SESSION}`);
   });
 
-  it("should reattach to a container that is already up, and leave it running", async () => {
+  it("should reattach to a container that is already up, and leave it running while another session is attached", async () => {
     // Arrange
-    const seams = seamsIn(
-      { HAI_VERBOSE: "1" },
-      {},
-      {
-        respond: (argv) => (argv[0] === "docker" && argv[1] === "inspect" && argv.includes(SESSION) ? { code: 0, stdout: "true\n" } : respond(argv))
-      }
-    );
+    const seams = seamsIn({ HAI_VERBOSE: "1" }, otherSession, { respond: reattachedWith([OTHER_PID]) });
 
     // Act
     await runContainerMode(input(seams)).catch(() => undefined);
@@ -228,6 +244,72 @@ describe("runContainerMode", () => {
     expect(seams.runner.calls.filter((call) => call.argv[1] === "run")).toEqual([]);
     expect(session).toContain("--env CLAUDE_CODE_USE_BEDROCK=1");
     expect(session).toContain(`--env HAI_UNSET_ENV=${conflictingEnv("bedrock").join(",")}`);
+  });
+
+  it("should remove the container when the session that reattached to it is the last one out", async () => {
+    // Arrange
+    const seams = seamsIn({ HAI_VERBOSE: "1" }, {}, { respond: reattachedWith([]) });
+
+    // Act
+    await runContainerMode(input(seams)).catch(() => undefined);
+
+    // Assert
+    expect(seams.runner.calls.filter((call) => call.argv[1] === "run")).toEqual([]);
+    expect(argvOf(seams, ["docker", "rm", "-f"])).toEqual(["docker", "rm", "-f", SESSION]);
+    expect(seams.fs.store.has(LOCK)).toBe(false);
+  });
+
+  it("should leave the container to a session still attached when the one that started it exits", async () => {
+    // Arrange
+    const seams = seamsIn({}, otherSession, {
+      respond: reattachedWith([OTHER_PID], (argv) => (argv[0] === "docker" && argv[1] === "inspect" ? { code: 1, stderr: "Error: No such object" } : undefined))
+    });
+
+    // Act
+    await runContainerMode(input(seams)).catch(() => undefined);
+
+    // Assert
+    expect(seams.runner.calls.filter((call) => call.argv[1] === "run")).toHaveLength(1);
+    expect(seams.runner.calls.filter((call) => call.argv[1] === "rm")).toEqual([]);
+    expect(seams.fs.store.has(LOCK)).toBe(true);
+    expect(seams.fs.store.has(`${MARKERS}/4242`)).toBe(false);
+  });
+
+  it("should not count a session whose process is gone, even though its marker is still there", async () => {
+    // Arrange
+    const seams = seamsIn({}, otherSession, { respond: reattachedWith([]) });
+
+    // Act
+    await runContainerMode(input(seams)).catch(() => undefined);
+
+    // Assert
+    expect(argvOf(seams, ["docker", "rm", "-f"])).toEqual(["docker", "rm", "-f", SESSION]);
+    expect(seams.fs.store.has(`${MARKERS}/${OTHER_PID}`)).toBe(false);
+  });
+
+  it("should leave the container when it cannot tell whether another session is attached", async () => {
+    // Arrange
+    const seams = seamsIn({ HAI_VERBOSE: "1" }, otherSession, {
+      respond: reattachedWith([], (argv) => (argv[0] === "ps" ? { code: 127, stderr: "ps: not found" } : undefined))
+    });
+
+    // Act
+    await runContainerMode(input(seams)).catch(() => undefined);
+
+    // Assert
+    expect(seams.runner.calls.filter((call) => call.argv[1] === "rm")).toEqual([]);
+    expect(seams.lines.join("")).toContain("could not tell whether another session is still attached");
+  });
+
+  it("should remove nothing when it never got as far as registering", async () => {
+    // Arrange
+    const seams = seamsIn({}, otherSession, { respond: reattachedWith([OTHER_PID]) });
+    seams.fs.mkdirp = async () => Promise.reject(new Error("read-only file system"));
+
+    // Act / Assert
+    await expect(runContainerMode(input(seams))).rejects.toThrow("read-only file system");
+    expect(seams.runner.calls.filter((call) => call.argv[1] === "rm")).toEqual([]);
+    expect(seams.fs.store.has(LOCK)).toBe(false);
   });
 
   it("should replace a container that exists but has stopped", async () => {
@@ -712,13 +794,24 @@ describe("runContainerMode", () => {
       );
     });
 
-    it("should neither watch nor sweep a container it reattached to, the session that started it already doing both", async () => {
+    it("should watch a container it reattached to when no other session holds the watch", async () => {
       // Arrange
-      const seams = seamsIn(
-        {},
-        {},
-        { respond: (argv) => (argv[0] === "docker" && argv[1] === "inspect" && argv.includes(SESSION) ? { code: 0, stdout: "true\n" } : respond(argv)) }
-      );
+      const seams = seamsIn({}, otherSession, { respond: reattachedWith([OTHER_PID]) });
+
+      // Act
+      await runContainerMode(input(seams)).catch(() => undefined);
+
+      // Assert
+      expect(argvOf(seams, WATCHED)).toContain("/proc/net/tcp6");
+    });
+
+    it("should neither watch nor sweep while another session holds the watch and is still attached", async () => {
+      // Arrange
+      const files = {
+        ...otherSession,
+        [`${HOME}/.local/state/hai/ports/${SESSION}.watch.json`]: JSON.stringify({ pid: OTHER_PID, container: SESSION, at: 1 })
+      };
+      const seams = seamsIn({}, files, { respond: reattachedWith([OTHER_PID]) });
 
       // Act
       await runContainerMode(input(seams)).catch(() => undefined);
