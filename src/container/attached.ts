@@ -58,3 +58,12 @@ export async function leaveSession(deps: { fs: Fs; runner: Runner; env: Env; log
   deps.logger.verbose(`${input.sessionName}: ${decision.reason}`);
   return decision.attached;
 }
+
+/** The markers of every session but this one: none of them can be attached to a container that did not exist. */
+export async function clearOtherSessions(deps: { fs: Fs; env: Env }, input: { sessionName: string; pid: number }): Promise<void> {
+  for (const entry of await deps.fs.listDir(attachedDir(deps.env, input.sessionName))) {
+    if (entry.name !== String(input.pid)) {
+      await deps.fs.remove(join(attachedDir(deps.env, input.sessionName), entry.name));
+    }
+  }
+}

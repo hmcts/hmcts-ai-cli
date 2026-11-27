@@ -11,6 +11,7 @@ const PURE_DECISION_MODULES = [
   "src/claude/hooks.ts",
   "src/claude/user-settings.ts",
   "src/container/acr.ts",
+  "src/container/attached.ts",
   "src/container/claude-json.ts",
   "src/container/container-env.ts",
   "src/container/dns.ts",

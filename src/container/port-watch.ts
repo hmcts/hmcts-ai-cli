@@ -153,7 +153,8 @@ export async function ensureSocatImage(deps: { runner: Runner; logger: Logger })
 
 /**
  * Every sidecar this session's name is on, removed. One outliving its session holds a host
- * port whose server is gone, so this runs before a container is created and after it ends.
+ * port whose server is gone, so this runs before a container is created and when the last
+ * session attached to it ends.
  */
 export async function sweepSidecars(deps: { runner: Runner; logger: Logger }, sessionName: string): Promise<number> {
   const listed = await deps.runner.run(buildSweepListArgs(sessionName));
@@ -283,24 +284,46 @@ export async function startPortWatch(deps: WatchDeps, ctx: PublishRef): Promise<
   let stopping = false;
   let wake: (() => void) | null = null;
 
-  async function attempt(): Promise<boolean> {
+  /** Once the terminal is Claude Code's, a takeover's messages go to the ports log. */
+  async function note(text: string, takeover: boolean, loud: boolean): Promise<void> {
+    if (!takeover) {
+      if (loud) {
+        deps.logger.say(text);
+      } else {
+        deps.logger.verbose(text);
+      }
+      return;
+    }
+    await deps.fs.appendText(portsLogPath(deps.env, ctx.sessionName), `${stamp(deps.clock)} ${text}\n`, { mode: STATE_FILE_MODE }).catch(() => undefined);
+  }
+
+  async function attempt(takeover: boolean): Promise<boolean> {
     try {
       if (!(await takeWatchLock(deps, { path: lockPath, sessionName: ctx.sessionName }))) {
         return false;
       }
       holding = true;
-      active = await beginWatch(deps, ctx);
-      deps.logger.verbose(
-        `publishing each port the session starts listening on, from ${POLL_MS}ms to the tick; see ${portsLogPath(deps.env, ctx.sessionName)}`
+      try {
+        active = await beginWatch(deps, ctx);
+      } catch (err) {
+        holding = false;
+        await releaseWatchLock(deps, lockPath);
+        throw err;
+      }
+      await note(
+        `publishing each port the session starts listening on, from ${POLL_MS}ms to the tick; see ${portsLogPath(deps.env, ctx.sessionName)}`,
+        takeover,
+        false
       );
     } catch (err) {
-      deps.logger.say(`not watching for ports the session starts listening on: ${(err as Error).message}`);
+      await note(`not watching for ports the session starts listening on: ${(err as Error).message}`, takeover, true);
+      return !takeover;
     }
     return true;
   }
 
   const standby =
-    (await attempt()) === true
+    (await attempt(false)) === true
       ? Promise.resolve()
       : (async () => {
           deps.logger.verbose("another session is publishing ports; this one takes over if it ends first");
@@ -309,7 +332,7 @@ export async function startPortWatch(deps: WatchDeps, ctx: PublishRef): Promise<
               wake = resolve;
               void deps.clock.sleep(POLL_MS).then(resolve);
             });
-            if (!stopping && (await attempt())) {
+            if (!stopping && (await attempt(true))) {
               return;
             }
           }
@@ -337,10 +360,18 @@ async function takeWatchLock(deps: WatchDeps, input: { path: string; sessionName
     return true;
   }
   const held = parseLock(await deps.fs.readText(input.path));
-  if (held !== null && (await pidAlive(deps, held.pid)) !== false) {
+  // An unreadable body is a holder mid-write, not a dead one.
+  if (held === null || (await pidAlive(deps, held.pid)) !== false) {
     return false;
   }
-  await deps.fs.remove(input.path);
+  // Whoever moves the stale lock aside owns the right to replace it; the loser's rename finds it gone.
+  const aside = `${input.path}.${deps.pid}.stale`;
+  try {
+    await deps.fs.rename(input.path, aside);
+  } catch {
+    return false;
+  }
+  await deps.fs.remove(aside);
   return deps.fs.createExclusive(input.path, body, { mode: STATE_FILE_MODE });
 }
 

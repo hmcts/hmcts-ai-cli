@@ -261,9 +261,20 @@ describe("runContainerMode", () => {
 
   it("should leave the container to a session still attached when the one that started it exits", async () => {
     // Arrange
-    const seams = seamsIn({}, otherSession, {
-      respond: reattachedWith([OTHER_PID], (argv) => (argv[0] === "docker" && argv[1] === "inspect" ? { code: 1, stderr: "Error: No such object" } : undefined))
-    });
+    const seams = seamsIn(
+      {},
+      {},
+      {
+        respond: reattachedWith([OTHER_PID], (argv) =>
+          argv[0] === "docker" && argv[1] === "inspect" ? { code: 1, stderr: "Error: No such object" } : undefined
+        )
+      }
+    );
+    const interactive = seams.runner.interactive.bind(seams.runner);
+    seams.runner.interactive = async (...args) => {
+      seams.fs.store.set(`${MARKERS}/${OTHER_PID}`, "{}");
+      return interactive(...args);
+    };
 
     // Act
     await runContainerMode(input(seams)).catch(() => undefined);
@@ -273,6 +284,59 @@ describe("runContainerMode", () => {
     expect(seams.runner.calls.filter((call) => call.argv[1] === "rm")).toEqual([]);
     expect(seams.fs.store.has(LOCK)).toBe(true);
     expect(seams.fs.store.has(`${MARKERS}/4242`)).toBe(false);
+  });
+
+  it("should clear the markers and watch lock a dead container left behind when it creates a fresh one", async () => {
+    // Arrange
+    const watchLock = `${HOME}/.local/state/hai/ports/${SESSION}.watch.json`;
+    const seams = seamsIn(
+      {},
+      { ...otherSession, [watchLock]: "{}" },
+      {
+        respond: reattachedWith([OTHER_PID], (argv) =>
+          argv[0] === "docker" && argv[1] === "inspect" ? { code: 1, stderr: "Error: No such object" } : undefined
+        )
+      }
+    );
+    const inspect = seams.runner.interactive.bind(seams.runner);
+    let duringSession: boolean[] = [];
+    seams.runner.interactive = async (...args) => {
+      duringSession = [seams.fs.store.has(`${MARKERS}/${OTHER_PID}`), seams.fs.store.has(`${MARKERS}/4242`)];
+      return inspect(...args);
+    };
+
+    // Act
+    await runContainerMode(input(seams)).catch(() => undefined);
+
+    // Assert
+    expect(duringSession).toEqual([false, true]);
+    expect(argvOf(seams, ["docker", "rm", "-f"])).toEqual(["docker", "rm", "-f", SESSION]);
+  });
+
+  it("should leave the markers of the sessions already attached when it reattaches", async () => {
+    // Arrange
+    const seams = seamsIn({}, otherSession, { respond: reattachedWith([OTHER_PID]) });
+
+    // Act
+    await runContainerMode(input(seams)).catch(() => undefined);
+
+    // Assert
+    expect(seams.fs.store.has(`${MARKERS}/${OTHER_PID}`)).toBe(true);
+  });
+
+  it("should leave the container in place and keep the exit code when leaving the session throws", async () => {
+    // Arrange
+    const seams = seamsIn({ HAI_VERBOSE: "1" }, {}, { respond: reattachedWith([]) });
+    const listDir = seams.fs.listDir.bind(seams.fs);
+    seams.fs.listDir = async (path) => (path === MARKERS ? Promise.reject(new Error("EIO")) : listDir(path));
+
+    // Act
+    const err = await runContainerMode(input(seams)).catch((e) => e);
+
+    // Assert
+    expect(exitCodeOf(err)).toBe(0);
+    expect(seams.runner.calls.filter((call) => call.argv[1] === "rm")).toEqual([]);
+    expect(seams.lines.join("")).toContain("could not tell whether another session is attached");
   });
 
   it("should not count a session whose process is gone, even though its marker is still there", async () => {

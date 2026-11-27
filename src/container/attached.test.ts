@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createFakeSeams } from "../__fixtures__/fake-seams.js";
-import { attachedDir, leaveSession, markerPath, othersDecision, registerSession } from "./attached.js";
+import { attachedDir, clearOtherSessions, leaveSession, markerPath, othersDecision, registerSession } from "./attached.js";
 
 const HOME = "/home/linus";
 const SESSION = "hai-hmcts-7293fcec";
@@ -46,5 +46,21 @@ describe("registerSession and leaveSession", () => {
     expect(attached).toBe(false);
     expect(seams.runner.calls).toEqual([]);
     expect(seams.fs.store.has(markerPath(seams.env, SESSION, 100))).toBe(false);
+  });
+});
+
+describe("clearOtherSessions", () => {
+  it("should remove every marker but its own", async () => {
+    // Arrange
+    const seams = createFakeSeams({ env: { HOME } });
+    await registerSession(seams, { sessionName: SESSION, pid: 100 });
+    await registerSession(seams, { sessionName: SESSION, pid: 200 });
+
+    // Act
+    await clearOtherSessions(seams, { sessionName: SESSION, pid: 100 });
+
+    // Assert
+    expect(seams.fs.store.has(markerPath(seams.env, SESSION, 100))).toBe(true);
+    expect(seams.fs.store.has(markerPath(seams.env, SESSION, 200))).toBe(false);
   });
 });

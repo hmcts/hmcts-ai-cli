@@ -10,7 +10,7 @@ import { isEnabled } from "../system/env.js";
 import type { RunResult } from "../system/runner.js";
 import type { Seams } from "../system/seams.js";
 import { acrPullToken, dockerConfigJson, pullImage } from "./acr.js";
-import { leaveSession, registerSession } from "./attached.js";
+import { clearOtherSessions, leaveSession, registerSession } from "./attached.js";
 import { seedClaudeJson } from "./claude-json.js";
 import { passthroughEnv, splitEnv } from "./container-env.js";
 import { discoverDns } from "./dns.js";
@@ -27,7 +27,7 @@ import {
 import { hostPrepPaths } from "./host-prep.js";
 import { lockPath, releaseLock, takeLock } from "./lock.js";
 import { type DevcontainerSpec, defaultSpec, parseDevcontainer, resolveMounts, type SubstitutionVars } from "./mounts.js";
-import { type PortWatch, startPortWatch, sweepSidecars } from "./port-watch.js";
+import { type PortWatch, startPortWatch, sweepSidecars, watchLockPath } from "./port-watch.js";
 import { stagedRuntimeDir, stageRuntime } from "./runtime-staging.js";
 import { dockerVolumeName, NETWORK_NAME, sessionName } from "./session.js";
 
@@ -88,7 +88,7 @@ export async function runContainerMode(input: {
   } finally {
     await watch?.stop();
     // Unregistered means nothing is known about other sessions, so the container is left alone.
-    const othersAttached = registered ? await leaveSession(seams, { sessionName: ctx.sessionName, pid: seams.pid }) : true;
+    const othersAttached = registered ? await othersStillAttached(seams, ctx.sessionName) : true;
     if (!othersAttached) {
       await removeContainer(seams, ctx.sessionName);
     }
@@ -234,6 +234,16 @@ async function sessionRunning(seams: Seams, sessionName: string): Promise<boolea
   return existing.code === 0 && existing.stdout.trim() === "true";
 }
 
+/** A failure to find out counts as attached, so the container is left in place. */
+async function othersStillAttached(seams: Seams, sessionName: string): Promise<boolean> {
+  try {
+    return await leaveSession(seams, { sessionName, pid: seams.pid });
+  } catch (err) {
+    seams.logger.verbose(`could not tell whether another session is attached, so ${sessionName} is left in place: ${(err as Error).message}`);
+    return true;
+  }
+}
+
 /** The image cache the nested engine was using lives in the named volume, not in the container. */
 async function removeContainer(seams: Seams, sessionName: string): Promise<void> {
   const removed = await seams.runner.run([DOCKER_BIN, "rm", "-f", sessionName], { timeoutMs: START_TIMEOUT_MS });
@@ -253,6 +263,9 @@ async function ensureContainer(seams: Seams, ctx: ContainerContext, dockerArgv: 
   if (existing.code === 0) {
     await seams.runner.run([DOCKER_BIN, "rm", "-f", ctx.sessionName], { timeoutMs: START_TIMEOUT_MS });
   }
+  // Nothing can still be attached to a container that did not exist: what is left is from before a reboot or a crash.
+  await clearOtherSessions(seams, { sessionName: ctx.sessionName, pid: seams.pid });
+  await seams.fs.remove(watchLockPath(seams.env, ctx.sessionName));
   const created = await seams.runner.run(dockerArgv, { timeoutMs: START_TIMEOUT_MS });
   if (created.code !== 0) {
     throw new Error(`could not start the hai container: ${created.stderr.trim()}`);
