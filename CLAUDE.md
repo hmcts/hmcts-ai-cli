@@ -693,6 +693,8 @@ table-testable:
 | `selectPorts`, `publishArg`, `parseEphemeralLow` | `chooseFreePorts`, `readEphemeralLow` |
 | `parseProcNet`, `addressKind`, `listeners`, `createDebounce` | the tick in `createPortPublisher` |
 | `pendingPorts`, `buildSidecarArgs`, `sweepIds`, `describePortEntry` | `startPortWatch`, `sweepSidecars` |
+| `othersDecision` | `leaveSession`, `registerSession` |
+| `publishedPorts` | `beginWatch` |
 | `sessionName`, `projectSlug` | — |
 | `lockDecision`, `parseLock` | `takeLock` |
 | `needsAcrLogin`, `shouldPull`, `dockerConfigJson` | `pullImage` |
@@ -780,12 +782,34 @@ Other things that are the way they are for a reason:
   host process forwarding to the session's own address works on Linux and is dead on Docker
   Desktop, where the bridge lives inside the VM and 172.17.x.x
   is unreachable from the Mac. Every sidecar carries `hai.session=<name>`, and that label is
-  swept with `docker rm -f` both before a container is created and after its session ends,
-  because a sidecar outliving its session holds a host port whose server is already gone.
+  swept with `docker rm -f` both before a container is created and when the last session
+  attached to it ends, because a sidecar outliving its container holds a host port whose
+  server is already gone.
   **The pre-create sweep stays** although nothing is probed before the container starts: a
   SIGKILLed session's sidecar still holds its host port with nothing behind it, and the
   watcher would read its own corpse as a clash and skip the port for the session. A session
   that is still up owns its sidecars, so a reattach sweeps nothing.
+- **The last session out removes the container, not the one that started it.** Two terminals
+  in a repo share one container, so the session that started it cannot be the one that removes it while another is still using it. Each
+  session writes a marker, `<state>/sessions/<container>/<hai pid>`, before it touches the
+  container and removes it on the way out; it then `rm -f`s the container and sweeps the
+  sidecars only if no other marker names a live pid (`pidAlive` on the host, which answers
+  the same on Linux and Docker Desktop, where a process listing inside the container could not
+  say which `hai` is on the other end). A pid that cannot be asked about counts as attached:
+  a container left behind is the safer mistake. The transcript lock is released only by that
+  last session. A SIGKILLed session leaves a marker whose pid is gone, which the next exit
+  clears, so it is not counted. A session that creates a fresh container first clears every other
+  session's marker and the watch lock, since nothing can be attached to a container that did not
+  exist; what remains is from before a reboot, and a reused pid would read as alive for ever.
+  A `leaveSession` that fails counts as attached and leaves the container in place.
+- **Port watching is handed over, not owned by the starter.** `<state>/ports/<container>.watch.json`
+  holds the pid of the one session publishing, taken with `O_EXCL` and reclaimed from a dead
+  pid by renaming it aside, so the loser of a race finds it gone; a body that does not parse is a
+  holder mid-write and is never reclaimed. A watcher that fails to start releases the lock. Every other session stands by, retrying on the watcher's own tick, and takes the lock
+  when its holder exits or dies. A new watcher adopts the sidecars already running (read off
+  `<container>-port-<n>` names) as decided and published, because they outlive the watcher
+  that made them and would otherwise read as a host-port clash. A takeover happens
+  after Claude Code owns the terminal, so it reports to the ports log only.
 - **Published ports bind `127.0.0.1`, not `0.0.0.0`.** Docker's iptables chain bypasses the
   host firewall, so a published port answers anyone on the network whatever ufw says — and
   `describePortEntry` reports `http://localhost:<port>`, which says loopback. Publishing is

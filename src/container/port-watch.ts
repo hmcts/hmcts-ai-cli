@@ -7,6 +7,7 @@ import type { Net } from "../system/net.js";
 import type { Runner } from "../system/runner.js";
 import { STATE_DIR_MODE, STATE_FILE_MODE, statePath } from "../system/state-dir.js";
 import { DOCKER_BIN } from "./docker-args.js";
+import { type LockFile, parseLock, pidAlive } from "./lock.js";
 import { chooseFreePorts, ephemeralPortsMessage, publishArg, readEphemeralLow } from "./ports.js";
 import { createDebounce, listeners, parseProcNet } from "./proc-net.js";
 
@@ -66,6 +67,10 @@ export function buildSweepListArgs(sessionName: string): string[] {
   return [DOCKER_BIN, "ps", "-aq", "--filter", `label=${SESSION_LABEL}=${sessionName}`];
 }
 
+export function buildPublishedListArgs(sessionName: string): string[] {
+  return [DOCKER_BIN, "ps", "--filter", `label=${SESSION_LABEL}=${sessionName}`, "--format", "{{.Names}}"];
+}
+
 export function buildSweepRemoveArgs(ids: string[]): string[] {
   return [DOCKER_BIN, "rm", "-f", ...ids];
 }
@@ -75,6 +80,18 @@ export function sweepIds(stdout: string): string[] {
     .split("\n")
     .map((line) => line.trim())
     .filter((line) => line !== "");
+}
+
+/** The ports a sidecar already publishes, read off the sidecars' own names. */
+export function publishedPorts(sessionName: string, stdout: string): number[] {
+  const prefix = `${sessionName}-port-`;
+  return sweepIds(stdout)
+    .filter((name) => name.startsWith(prefix) && /^\d+$/.test(name.slice(prefix.length)))
+    .map((name) => Number(name.slice(prefix.length)));
+}
+
+export function watchLockPath(env: Env, sessionName: string): string {
+  return join(statePath(env, "ports"), `${sessionName}.watch.json`);
 }
 
 export function portsLogPath(env: Env, sessionName: string): string {
@@ -136,7 +153,8 @@ export async function ensureSocatImage(deps: { runner: Runner; logger: Logger })
 
 /**
  * Every sidecar this session's name is on, removed. One outliving its session holds a host
- * port whose server is gone, so this runs before a container is created and after it ends.
+ * port whose server is gone, so this runs before a container is created and when the last
+ * session attached to it ends.
  */
 export async function sweepSidecars(deps: { runner: Runner; logger: Logger }, sessionName: string): Promise<number> {
   const listed = await deps.runner.run(buildSweepListArgs(sessionName));
@@ -193,11 +211,11 @@ export function createPortRecord(deps: { fs: Fs; runner: Runner; clock: Clock; e
 export function createPortPublisher(
   deps: { runner: Runner; net: Net; logger: Logger },
   ctx: PublishRef,
-  input: { record: PortRecord; ephemeralLow: number }
+  input: { record: PortRecord; ephemeralLow: number; published?: number[] }
 ): () => Promise<TickResult> {
   const settleOpen = createDebounce();
   const settleLocal = createDebounce();
-  const decided = new Set<number>();
+  const decided = new Set<number>(input.published ?? []);
   const noted = new Set<number>();
 
   return async function tick() {
@@ -245,10 +263,12 @@ export function createPortPublisher(
 }
 
 /**
- * The watch, for the life of the session. Claude Code's TUI owns the terminal from the moment
- * this returns, so every decision goes to the log rather than to it.
+ * The watch, for as long as any session is attached. One session holds the watcher lock and
+ * publishes; the others stand by and take it the moment its holder lets go, so the ports keep
+ * being published after the session that started them has gone. Claude Code's TUI owns the
+ * terminal from the moment this returns, so every decision goes to the log rather than to it.
  */
-export async function startPortWatch(deps: { runner: Runner; fs: Fs; net: Net; clock: Clock; env: Env; logger: Logger }, ctx: PublishRef): Promise<PortWatch> {
+export async function startPortWatch(deps: WatchDeps, ctx: PublishRef): Promise<PortWatch> {
   const idle: PortWatch = { stop: async () => undefined };
   if (isEnabled(deps.env, "HAI_NO_PORT_WATCH")) {
     deps.logger.verbose("HAI_NO_PORT_WATCH=1, so a port the session starts listening on will not be published");
@@ -258,24 +278,124 @@ export async function startPortWatch(deps: { runner: Runner; fs: Fs; net: Net; c
     return idle;
   }
 
-  let watch: PortWatch;
-  try {
-    watch = await beginWatch(deps, ctx);
-  } catch (err) {
-    deps.logger.say(`not watching for ports the session starts listening on: ${(err as Error).message}`);
-    return idle;
+  const lockPath = watchLockPath(deps.env, ctx.sessionName);
+  let active: PortWatch | null = null;
+  let holding = false;
+  let stopping = false;
+  let wake: (() => void) | null = null;
+
+  /** Once the terminal is Claude Code's, a takeover's messages go to the ports log. */
+  async function note(text: string, takeover: boolean, loud: boolean): Promise<void> {
+    if (!takeover) {
+      if (loud) {
+        deps.logger.say(text);
+      } else {
+        deps.logger.verbose(text);
+      }
+      return;
+    }
+    await deps.fs.appendText(portsLogPath(deps.env, ctx.sessionName), `${stamp(deps.clock)} ${text}\n`, { mode: STATE_FILE_MODE }).catch(() => undefined);
   }
-  deps.logger.verbose(`publishing each port the session starts listening on, from ${POLL_MS}ms to the tick; see ${portsLogPath(deps.env, ctx.sessionName)}`);
-  return watch;
+
+  async function attempt(takeover: boolean): Promise<boolean> {
+    try {
+      if (!(await takeWatchLock(deps, { path: lockPath, sessionName: ctx.sessionName }))) {
+        return false;
+      }
+      holding = true;
+      try {
+        active = await beginWatch(deps, ctx);
+      } catch (err) {
+        holding = false;
+        await releaseWatchLock(deps, lockPath);
+        throw err;
+      }
+      await note(
+        `publishing each port the session starts listening on, from ${POLL_MS}ms to the tick; see ${portsLogPath(deps.env, ctx.sessionName)}`,
+        takeover,
+        false
+      );
+    } catch (err) {
+      await note(`not watching for ports the session starts listening on: ${(err as Error).message}`, takeover, true);
+      return !takeover;
+    }
+    return true;
+  }
+
+  const standby =
+    (await attempt(false)) === true
+      ? Promise.resolve()
+      : (async () => {
+          deps.logger.verbose("another session is publishing ports; this one takes over if it ends first");
+          while (!stopping) {
+            await new Promise<void>((resolve) => {
+              wake = resolve;
+              void deps.clock.sleep(POLL_MS).then(resolve);
+            });
+            if (!stopping && (await attempt(true))) {
+              return;
+            }
+          }
+        })();
+
+  return {
+    async stop() {
+      stopping = true;
+      wake?.();
+      await standby;
+      await active?.stop();
+      if (holding) {
+        holding = false;
+        await releaseWatchLock(deps, lockPath);
+      }
+    }
+  };
 }
 
-async function beginWatch(deps: { runner: Runner; fs: Fs; net: Net; clock: Clock; env: Env; logger: Logger }, ctx: PublishRef): Promise<PortWatch> {
+/** Whether this session now holds the lock: one atomic create, a dead holder's file reclaimed. */
+async function takeWatchLock(deps: WatchDeps, input: { path: string; sessionName: string }): Promise<boolean> {
+  await deps.fs.mkdirp(dirname(input.path), { mode: STATE_DIR_MODE });
+  const body = `${JSON.stringify({ pid: deps.pid, container: input.sessionName, at: deps.clock.now() })}\n`;
+  if (await deps.fs.createExclusive(input.path, body, { mode: STATE_FILE_MODE })) {
+    return true;
+  }
+  const held = parseLock(await deps.fs.readText(input.path));
+  // An unreadable body is a holder mid-write, not a dead one.
+  if (held === null || (await pidAlive(deps, held.pid)) !== false) {
+    return false;
+  }
+  // Whoever moves the stale lock aside owns the right to replace it; the loser's rename finds it gone.
+  const aside = `${input.path}.${deps.pid}.stale`;
+  try {
+    await deps.fs.rename(input.path, aside);
+  } catch {
+    return false;
+  }
+  await deps.fs.remove(aside);
+  return deps.fs.createExclusive(input.path, body, { mode: STATE_FILE_MODE });
+}
+
+async function releaseWatchLock(deps: WatchDeps, path: string): Promise<void> {
+  const held: LockFile | null = parseLock(await deps.fs.readText(path));
+  if (held?.pid === deps.pid) {
+    await deps.fs.remove(path);
+  }
+}
+
+async function beginWatch(deps: WatchDeps, ctx: PublishRef): Promise<PortWatch> {
   const log = await createWatchLog(deps, ctx.sessionName);
   const record = createPortRecord({ ...deps, logger: log.logger }, ctx);
+  // Sidecars outlive the session that published them, so a successor adopts them rather than finding its own ports taken.
+  const listed = await deps.runner.run(buildPublishedListArgs(ctx.sessionName));
+  const published = listed.code === 0 ? publishedPorts(ctx.sessionName, listed.stdout) : [];
   await record.reset();
+  for (const port of published) {
+    await record.note({ port, state: "published", url: `http://localhost:${port}` });
+  }
   const tick = createPortPublisher({ runner: deps.runner, net: deps.net, logger: log.logger }, ctx, {
     record,
-    ephemeralLow: await readEphemeralLow(deps)
+    ephemeralLow: await readEphemeralLow(deps),
+    published
   });
 
   let stopping = false;
@@ -357,6 +477,16 @@ export interface PortRecord {
 export interface PortWatch {
   /** Idempotent, and must be awaited before the sidecars are swept. */
   stop(): Promise<void>;
+}
+
+export interface WatchDeps {
+  runner: Runner;
+  fs: Fs;
+  net: Net;
+  clock: Clock;
+  env: Env;
+  logger: Logger;
+  pid: number;
 }
 
 export interface SessionRef {

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createFakeFs, createFakeSeams, type FakeSeams, FIXED_NOW, type RunResponder } from "../__fixtures__/fake-seams.js";
 import type { Clock } from "../system/clock.js";
 import {
+  buildPublishedListArgs,
   buildReadTablesArgs,
   buildSidecarArgs,
   buildSweepListArgs,
@@ -16,13 +17,15 @@ import {
   pendingPorts,
   portsLogPath,
   portsStatePath,
+  publishedPorts,
   SESSION_LABEL,
   SOCAT_IMAGE,
   sidecarName,
   socatMissingMessage,
   startPortWatch,
   sweepIds,
-  sweepSidecars
+  sweepSidecars,
+  watchLockPath
 } from "./port-watch.js";
 
 const HOME = "/home/linus";
@@ -522,6 +525,27 @@ describe("createPortPublisher", () => {
   });
 });
 
+describe("publishedPorts", () => {
+  it("should read the ports off the names of this session's sidecars and ignore anything else", () => {
+    // Arrange
+    const stdout = `${SESSION}-port-8111\n${SESSION}-port-5062\nother-port-9200\n${SESSION}-port-x\n\n`;
+
+    // Act
+    const ports = publishedPorts(SESSION, stdout);
+
+    // Assert
+    expect(ports).toEqual([8111, 5062]);
+  });
+
+  it("should list only running sidecars carrying the session's label", () => {
+    // Act
+    const argv = buildPublishedListArgs(SESSION);
+
+    // Assert
+    expect(argv).toEqual(["docker", "ps", "--filter", `label=${SESSION_LABEL}=${SESSION}`, "--format", "{{.Names}}"]);
+  });
+});
+
 describe("startPortWatch", () => {
   const sidecarUp = (seams: FakeSeams) => seams.runner.calls.some((call) => call.argv.includes(`TCP:${SESSION}:8111`));
   const reads = (seams: FakeSeams) => seams.runner.calls.filter((call) => call.argv.includes("cat")).length;
@@ -690,5 +714,278 @@ describe("startPortWatch", () => {
     // Assert
     expect(round).toBeGreaterThan(3);
     expect(sidecarUp(seams)).toBe(true);
+  });
+});
+
+describe("the watcher lock", () => {
+  const LOCK_FILE = watchLockPath({ HOME }, SESSION);
+  const held = (pid: number) => JSON.stringify({ pid, container: SESSION, at: 1 });
+  const sidecarUp = (seams: FakeSeams) => seams.runner.calls.some((call) => call.argv.includes(`TCP:${SESSION}:8111`));
+  const reads = (seams: FakeSeams) => seams.runner.calls.filter((call) => call.argv.includes("cat")).length;
+  /** `ps -p` finds only the pids in `alive`; every other docker call works. */
+  const withLiveHolders =
+    (alive: number[], table: string, ps = ""): RunResponder =>
+    (argv) => {
+      if (argv[0] === "ps") {
+        return alive.includes(Number(argv[2])) ? { code: 0, stdout: `${argv[2]}\n` } : { code: 1 };
+      }
+      if (argv[1] === "ps") {
+        return { code: 0, stdout: ps };
+      }
+      return argv.includes("cat") ? { code: 0, stdout: table } : { code: 0, stdout: "f00dcafe1234\n" };
+    };
+
+  it("should hold the lock while it watches, and release it when it stops", async () => {
+    // Arrange
+    const seams = seamsIn({ respond: withLiveHolders([], table()) });
+
+    // Act
+    const watch = await startPortWatch(seams, CTX);
+    const during = seams.fs.store.get(LOCK_FILE);
+    await watch.stop();
+
+    // Assert
+    expect(JSON.parse(during ?? "{}")).toMatchObject({ pid: seams.pid, container: SESSION });
+    expect(seams.fs.store.has(LOCK_FILE)).toBe(false);
+  });
+
+  it("should not watch while a live session holds the lock, and leave that lock alone when it stops", async () => {
+    // Arrange
+    const seams = seamsIn({ files: { [LOCK_FILE]: held(777) }, respond: withLiveHolders([777], OPEN_8111), clock: fastClock });
+
+    // Act
+    const watch = await startPortWatch(seams, CTX);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    await watch.stop();
+
+    // Assert
+    expect(reads(seams)).toBe(0);
+    expect(sidecarUp(seams)).toBe(false);
+    expect(seams.fs.store.get(LOCK_FILE)).toBe(held(777));
+  });
+
+  it("should take the watch over when the session holding it lets go", async () => {
+    // Arrange
+    const seams = seamsIn({ files: { [LOCK_FILE]: held(777) }, respond: withLiveHolders([777], OPEN_8111), clock: fastClock });
+
+    // Act
+    const watch = await startPortWatch(seams, CTX);
+    seams.fs.store.delete(LOCK_FILE);
+    await until(() => sidecarUp(seams));
+    const during = seams.fs.store.get(LOCK_FILE);
+    await watch.stop();
+
+    // Assert
+    expect(sidecarUp(seams)).toBe(true);
+    expect(JSON.parse(during ?? "{}")).toMatchObject({ pid: seams.pid });
+    expect(seams.fs.store.has(LOCK_FILE)).toBe(false);
+  });
+
+  it("should take the watch over from a holder whose process has gone", async () => {
+    // Arrange
+    const seams = seamsIn({ files: { [LOCK_FILE]: held(777) }, respond: withLiveHolders([], OPEN_8111), clock: fastClock });
+
+    // Act
+    const watch = await startPortWatch(seams, CTX);
+    await until(() => sidecarUp(seams));
+    await watch.stop();
+
+    // Assert
+    expect(sidecarUp(seams)).toBe(true);
+  });
+
+  it("should not take a lock from a holder it cannot ask about", async () => {
+    // Arrange
+    const seams = seamsIn({ files: { [LOCK_FILE]: held(777) }, respond: (argv) => (argv[0] === "ps" ? { code: 127 } : { code: 0, stdout: "x\n" }) });
+
+    // Act
+    const watch = await startPortWatch(seams, CTX);
+    await watch.stop();
+
+    // Assert
+    expect(seams.fs.store.get(LOCK_FILE)).toBe(held(777));
+    expect(reads(seams)).toBe(0);
+  });
+
+  it("should adopt the sidecars a previous watcher left, rather than find its own ports taken", async () => {
+    // Arrange
+    const seams = seamsIn({ respond: withLiveHolders([], OPEN_8111, `${SESSION}-port-8111\n`), clock: fastClock });
+
+    // Act
+    const watch = await startPortWatch(seams, CTX);
+    await until(() => reads(seams) > 2);
+    await watch.stop();
+
+    // Assert
+    expect(sidecarUp(seams)).toBe(false);
+    expect(stateOf(seams).ports).toMatchObject([{ port: 8111, state: "published", url: "http://localhost:8111" }]);
+  });
+
+  it("should not reclaim a lock whose body does not parse, because its holder may be mid-write", async () => {
+    // Arrange
+    const seams = seamsIn({ files: { [LOCK_FILE]: "not json" }, respond: withLiveHolders([], OPEN_8111) });
+
+    // Act
+    const watch = await startPortWatch(seams, CTX);
+    await watch.stop();
+
+    // Assert
+    expect(seams.fs.store.get(LOCK_FILE)).toBe("not json");
+    expect(reads(seams)).toBe(0);
+  });
+
+  it("should leave a stale lock to whichever session moved it aside first", async () => {
+    // Arrange
+    const seams = seamsIn({ files: { [LOCK_FILE]: held(777) }, respond: withLiveHolders([], OPEN_8111) });
+    seams.fs.rename = async () => Promise.reject(new Error("ENOENT"));
+
+    // Act
+    const watch = await startPortWatch(seams, CTX);
+    await watch.stop();
+
+    // Assert
+    expect(seams.fs.store.get(LOCK_FILE)).toBe(held(777));
+    expect(reads(seams)).toBe(0);
+  });
+
+  it("should release the lock when the watcher fails to start", async () => {
+    // Arrange
+    const seams = seamsIn({
+      respond: (argv) => {
+        if (argv[1] === "ps") {
+          throw new Error("daemon not running");
+        }
+        return withLiveHolders([], OPEN_8111)(argv);
+      }
+    });
+
+    // Act
+    const watch = await startPortWatch(seams, CTX);
+    const afterFailure = seams.fs.store.has(LOCK_FILE);
+    await watch.stop();
+
+    // Assert
+    expect(afterFailure).toBe(false);
+    expect(seams.lines.join("")).toContain("not watching for ports");
+  });
+
+  it("should keep standing by after an attempt to take over throws, and publish once one succeeds", async () => {
+    // Arrange
+    const seams = seamsIn({ files: { [LOCK_FILE]: held(777) }, respond: withLiveHolders([777], OPEN_8111), clock: fastClock });
+    const createExclusive = seams.fs.createExclusive.bind(seams.fs);
+    let failures = 0;
+    seams.fs.createExclusive = async (...args) => {
+      if (failures > 0) {
+        failures -= 1;
+        throw new Error("disk full");
+      }
+      return createExclusive(...args);
+    };
+
+    // Act
+    const watch = await startPortWatch(seams, CTX);
+    failures = 1;
+    seams.fs.store.delete(LOCK_FILE);
+    await until(() => sidecarUp(seams));
+    await watch.stop();
+
+    // Assert
+    expect(sidecarUp(seams)).toBe(true);
+  });
+
+  it("should write nothing to the terminal when it takes over, and record the takeover in the ports log", async () => {
+    // Arrange
+    const seams = seamsIn({ files: { [LOCK_FILE]: held(777) }, respond: withLiveHolders([777], OPEN_8111), clock: fastClock });
+
+    // Act
+    const watch = await startPortWatch(seams, CTX);
+    const before = seams.lines.length;
+    seams.fs.store.delete(LOCK_FILE);
+    await until(() => sidecarUp(seams));
+    await watch.stop();
+
+    // Assert
+    expect(seams.lines.slice(before)).toEqual([]);
+    expect(seams.fs.store.get(portsLogPath({ HOME }, SESSION))).toContain("publishing each port");
+  });
+
+  it("should still take over when the ports log cannot be written", async () => {
+    // Arrange
+    const seams = seamsIn({ files: { [LOCK_FILE]: held(777) }, respond: withLiveHolders([777], OPEN_8111), clock: fastClock });
+    seams.fs.appendText = async () => Promise.reject(new Error("read-only file system"));
+
+    // Act
+    const watch = await startPortWatch(seams, CTX);
+    seams.fs.store.delete(LOCK_FILE);
+    await until(() => sidecarUp(seams));
+    await watch.stop();
+
+    // Assert
+    expect(sidecarUp(seams)).toBe(true);
+  });
+
+  it("should record a failed takeover in the ports log, not on the terminal", async () => {
+    // Arrange
+    const seams = seamsIn({ files: { [LOCK_FILE]: held(777) }, respond: withLiveHolders([777], OPEN_8111), clock: fastClock });
+    const createExclusive = seams.fs.createExclusive.bind(seams.fs);
+    seams.fs.createExclusive = async (...args) => {
+      if (args[0] === LOCK_FILE && !seams.fs.store.has(LOCK_FILE)) {
+        throw new Error("disk full");
+      }
+      return createExclusive(...args);
+    };
+
+    // Act
+    const watch = await startPortWatch(seams, CTX);
+    const before = seams.lines.length;
+    seams.fs.store.delete(LOCK_FILE);
+    await until(() => (seams.fs.store.get(portsLogPath({ HOME }, SESSION)) ?? "").includes("disk full"));
+    await watch.stop();
+
+    // Assert
+    expect(seams.lines.slice(before)).toEqual([]);
+    expect(seams.fs.store.get(portsLogPath({ HOME }, SESSION))).toContain("not watching for ports the session starts listening on: disk full");
+  });
+
+  it("should carry on when the sidecars cannot be listed", async () => {
+    // Arrange
+    const seams = seamsIn({
+      respond: (argv) => (argv[1] === "ps" ? { code: 1, stderr: "daemon not running" } : withLiveHolders([], OPEN_8111)(argv)),
+      clock: fastClock
+    });
+
+    // Act
+    const watch = await startPortWatch(seams, CTX);
+    await until(() => sidecarUp(seams));
+    await watch.stop();
+
+    // Assert
+    expect(sidecarUp(seams)).toBe(true);
+  });
+
+  it("should not fail on stopping when its lock file has already been removed", async () => {
+    // Arrange
+    const seams = seamsIn({ respond: withLiveHolders([], table()) });
+    const watch = await startPortWatch(seams, CTX);
+    seams.fs.store.delete(LOCK_FILE);
+
+    // Act
+    await watch.stop();
+
+    // Assert
+    expect(seams.fs.store.has(LOCK_FILE)).toBe(false);
+  });
+
+  it("should stop standing by without ever having watched", async () => {
+    // Arrange
+    const seams = seamsIn({ files: { [LOCK_FILE]: held(777) }, respond: withLiveHolders([777], OPEN_8111) });
+
+    // Act
+    const watch = await startPortWatch(seams, CTX);
+    await watch.stop();
+    await watch.stop();
+
+    // Assert
+    expect(reads(seams)).toBe(0);
   });
 });
